@@ -27,7 +27,3 @@ export function clearRole() {
   localStorage.removeItem("role");
   localStorage.removeItem("viewer_name");
 }
-
-export function canRecord(role: Role | null) {
-  return role === "staff";
-}

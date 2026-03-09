@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import LogoutButton from "@/components/LogoutButton";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { getRole, getViewerName, type Role } from "@/lib/roles";
@@ -270,8 +271,11 @@ export default function BoardPage() {
 
   const statsByPlayer = useMemo(() => {
     const map = new Map<string, Stat>();
+
     for (const p of players) {
-      if (p.id !== OPPONENT_PLAYER_ID) map.set(p.id, emptyStat());
+      if (p.id !== OPPONENT_PLAYER_ID) {
+        map.set(p.id, emptyStat());
+      }
     }
 
     for (const e of activeEvents) {
@@ -291,9 +295,37 @@ export default function BoardPage() {
   const homeName = game?.teamA?.trim() || "主場";
   const awayName = game?.teamB?.trim() || "客場";
 
+  if (role === null) {
+    return (
+      <main style={{ minHeight: "100vh", background: "#000", color: "white", padding: 20 }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto" }}>載入中...</div>
+      </main>
+    );
+  }
+
   return (
     <main style={{ minHeight: "100vh", background: "#000", color: "white", padding: 20 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gap: 18 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <h2 style={{ margin: 0 }}>比賽觀看頁</h2>
+            <div style={{ color: "#888", marginTop: 6 }}>
+              身份：{role === "staff" ? "工作人員" : "觀眾"}
+              {role === "viewer" && viewerName ? `（${viewerName}）` : ""}
+            </div>
+          </div>
+
+          <LogoutButton />
+        </div>
+
         <div
           style={{
             background: "#111",
@@ -322,9 +354,6 @@ export default function BoardPage() {
               <div style={{ fontSize: 56, fontWeight: 900 }}>
                 {formatMMSS(clock?.seconds_left ?? 600)}
               </div>
-              {role === "viewer" && viewerName && (
-                <div style={{ color: "#888", marginTop: 8 }}>觀眾：{viewerName}</div>
-              )}
             </div>
 
             <div style={{ textAlign: "center" }}>
@@ -383,15 +412,22 @@ export default function BoardPage() {
                   .filter((p) => p.id !== OPPONENT_PLAYER_ID)
                   .map((p) => {
                     const st = statsByPlayer.get(p.id) ?? emptyStat();
+
                     return (
                       <tr key={p.id}>
                         <td style={tdStyle}>
                           #{p.number ?? "-"} {p.name}
                         </td>
                         <td style={{ ...tdStyle, fontWeight: 900 }}>{st.pts}</td>
-                        <td style={tdStyle}>{st.fg2m}/{st.fg2a}</td>
-                        <td style={tdStyle}>{st.fg3m}/{st.fg3a}</td>
-                        <td style={tdStyle}>{st.ftm}/{st.fta}</td>
+                        <td style={tdStyle}>
+                          {st.fg2m}/{st.fg2a}
+                        </td>
+                        <td style={tdStyle}>
+                          {st.fg3m}/{st.fg3a}
+                        </td>
+                        <td style={tdStyle}>
+                          {st.ftm}/{st.fta}
+                        </td>
                         <td style={tdStyle}>{st.reb}</td>
                         <td style={tdStyle}>{st.ast}</td>
                         <td style={tdStyle}>{st.tov}</td>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import LogoutButton from "@/components/LogoutButton";
 
 type Player = { id: string; name: string; number: number | null };
 
@@ -483,11 +484,18 @@ export default function LivePage() {
     <main style={{ padding: 20, background: "#000", minHeight: "100vh", color: "white" }}>
       <h2>系籃比賽記錄</h2>
 
-      <div style={{ marginBottom: 16 }}>
-        <Link href="/games/new" style={{ color: "#93c5fd" }}>
-          建立新比賽
-        </Link>
-      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+  <h2 style={{ margin: 0 }}>系籃比賽記錄</h2>
+  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+    <Link href="/games/new" style={{ color: "#86efac" }}>
+      建立新比賽
+    </Link>
+    <Link href={`/games/${gameId}/board`} style={{ color: "#93c5fd" }}>
+      前往觀看頁
+    </Link>
+    <LogoutButton />
+  </div>
+</div>
 
       <div
         style={{
