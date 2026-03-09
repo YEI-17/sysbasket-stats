@@ -18,17 +18,15 @@ export default function Home() {
         .select("id")
         .order("created_at", { ascending: false })
         .limit(1)
-        .maybeSingle(); // ✅ 沒資料不會噴錯
+        .maybeSingle();
 
       if (!alive) return;
 
-      // 有比賽就直接進 live
       if (!error && data?.id) {
         router.replace(`/games/${data.id}/live`);
         return;
       }
 
-      // 沒有比賽就顯示首頁
       setLoading(false);
     }
 
@@ -46,7 +44,7 @@ export default function Home() {
   return (
     <main style={{ padding: 20 }}>
       <h1>系籃比賽記錄</h1>
-      <p>只有隊內登入者可記錄。</p>
+      <p>只有工作人員可記錄，觀眾只能觀看。</p>
 
       <div style={{ display: "flex", gap: 12 }}>
         <Link href="/login">登入</Link>
