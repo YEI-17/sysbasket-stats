@@ -1,9 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { setRole, setViewerName } from "@/lib/roles";
+
+type LiveGame = {
+  id: string;
+  teamA: string | null;
+  teamB: string | null;
+  is_live: boolean | null;
+};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,17 +19,50 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [viewerName, setViewerNameState] = useState("");
-  const [gameId, setGameId] = useState("");
+  const [selectedGameId, setSelectedGameId] = useState("");
+  const [liveGames, setLiveGames] = useState<LiveGame[]>([]);
+  const [loadingGames, setLoadingGames] = useState(false);
   const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    async function fetchLiveGames() {
+      setLoadingGames(true);
+      setMsg("");
+
+      const { data, error } = await supabase
+        .from("games")
+        .select("id, teamA, teamB, is_live")
+        .eq("is_live", true)
+        .order("id", { ascending: false });
+
+      if (error) {
+        setMsg("讀取目前比賽失敗");
+        setLoadingGames(false);
+        return;
+      }
+
+      setLiveGames((data as LiveGame[]) || []);
+      setLoadingGames(false);
+    }
+
+    fetchLiveGames();
+  }, []);
 
   async function handleStaffLogin() {
     setMsg("");
 
-    if (!email.trim()) return setMsg("請輸入 Email");
-    if (!password.trim()) return setMsg("請輸入 Password");
+    if (!email.trim()) {
+      setMsg("請輸入 Email");
+      return;
+    }
+
+    if (!password.trim()) {
+      setMsg("請輸入 Password");
+      return;
+    }
 
     const { error } = await supabase.auth.signInWithPassword({
-      email,
+      email: email.trim(),
       password,
     });
 
@@ -33,8 +73,8 @@ export default function LoginPage() {
 
     setRole("staff");
 
-    if (gameId.trim()) {
-      router.push(`/games/${gameId.trim()}/live`);
+    if (selectedGameId) {
+      router.push(`/games/${selectedGameId}/live`);
     } else {
       router.push("/games/new");
     }
@@ -43,12 +83,60 @@ export default function LoginPage() {
   function handleViewerEnter() {
     setMsg("");
 
-    if (!viewerName.trim()) return setMsg("請輸入名字");
-    if (!gameId.trim()) return setMsg("請輸入 gameId");
+    if (!viewerName.trim()) {
+      setMsg("請輸入名字");
+      return;
+    }
+
+    if (!selectedGameId) {
+      setMsg("目前沒有可觀看的比賽");
+      return;
+    }
 
     setViewerName(viewerName.trim());
     setRole("viewer");
-    router.push(`/games/${gameId.trim()}/board`);
+    router.push(`/games/${selectedGameId}/board`);
+  }
+
+  function renderLiveGames(clickAction?: (gameId: string) => void) {
+    if (loadingGames) {
+      return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
+    }
+
+    if (liveGames.length === 0) {
+      return null;
+    }
+
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ color: "#bbb", fontWeight: 700 }}>目前正在進行的比賽</div>
+
+        {liveGames.map((game) => {
+          const active = selectedGameId === game.id;
+          const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
+
+          return (
+            <button
+              key={game.id}
+              onClick={() => {
+                setSelectedGameId(game.id);
+                clickAction?.(game.id);
+              }}
+              style={{
+                ...gameBtn,
+                border: active ? "2px solid #22c55e" : "1px solid #333",
+                background: active ? "#11361f" : "#161616",
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 16 }}>{label}</div>
+              <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
+                點擊選擇這場比賽
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -109,15 +197,10 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            <input
-              placeholder="要進入的 gameId（可先貼上）"
-              value={gameId}
-              onChange={(e) => setGameId(e.target.value)}
-              style={inputStyle}
-            />
+            {renderLiveGames()}
 
             <button onClick={handleStaffLogin} style={btnGreen}>
-              登入
+              {selectedGameId ? "登入並進入比賽" : "登入並建立新比賽"}
             </button>
 
             <button onClick={() => setMode("choose")} style={btnGray}>
@@ -137,16 +220,13 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            <input
-              placeholder="要觀看的 gameId"
-              value={gameId}
-              onChange={(e) => setGameId(e.target.value)}
-              style={inputStyle}
-            />
+            {renderLiveGames()}
 
-            <button onClick={handleViewerEnter} style={btnGreen}>
-              進入觀看
-            </button>
+            {liveGames.length > 0 && (
+              <button onClick={handleViewerEnter} style={btnGreen}>
+                進入觀看
+              </button>
+            )}
 
             <button onClick={() => setMode("choose")} style={btnGray}>
               返回
@@ -188,4 +268,13 @@ const btnGray: React.CSSProperties = {
   ...btnBase,
   background: "#333",
   color: "white",
+};
+
+const gameBtn: React.CSSProperties = {
+  width: "100%",
+  textAlign: "left",
+  padding: "14px 16px",
+  borderRadius: 12,
+  color: "white",
+  cursor: "pointer",
 };
