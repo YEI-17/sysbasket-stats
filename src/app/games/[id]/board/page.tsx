@@ -28,6 +28,8 @@ type GameRow = {
   id: string;
   teamA: string | null;
   teamB: string | null;
+  is_live?: boolean | null;
+  ended_at?: string | null;
 };
 
 type Player = {
@@ -134,6 +136,31 @@ function getPoints(eventType: string) {
   return 0;
 }
 
+function computeDisplaySeconds(clock: ClockRow | null) {
+  if (!clock) return 600;
+
+  const base = Math.max(0, clock.seconds_left ?? 0);
+
+  if (!clock.is_running) {
+    return base;
+  }
+
+  if (!clock.updated_at) {
+    return base;
+  }
+
+  const updatedAtMs = new Date(clock.updated_at).getTime();
+
+  if (Number.isNaN(updatedAtMs)) {
+    return base;
+  }
+
+  const nowMs = Date.now();
+  const elapsedSeconds = Math.floor((nowMs - updatedAtMs) / 1000);
+
+  return Math.max(0, base - elapsedSeconds);
+}
+
 export default function BoardPage() {
   const params = useParams();
   const gameId = String(params.id);
@@ -145,6 +172,7 @@ export default function BoardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
+  const [displaySeconds, setDisplaySeconds] = useState(600);
   const [viewerCount, setViewerCount] = useState(1);
 
   const presenceKeyRef = useRef(`admin-${Math.random().toString(36).slice(2)}`);
@@ -152,7 +180,7 @@ export default function BoardPage() {
   async function loadGame() {
     const { data, error } = await supabase
       .from("games")
-      .select("id, teamA, teamB")
+      .select("id, teamA, teamB, is_live, ended_at")
       .eq("id", gameId)
       .single();
 
@@ -248,6 +276,17 @@ export default function BoardPage() {
     loadAll(true);
   }, [gameId]);
 
+  // 關鍵修正：大錶以 updated_at + seconds_left + is_running 推算
+  useEffect(() => {
+    setDisplaySeconds(computeDisplaySeconds(clock));
+
+    const timer = setInterval(() => {
+      setDisplaySeconds(computeDisplaySeconds(clock));
+    }, 250);
+
+    return () => clearInterval(timer);
+  }, [clock]);
+
   useEffect(() => {
     if (!gameId) return;
 
@@ -293,8 +332,13 @@ export default function BoardPage() {
           table: "games",
           filter: `id=eq.${gameId}`,
         },
-        async () => {
-          await loadGame();
+        (payload) => {
+          const newRow = payload.new as GameRow | undefined;
+          if (newRow && newRow.id) {
+            setGame(newRow);
+          } else {
+            loadGame();
+          }
         }
       )
       .on(
@@ -317,8 +361,13 @@ export default function BoardPage() {
           table: CLOCK_TABLE,
           filter: `game_id=eq.${gameId}`,
         },
-        async () => {
-          await loadClock();
+        (payload) => {
+          const newRow = payload.new as ClockRow | undefined;
+          if (newRow && newRow.game_id) {
+            setClock(newRow);
+          } else {
+            loadClock();
+          }
         }
       )
       .subscribe();
@@ -390,6 +439,13 @@ export default function BoardPage() {
     return byQuarter;
   }, [validEvents]);
 
+  const overtimeRows = useMemo(() => {
+    return Object.keys(quarterScores)
+      .map(Number)
+      .filter((q) => q >= 5)
+      .filter((q) => quarterScores[q].home !== 0 || quarterScores[q].away !== 0);
+  }, [quarterScores]);
+
   if (loading) {
     return (
       <main style={pageStyle}>
@@ -411,15 +467,30 @@ export default function BoardPage() {
             <div style={topInfoRowStyle}>
               <div style={quarterStyle}>Q{clock?.quarter ?? 1}</div>
               <div style={viewerStyle}>線上觀看：{viewerCount}</div>
+              <div
+                style={{
+                  ...statusBadgeStyle,
+                  background: game?.is_live === false ? "#3a1111" : "#102814",
+                  color: game?.is_live === false ? "#ff9c9c" : "#9effae",
+                  borderColor: game?.is_live === false ? "#5a2020" : "#1f5a2c",
+                }}
+              >
+                {game?.is_live === false ? "比賽已結束" : clock?.is_running ? "計時中" : "暫停中"}
+              </div>
             </div>
 
-            <div style={clockStyle}>{formatClock(clock?.seconds_left ?? 600)}</div>
+            <div style={clockStyle}>{formatClock(displaySeconds)}</div>
 
             <div style={quarterLineStyle}>
               <span>Q1 {quarterScores[1].home}:{quarterScores[1].away}</span>
               <span>Q2 {quarterScores[2].home}:{quarterScores[2].away}</span>
               <span>Q3 {quarterScores[3].home}:{quarterScores[3].away}</span>
               <span>Q4 {quarterScores[4].home}:{quarterScores[4].away}</span>
+              {overtimeRows.map((q) => (
+                <span key={q}>
+                  OT{q - 4} {quarterScores[q].home}:{quarterScores[q].away}
+                </span>
+              ))}
             </div>
           </div>
 
@@ -550,6 +621,14 @@ const quarterStyle: React.CSSProperties = {
 const viewerStyle: React.CSSProperties = {
   fontSize: 20,
   color: "#9a9a9a",
+};
+
+const statusBadgeStyle: React.CSSProperties = {
+  fontSize: 16,
+  fontWeight: 700,
+  padding: "8px 12px",
+  borderRadius: 999,
+  border: "1px solid #333",
 };
 
 const clockStyle: React.CSSProperties = {
