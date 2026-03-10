@@ -25,6 +25,7 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
+  team_side?: "A" | "B" | null;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -142,6 +143,13 @@ function applyEvent(stat: Stat, eventType: string) {
   }
 }
 
+function getPoints(eventType: string) {
+  if (eventType === "fg2_made") return 2;
+  if (eventType === "fg3_made") return 3;
+  if (eventType === "ft_made") return 1;
+  return 0;
+}
+
 export default function LiveGamePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -153,6 +161,9 @@ export default function LiveGamePage() {
 
   const [viewerCount, setViewerCount] = useState(1);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
+
+  const [editingTeamA, setEditingTeamA] = useState("");
+  const [savingTeamA, setSavingTeamA] = useState(false);
 
   const tickerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -179,6 +190,7 @@ export default function LiveGamePage() {
     }
 
     setGame(current);
+    setEditingTeamA(current.teamA ?? "");
     return current;
   }
 
@@ -205,9 +217,8 @@ export default function LiveGamePage() {
   async function loadEvents(gameId: string) {
     const { data, error } = await supabase
       .from("events")
-      .select("id, game_id, player_id, quarter, event_type, created_at, is_undone, undone_at")
+      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
       .eq("game_id", gameId)
-      .or("is_undone.is.null,is_undone.eq.false")
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -297,8 +308,8 @@ export default function LiveGamePage() {
           table: "events",
           filter: `game_id=eq.${game.id}`,
         },
-        () => {
-          loadEvents(game.id);
+        async () => {
+          await loadEvents(game.id);
         }
       )
       .on(
@@ -309,8 +320,20 @@ export default function LiveGamePage() {
           table: "game_clock",
           filter: `game_id=eq.${game.id}`,
         },
-        () => {
-          loadClock(game.id);
+        async () => {
+          await loadClock(game.id);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "games",
+          filter: `id=eq.${game.id}`,
+        },
+        async () => {
+          await loadCurrentGame();
         }
       )
       .subscribe(async (status) => {
@@ -340,7 +363,9 @@ export default function LiveGamePage() {
     tickerRef.current = setInterval(() => {
       setClock((prev) => {
         if (!prev) return prev;
-        if (prev.seconds_left <= 0) return { ...prev, is_running: false, seconds_left: 0 };
+        if (prev.seconds_left <= 0) {
+          return { ...prev, is_running: false, seconds_left: 0 };
+        }
         return { ...prev, seconds_left: prev.seconds_left - 1 };
       });
     }, 1000);
@@ -417,27 +442,68 @@ export default function LiveGamePage() {
     await persistClock(next);
   }
 
-  async function addEvent(eventType: string) {
-    if (!game || !clock) return;
+  async function saveTeamAName() {
+    if (!game) return;
+
+    const trimmed = editingTeamA.trim();
+    if (!trimmed) {
+      setError("我方隊名不能是空白");
+      return;
+    }
+
+    setSavingTeamA(true);
+    setError("");
+
+    const { error } = await supabase
+      .from("games")
+      .update({ teamA: trimmed })
+      .eq("id", game.id);
+
+    setSavingTeamA(false);
+
+    if (error) {
+      setError(`更新隊名失敗：${error.message}`);
+      return;
+    }
+
+    setGame((prev) => (prev ? { ...prev, teamA: trimmed } : prev));
+  }
+
+  async function addEvent(eventType: string, teamSide: "A" | "B" = "A") {
+  if (!game || !clock) return;
+
+  const payload: {
+    game_id: string;
+    player_id?: string;
+    quarter: number;
+    event_type: string;
+    team_side: "A" | "B";
+  } = {
+    game_id: game.id,
+    quarter: clock.quarter,
+    event_type: eventType,
+    team_side: teamSide,
+  };
+
+  if (teamSide === "A") {
     if (!selectedPlayerId) {
       setError("請先選擇球員");
       return;
     }
-
-    const { error } = await supabase.from("events").insert({
-      game_id: game.id,
-      player_id: selectedPlayerId,
-      quarter: clock.quarter,
-      event_type: eventType,
-    });
-
-    if (error) {
-      setError(`新增事件失敗：${error.message}`);
-      return;
-    }
-
-    await loadEvents(game.id);
+    payload.player_id = selectedPlayerId;
+  } else {
+    payload.player_id = selectedPlayerId || players[0]?.id;
   }
+
+  const { error } = await supabase.from("events").insert(payload);
+
+  if (error) {
+    setError(`新增事件失敗：${error.message}`);
+    return;
+  }
+
+  await loadEvents(game.id);
+}
 
   async function undoLastEvent() {
     if (!game) return;
@@ -465,6 +531,10 @@ export default function LiveGamePage() {
     await loadEvents(game.id);
   }
 
+  const validEvents = useMemo(() => {
+    return events.filter((e) => !e.is_undone);
+  }, [events]);
+
   const statsByPlayer = useMemo(() => {
     const result: Record<string, Stat> = {};
 
@@ -472,25 +542,32 @@ export default function LiveGamePage() {
       result[p.id] = emptyStat();
     }
 
-    for (const e of events) {
+    for (const e of validEvents) {
+      if (e.team_side !== "A") continue;
+      if (!e.player_id) continue;
+
       if (!result[e.player_id]) {
         result[e.player_id] = emptyStat();
       }
+
       applyEvent(result[e.player_id], e.event_type);
     }
 
     return result;
-  }, [players, events]);
+  }, [players, validEvents]);
 
   const teamScore = useMemo(() => {
-    let total = 0;
-    for (const e of events) {
-      if (e.event_type === "fg2_made") total += 2;
-      if (e.event_type === "fg3_made") total += 3;
-      if (e.event_type === "ft_made") total += 1;
+    let scoreA = 0;
+    let scoreB = 0;
+
+    for (const e of validEvents) {
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") scoreA += pts;
+      if (e.team_side === "B") scoreB += pts;
     }
-    return total;
-  }, [events]);
+
+    return { scoreA, scoreB };
+  }, [validEvents]);
 
   if (loading) {
     return <div className="p-6 text-white">載入中...</div>;
@@ -501,11 +578,29 @@ export default function LiveGamePage() {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4 md:p-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-sm text-white/60">目前比賽</div>
-              <h1 className="text-2xl font-bold">
-                {game?.teamA || "我方"} vs {game?.teamB || "對手"}
-              </h1>
+            <div className="space-y-3">
+              <div>
+                <div className="text-sm text-white/60">目前比賽</div>
+                <h1 className="text-2xl font-bold">
+                  {game?.teamA || "我方"} vs {game?.teamB || "對手"}
+                </h1>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={editingTeamA}
+                  onChange={(e) => setEditingTeamA(e.target.value)}
+                  placeholder="輸入我方隊名"
+                  className="rounded-xl bg-neutral-900 border border-white/10 px-3 py-2 outline-none"
+                />
+                <button
+                  onClick={saveTeamAName}
+                  disabled={savingTeamA}
+                  className="rounded-xl bg-blue-600 px-4 py-2 font-semibold disabled:opacity-60"
+                >
+                  {savingTeamA ? "儲存中..." : "更新我方隊名"}
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-wrap gap-3 text-sm">
@@ -515,8 +610,8 @@ export default function LiveGamePage() {
               <div className="rounded-xl bg-white/10 px-4 py-2">
                 線上觀看：{viewerCount}
               </div>
-              <div className="rounded-xl bg-emerald-500/20 px-4 py-2">
-                比分：{teamScore}
+              <div className="rounded-xl bg-emerald-500/20 px-4 py-2 font-semibold">
+                比分：{teamScore.scoreA} : {teamScore.scoreB}
               </div>
             </div>
           </div>
@@ -538,38 +633,68 @@ export default function LiveGamePage() {
               </div>
 
               <div className="grid grid-cols-2 gap-2 mb-3">
-                <button onClick={startClock} className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold">
+                <button
+                  onClick={startClock}
+                  className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold"
+                >
                   開始
                 </button>
-                <button onClick={pauseClock} className="rounded-xl bg-yellow-600 px-4 py-3 font-semibold">
+                <button
+                  onClick={pauseClock}
+                  className="rounded-xl bg-yellow-600 px-4 py-3 font-semibold"
+                >
                   暫停
                 </button>
-                <button onClick={resetClock} className="rounded-xl bg-red-600 px-4 py-3 font-semibold">
+                <button
+                  onClick={resetClock}
+                  className="rounded-xl bg-red-600 px-4 py-3 font-semibold"
+                >
                   重設10:00
                 </button>
-                <button onClick={nextQuarter} className="rounded-xl bg-blue-600 px-4 py-3 font-semibold">
+                <button
+                  onClick={nextQuarter}
+                  className="rounded-xl bg-blue-600 px-4 py-3 font-semibold"
+                >
                   下一節
                 </button>
               </div>
 
               <div className="grid grid-cols-3 gap-2">
-                <button onClick={() => adjustClock(-60)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(-60)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   -1分
                 </button>
-                <button onClick={() => adjustClock(-10)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(-10)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   -10秒
                 </button>
-                <button onClick={() => adjustClock(-1)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(-1)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   -1秒
                 </button>
 
-                <button onClick={() => adjustClock(1)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(1)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   +1秒
                 </button>
-                <button onClick={() => adjustClock(10)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(10)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   +10秒
                 </button>
-                <button onClick={() => adjustClock(60)} className="rounded-xl bg-white/10 px-3 py-2">
+                <button
+                  onClick={() => adjustClock(60)}
+                  className="rounded-xl bg-white/10 px-3 py-2"
+                >
                   +1分
                 </button>
               </div>
@@ -601,7 +726,7 @@ export default function LiveGamePage() {
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="text-sm text-white/60">快捷記錄</div>
+                <div className="text-sm text-white/60">我方快捷記錄</div>
                 <button
                   onClick={undoLastEvent}
                   className="rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300"
@@ -611,18 +736,67 @@ export default function LiveGamePage() {
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => addEvent("fg2_made")} className="rounded-xl bg-emerald-700 px-3 py-3">2分進</button>
-                <button onClick={() => addEvent("fg2_miss")} className="rounded-xl bg-white/10 px-3 py-3">2分鐵</button>
-                <button onClick={() => addEvent("fg3_made")} className="rounded-xl bg-emerald-700 px-3 py-3">3分進</button>
-                <button onClick={() => addEvent("fg3_miss")} className="rounded-xl bg-white/10 px-3 py-3">3分鐵</button>
-                <button onClick={() => addEvent("ft_made")} className="rounded-xl bg-emerald-700 px-3 py-3">罰球進</button>
-                <button onClick={() => addEvent("ft_miss")} className="rounded-xl bg-white/10 px-3 py-3">罰球鐵</button>
-                <button onClick={() => addEvent("reb")} className="rounded-xl bg-white/10 px-3 py-3">籃板</button>
-                <button onClick={() => addEvent("ast")} className="rounded-xl bg-white/10 px-3 py-3">助攻</button>
-                <button onClick={() => addEvent("tov")} className="rounded-xl bg-white/10 px-3 py-3">失誤</button>
-                <button onClick={() => addEvent("stl")} className="rounded-xl bg-white/10 px-3 py-3">抄截</button>
-                <button onClick={() => addEvent("blk")} className="rounded-xl bg-white/10 px-3 py-3">阻攻</button>
-                <button onClick={() => addEvent("pf")} className="rounded-xl bg-white/10 px-3 py-3">犯規</button>
+                <button onClick={() => addEvent("fg2_made", "A")} className="rounded-xl bg-emerald-700 px-3 py-3">
+                  2分進
+                </button>
+                <button onClick={() => addEvent("fg2_miss", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  2分鐵
+                </button>
+                <button onClick={() => addEvent("fg3_made", "A")} className="rounded-xl bg-emerald-700 px-3 py-3">
+                  3分進
+                </button>
+                <button onClick={() => addEvent("fg3_miss", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  3分鐵
+                </button>
+                <button onClick={() => addEvent("ft_made", "A")} className="rounded-xl bg-emerald-700 px-3 py-3">
+                  罰球進
+                </button>
+                <button onClick={() => addEvent("ft_miss", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  罰球鐵
+                </button>
+                <button onClick={() => addEvent("reb", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  籃板
+                </button>
+                <button onClick={() => addEvent("ast", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  助攻
+                </button>
+                <button onClick={() => addEvent("tov", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  失誤
+                </button>
+                <button onClick={() => addEvent("stl", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  抄截
+                </button>
+                <button onClick={() => addEvent("blk", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  阻攻
+                </button>
+                <button onClick={() => addEvent("pf", "A")} className="rounded-xl bg-white/10 px-3 py-3">
+                  犯規
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="text-sm text-white/60 mb-3">對手快速加分</div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={() => addEvent("ft_made", "B")}
+                  className="rounded-xl bg-orange-600 px-3 py-3 font-semibold"
+                >
+                  對手 +1
+                </button>
+                <button
+                  onClick={() => addEvent("fg2_made", "B")}
+                  className="rounded-xl bg-orange-600 px-3 py-3 font-semibold"
+                >
+                  對手 +2
+                </button>
+                <button
+                  onClick={() => addEvent("fg3_made", "B")}
+                  className="rounded-xl bg-orange-600 px-3 py-3 font-semibold"
+                >
+                  對手 +3
+                </button>
               </div>
             </div>
           </div>
@@ -682,7 +856,7 @@ export default function LiveGamePage() {
               <div className="text-sm text-white/60 mb-3">事件紀錄</div>
 
               <div className="max-h-[420px] overflow-y-auto space-y-2">
-                {[...events]
+                {[...validEvents]
                   .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
                   .map((e) => {
                     const player = players.find((p) => p.id === e.player_id);
@@ -692,7 +866,11 @@ export default function LiveGamePage() {
                         className="rounded-xl border border-white/10 bg-black/20 px-3 py-2"
                       >
                         <div className="font-medium">
-                          第 {e.quarter} 節｜{player ? `#${player.number ?? "-"} ${player.name}` : "未知球員"}
+                          第 {e.quarter} 節｜
+                          {e.team_side === "A" ? (game?.teamA || "我方") : (game?.teamB || "對手")}
+                          {e.team_side === "A"
+                            ? `｜${player ? `#${player.number ?? "-"} ${player.name}` : "未知球員"}`
+                            : ""}
                         </div>
                         <div className="text-sm text-white/60">
                           {EVENT_LABELS[e.event_type] ?? e.event_type}
