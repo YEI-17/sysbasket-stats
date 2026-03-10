@@ -9,7 +9,6 @@ type LiveGame = {
   id: string;
   teamA: string | null;
   teamB: string | null;
-  is_live: boolean | null;
 };
 
 export default function LoginPage() {
@@ -31,11 +30,12 @@ export default function LoginPage() {
 
       const { data, error } = await supabase
         .from("games")
-        .select("id, teamA, teamB, is_live")
-        .eq("is_live", true)
+        .select("id, teamA, teamB")
+        .eq("status", "live")
         .order("created_at", { ascending: false });
 
       if (error) {
+        console.error(error);
         setMsg("讀取目前比賽失敗");
         setLoadingGames(false);
         return;
