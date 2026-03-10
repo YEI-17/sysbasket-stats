@@ -4,227 +4,138 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
-type Player = { id: string; name: string; number: number | null };
-
 export default function NewGamePage() {
   const router = useRouter();
 
-  const [teamA, setTeamA] = useState("");
+  const [teamA, setTeamA] = useState("資工");
   const [teamB, setTeamB] = useState("");
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayers, setSelectedPlayers] = useState<string[]>([]);
+  const [location, setLocation] = useState("");
+  const [gameDate, setGameDate] = useState("");
+  const [startTime, setStartTime] = useState("");
+  const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
-  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    async function loadPlayers() {
-      const { data, error } = await supabase
-        .from("players")
-        .select("id, name, number")
-        .eq("active", true)
-        .order("number", { ascending: true });
-
-      if (error) {
-        setMsg(error.message);
-        return;
-      }
-
-      setPlayers((data as Player[]) || []);
-    }
-
-    loadPlayers();
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    setGameDate(`${yyyy}-${mm}-${dd}`);
   }, []);
 
-  function togglePlayer(playerId: string) {
-    setSelectedPlayers((prev) => {
-      if (prev.includes(playerId)) {
-        return prev.filter((id) => id !== playerId);
-      }
-      return [...prev, playerId];
-    });
-  }
-
-  async function handleCreateGame() {
+  async function handleCreateGame(e: React.FormEvent) {
+    e.preventDefault();
     setMsg("");
 
-    if (!teamA.trim()) return setMsg("請輸入主場隊名");
-    if (!teamB.trim()) return setMsg("請輸入客場隊名");
+    if (!teamA.trim() || !teamB.trim()) {
+      setMsg("請輸入雙方隊名");
+      return;
+    }
 
-    setCreating(true);
+    setLoading(true);
 
     try {
-      const { error: closeError } = await supabase
-        .from("games")
-        .update({ is_live: false })
-        .eq("is_live", true);
+      let start_time: string | null = null;
 
-      if (closeError) {
-        setCreating(false);
-        return setMsg(closeError.message);
+      if (gameDate && startTime) {
+        start_time = new Date(`${gameDate}T${startTime}:00`).toISOString();
       }
 
-      const { data: gameData, error: gameError } = await supabase
+      const { data, error } = await supabase
         .from("games")
         .insert({
+          game_date: gameDate,
+          start_time,
+          location: location || null,
+          status: "scheduled",
           teamA: teamA.trim(),
           teamB: teamB.trim(),
-          is_live: true,
         })
-        .select("id")
+        .select('id, game_date, start_time, location, status, "teamA", "teamB"')
         .single();
 
-      if (gameError || !gameData) {
-        setCreating(false);
-        return setMsg(gameError?.message || "建立比賽失敗");
-      }
+      if (error) throw error;
+      if (!data?.id) throw new Error("建立比賽失敗，沒有取得比賽 ID");
 
-      const gameId = gameData.id as string;
-
-      const { error: clockError } = await supabase.from("game_clock").upsert({
-        game_id: gameId,
-        quarter: 1,
-        seconds_left: 600,
-        is_running: false,
-      });
-
-      if (clockError) {
-        setCreating(false);
-        return setMsg(clockError.message);
-      }
-
-      if (selectedPlayers.length > 0) {
-        const rows = selectedPlayers.map((playerId) => ({
-          game_id: gameId,
-          player_id: playerId,
-        }));
-
-        const { error: gpError } = await supabase.from("game_players").insert(rows);
-
-        if (gpError) {
-          setCreating(false);
-          return setMsg(gpError.message);
-        }
-      }
-
-      router.push(`/games/${gameId}/live`);
-    } catch (err) {
-      setMsg(err instanceof Error ? err.message : "建立比賽失敗");
-      setCreating(false);
+      router.push(`/games/${data.id}/live`);
+    } catch (err: any) {
+      setMsg(err.message || "建立比賽失敗");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#000",
-        color: "white",
-        padding: 20,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 720,
-          margin: "0 auto",
-          background: "#0f0f0f",
-          border: "1px solid #222",
-          borderRadius: 18,
-          padding: 24,
-          display: "grid",
-          gap: 14,
-        }}
-      >
-        <h1 style={{ margin: 0 }}>建立新比賽</h1>
+    <main className="min-h-screen bg-black text-white px-4 py-6">
+      <div className="mx-auto max-w-xl">
+        <h1 className="text-2xl font-bold mb-6">新增比賽</h1>
 
-        <input
-          placeholder="主場隊名"
-          value={teamA}
-          onChange={(e) => setTeamA(e.target.value)}
-          style={inputStyle}
-        />
-
-        <input
-          placeholder="客場隊名"
-          value={teamB}
-          onChange={(e) => setTeamB(e.target.value)}
-          style={inputStyle}
-        />
-
-        <div style={{ marginTop: 8 }}>
-          <div style={{ marginBottom: 10, fontWeight: 800 }}>選擇本隊球員（可不選）</div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 10,
-            }}
-          >
-            {players.map((p) => {
-              const active = selectedPlayers.includes(p.id);
-
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => togglePlayer(p.id)}
-                  style={active ? btnGreen : btnGray}
-                >
-                  #{p.number ?? "-"} {p.name}
-                </button>
-              );
-            })}
+        <form onSubmit={handleCreateGame} className="space-y-4">
+          <div>
+            <label className="block mb-1">我方隊名</label>
+            <input
+              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
+              value={teamA}
+              onChange={(e) => setTeamA(e.target.value)}
+              placeholder="例如：資工"
+            />
           </div>
-        </div>
 
-        <button
-          onClick={handleCreateGame}
-          style={creating ? btnDisabled : btnGreen}
-          disabled={creating}
-        >
-          {creating ? "建立中..." : "建立比賽"}
-        </button>
+          <div>
+            <label className="block mb-1">對手隊名</label>
+            <input
+              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
+              value={teamB}
+              onChange={(e) => setTeamB(e.target.value)}
+              placeholder="例如：機械"
+            />
+          </div>
 
-        {msg && <div style={{ color: "#ddd" }}>{msg}</div>}
+          <div>
+            <label className="block mb-1">日期</label>
+            <input
+              type="date"
+              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
+              value={gameDate}
+              onChange={(e) => setGameDate(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block mb-1">開始時間</label>
+            <input
+              type="time"
+              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block mb-1">地點</label>
+            <input
+              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="例如：體育館"
+            />
+          </div>
+
+          {msg && (
+            <div className="rounded bg-red-500/20 border border-red-500/40 px-3 py-2 text-sm">
+              {msg}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded bg-white text-black px-4 py-2 font-semibold disabled:opacity-50"
+          >
+            {loading ? "建立中..." : "建立比賽"}
+          </button>
+        </form>
       </div>
     </main>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  padding: "12px 14px",
-  borderRadius: 10,
-  border: "1px solid #333",
-  background: "#111",
-  color: "white",
-  outline: "none",
-  fontSize: 16,
-};
-
-const btnBase: React.CSSProperties = {
-  padding: "12px 14px",
-  borderRadius: 10,
-  border: "none",
-  cursor: "pointer",
-  fontSize: 16,
-};
-
-const btnGreen: React.CSSProperties = {
-  ...btnBase,
-  background: "#22c55e",
-  color: "#052e12",
-  fontWeight: 800,
-};
-
-const btnGray: React.CSSProperties = {
-  ...btnBase,
-  background: "#333",
-  color: "white",
-};
-
-const btnDisabled: React.CSSProperties = {
-  ...btnBase,
-  background: "#262626",
-  color: "#777",
-  cursor: "not-allowed",
-};
