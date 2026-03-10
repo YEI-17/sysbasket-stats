@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type Player = {
@@ -151,6 +152,9 @@ function getPoints(eventType: string) {
 }
 
 export default function LiveGamePage() {
+  const params = useParams();
+  const gameId = String(params.id);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -166,32 +170,27 @@ export default function LiveGamePage() {
   const [savingTeamA, setSavingTeamA] = useState(false);
 
   const tickerRef = useRef<NodeJS.Timeout | null>(null);
+  const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
 
   async function loadCurrentGame() {
+    if (!gameId) return null;
+
     setError("");
 
     const { data, error } = await supabase
       .from("games")
       .select("id, teamA, teamB, status")
-      .eq("status", "live")
-      .order("id", { ascending: false })
-      .limit(1);
+      .eq("id", gameId)
+      .single();
 
     if (error) {
       setError(`讀取目前比賽失敗：${error.message}`);
       return null;
     }
 
-    const current = data?.[0] ?? null;
-
-    if (!current) {
-      setError("目前沒有 status = live 的比賽，請先建立一場比賽。");
-      return null;
-    }
-
-    setGame(current);
-    setEditingTeamA(current.teamA ?? "");
-    return current;
+    setGame(data);
+    setEditingTeamA(data.teamA ?? "");
+    return data;
   }
 
   async function loadPlayers() {
@@ -214,11 +213,11 @@ export default function LiveGamePage() {
     }
   }
 
-  async function loadEvents(gameId: string) {
+  async function loadEvents(targetGameId: string) {
     const { data, error } = await supabase
       .from("events")
       .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
-      .eq("game_id", gameId)
+      .eq("game_id", targetGameId)
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -229,11 +228,11 @@ export default function LiveGamePage() {
     setEvents(data ?? []);
   }
 
-  async function loadClock(gameId: string) {
+  async function loadClock(targetGameId: string) {
     const { data, error } = await supabase
       .from("game_clock")
       .select("game_id, quarter, seconds_left, is_running, updated_at")
-      .eq("game_id", gameId)
+      .eq("game_id", targetGameId)
       .order("quarter", { ascending: false })
       .limit(1);
 
@@ -248,7 +247,7 @@ export default function LiveGamePage() {
       const { data: inserted, error: insertError } = await supabase
         .from("game_clock")
         .insert({
-          game_id: gameId,
+          game_id: targetGameId,
           quarter: 1,
           seconds_left: 600,
           is_running: false,
@@ -268,6 +267,8 @@ export default function LiveGamePage() {
   }
 
   async function init() {
+    if (!gameId) return;
+
     setLoading(true);
     setError("");
 
@@ -282,15 +283,16 @@ export default function LiveGamePage() {
   }
 
   useEffect(() => {
+    if (!gameId) return;
     init();
-  }, []);
+  }, [gameId]);
 
   useEffect(() => {
-    if (!game?.id) return;
+    if (!gameId) return;
 
-    const channel = supabase.channel(`live-room-${game.id}`, {
+    const channel = supabase.channel(`live-room-${gameId}`, {
       config: {
-        presence: { key: Math.random().toString(36).slice(2) },
+        presence: { key: presenceKeyRef.current },
       },
     });
 
@@ -306,10 +308,10 @@ export default function LiveGamePage() {
           event: "*",
           schema: "public",
           table: "events",
-          filter: `game_id=eq.${game.id}`,
+          filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadEvents(game.id);
+          await loadEvents(gameId);
         }
       )
       .on(
@@ -318,10 +320,10 @@ export default function LiveGamePage() {
           event: "*",
           schema: "public",
           table: "game_clock",
-          filter: `game_id=eq.${game.id}`,
+          filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadClock(game.id);
+          await loadClock(gameId);
         }
       )
       .on(
@@ -330,7 +332,7 @@ export default function LiveGamePage() {
           event: "*",
           schema: "public",
           table: "games",
-          filter: `id=eq.${game.id}`,
+          filter: `id=eq.${gameId}`,
         },
         async () => {
           await loadCurrentGame();
@@ -340,6 +342,8 @@ export default function LiveGamePage() {
         if (status === "SUBSCRIBED") {
           await channel.track({
             online_at: new Date().toISOString(),
+            page: "live",
+            gameId,
           });
         }
       });
@@ -347,7 +351,7 @@ export default function LiveGamePage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [game?.id]);
+  }, [gameId]);
 
   useEffect(() => {
     if (!clock?.is_running) {
@@ -470,40 +474,40 @@ export default function LiveGamePage() {
   }
 
   async function addEvent(eventType: string, teamSide: "A" | "B" = "A") {
-  if (!game || !clock) return;
+    if (!game || !clock) return;
 
-  const payload: {
-    game_id: string;
-    player_id?: string;
-    quarter: number;
-    event_type: string;
-    team_side: "A" | "B";
-  } = {
-    game_id: game.id,
-    quarter: clock.quarter,
-    event_type: eventType,
-    team_side: teamSide,
-  };
+    const payload: {
+      game_id: string;
+      player_id?: string;
+      quarter: number;
+      event_type: string;
+      team_side: "A" | "B";
+    } = {
+      game_id: game.id,
+      quarter: clock.quarter,
+      event_type: eventType,
+      team_side: teamSide,
+    };
 
-  if (teamSide === "A") {
-    if (!selectedPlayerId) {
-      setError("請先選擇球員");
+    if (teamSide === "A") {
+      if (!selectedPlayerId) {
+        setError("請先選擇球員");
+        return;
+      }
+      payload.player_id = selectedPlayerId;
+    } else {
+      payload.player_id = selectedPlayerId || players[0]?.id;
+    }
+
+    const { error } = await supabase.from("events").insert(payload);
+
+    if (error) {
+      setError(`新增事件失敗：${error.message}`);
       return;
     }
-    payload.player_id = selectedPlayerId;
-  } else {
-    payload.player_id = selectedPlayerId || players[0]?.id;
+
+    await loadEvents(game.id);
   }
-
-  const { error } = await supabase.from("events").insert(payload);
-
-  if (error) {
-    setError(`新增事件失敗：${error.message}`);
-    return;
-  }
-
-  await loadEvents(game.id);
-}
 
   async function undoLastEvent() {
     if (!game) return;
