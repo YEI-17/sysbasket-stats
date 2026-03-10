@@ -1,16 +1,17 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type EventRow = {
   id: string;
   game_id: string;
-  player_id: string;
+  player_id: string | null;
   quarter: number;
   event_type: string;
   created_at: string;
+  team_side?: "A" | "B" | null;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -77,6 +78,62 @@ function formatClock(secondsLeft: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function applyEvent(stat: Stat, eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      stat.fg2m += 1;
+      stat.fg2a += 1;
+      break;
+    case "fg2_miss":
+      stat.fg2a += 1;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      stat.fg3m += 1;
+      stat.fg3a += 1;
+      break;
+    case "fg3_miss":
+      stat.fg3a += 1;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      stat.ftm += 1;
+      stat.fta += 1;
+      break;
+    case "ft_miss":
+      stat.fta += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "tov":
+      stat.tov += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    case "pf":
+      stat.pf += 1;
+      break;
+    default:
+      break;
+  }
+}
+
+function getPoints(eventType: string) {
+  if (eventType === "fg2_made") return 2;
+  if (eventType === "fg3_made") return 3;
+  if (eventType === "ft_made") return 1;
+  return 0;
+}
+
 export default function BoardPage() {
   const params = useParams();
   const gameId = String(params.id);
@@ -88,86 +145,146 @@ export default function BoardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
+  const [viewerCount, setViewerCount] = useState(1);
+
+  const presenceKeyRef = useRef(`admin-${Math.random().toString(36).slice(2)}`);
+
+  async function loadGame() {
+    const { data, error } = await supabase
+      .from("games")
+      .select("id, teamA, teamB")
+      .eq("id", gameId)
+      .single();
+
+    if (error) {
+      setMsg(`讀取 games 失敗：${error.message}`);
+      return;
+    }
+
+    setGame(data as GameRow);
+  }
+
+  async function loadPlayers() {
+    const { data, error } = await supabase
+      .from("players")
+      .select("id, name, number, active")
+      .eq("active", true)
+      .order("number", { ascending: true });
+
+    if (error) {
+      setMsg(`讀取 players 失敗：${error.message}`);
+      return;
+    }
+
+    setPlayers((data as Player[]) || []);
+  }
+
+  async function loadEvents() {
+    const { data, error } = await supabase
+      .from("events")
+      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setMsg(`讀取 events 失敗：${error.message}`);
+      return;
+    }
+
+    setEvents((data as EventRow[]) || []);
+  }
+
+  async function loadClock() {
+    const { data, error } = await supabase
+      .from(CLOCK_TABLE)
+      .select("game_id, quarter, seconds_left, is_running, updated_at")
+      .eq("game_id", gameId)
+      .order("quarter", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      setMsg(`讀取 ${CLOCK_TABLE} 失敗：${error.message}`);
+      return;
+    }
+
+    const latest = (data as ClockRow[] | null)?.[0] ?? null;
+
+    if (!latest) {
+      const { data: inserted, error: insertError } = await supabase
+        .from(CLOCK_TABLE)
+        .insert({
+          game_id: gameId,
+          quarter: 1,
+          seconds_left: 600,
+          is_running: false,
+        })
+        .select("game_id, quarter, seconds_left, is_running, updated_at")
+        .single();
+
+      if (insertError) {
+        setMsg(`建立 ${CLOCK_TABLE} 失敗：${insertError.message}`);
+        return;
+      }
+
+      setClock(inserted as ClockRow);
+      return;
+    }
+
+    setClock(latest);
+  }
 
   async function loadAll(showLoading = false) {
+    if (!gameId) return;
     if (showLoading) setLoading(true);
     setMsg("");
 
-    const [gameRes, playersRes, eventsRes, clockRes] = await Promise.all([
-      supabase
-        .from("games")
-        .select("id, teamA, teamB")
-        .eq("id", gameId)
-        .single(),
-
-      supabase
-        .from("players")
-        .select("id, name, number, active")
-        .eq("active", true)
-        .order("number", { ascending: true }),
-
-      supabase
-        .from("events")
-        .select("id, game_id, player_id, quarter, event_type, created_at, is_undone, undone_at")
-        .eq("game_id", gameId)
-        .order("created_at", { ascending: true }),
-
-      supabase
-        .from(CLOCK_TABLE)
-        .select("game_id, quarter, seconds_left, is_running, updated_at")
-        .eq("game_id", gameId)
-        .maybeSingle(),
-    ]);
-
-    if (gameRes.error) {
-      setMsg(`讀取 games 失敗：${gameRes.error.message}`);
-    } else {
-      setGame(gameRes.data as GameRow);
-    }
-
-    if (playersRes.error) {
-      setMsg(`讀取 players 失敗：${playersRes.error.message}`);
-    } else {
-      setPlayers((playersRes.data as Player[]) || []);
-    }
-
-    if (eventsRes.error) {
-      setMsg(`讀取 events 失敗：${eventsRes.error.message}`);
-    } else {
-      setEvents((eventsRes.data as EventRow[]) || []);
-    }
-
-    if (clockRes.error) {
-      setMsg(`讀取 ${CLOCK_TABLE} 失敗：${clockRes.error.message}`);
-      setClock(null);
-    } else {
-      setClock((clockRes.data as ClockRow | null) || null);
-    }
+    await Promise.all([loadGame(), loadPlayers(), loadEvents(), loadClock()]);
 
     if (showLoading) setLoading(false);
   }
 
   useEffect(() => {
+    if (!gameId) return;
     loadAll(true);
+  }, [gameId]);
 
-    const eventsChannel = supabase
-      .channel(`board-events-${gameId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "events",
-          filter: `game_id=eq.${gameId}`,
-        },
-        async () => {
-          await loadAll(false);
+  useEffect(() => {
+    if (!gameId) return;
+
+    const presenceChannel = supabase.channel(`game-presence-${gameId}`, {
+      config: {
+        presence: { key: presenceKeyRef.current },
+      },
+    });
+
+    presenceChannel
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceChannel.presenceState();
+        const count = Object.keys(state).length;
+        setViewerCount(count || 1);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({
+            role: "admin",
+            page: "board",
+            gameId,
+            joinedAt: new Date().toISOString(),
+          });
         }
-      )
-      .subscribe();
+      });
 
-    const gamesChannel = supabase
-      .channel(`board-games-${gameId}`)
+    return () => {
+      supabase.removeChannel(presenceChannel);
+    };
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    const dataChannel = supabase.channel(`game-data-${gameId}`);
+
+    dataChannel
       .on(
         "postgres_changes",
         {
@@ -177,13 +294,21 @@ export default function BoardPage() {
           filter: `id=eq.${gameId}`,
         },
         async () => {
-          await loadAll(false);
+          await loadGame();
         }
       )
-      .subscribe();
-
-    const clockChannel = supabase
-      .channel(`board-clock-${gameId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "events",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadEvents();
+        }
+      )
       .on(
         "postgres_changes",
         {
@@ -193,20 +318,13 @@ export default function BoardPage() {
           filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadAll(false);
+          await loadClock();
         }
       )
       .subscribe();
 
-    const poll = setInterval(() => {
-      loadAll(false);
-    }, 2000);
-
     return () => {
-      clearInterval(poll);
-      supabase.removeChannel(eventsChannel);
-      supabase.removeChannel(gamesChannel);
-      supabase.removeChannel(clockChannel);
+      supabase.removeChannel(dataChannel);
     };
   }, [gameId]);
 
@@ -222,44 +340,14 @@ export default function BoardPage() {
     }
 
     for (const e of validEvents) {
+      if (e.team_side !== "A") continue;
+      if (!e.player_id) continue;
+
       if (!map[e.player_id]) {
         map[e.player_id] = emptyStat();
       }
 
-      const s = map[e.player_id];
-      const type = e.event_type.toUpperCase();
-
-      if (type === "FG2_MAKE") {
-        s.pts += 2;
-        s.fg2m += 1;
-        s.fg2a += 1;
-      } else if (type === "FG2_MISS") {
-        s.fg2a += 1;
-      } else if (type === "FG3_MAKE") {
-        s.pts += 3;
-        s.fg3m += 1;
-        s.fg3a += 1;
-      } else if (type === "FG3_MISS") {
-        s.fg3a += 1;
-      } else if (type === "FT_MAKE") {
-        s.pts += 1;
-        s.ftm += 1;
-        s.fta += 1;
-      } else if (type === "FT_MISS") {
-        s.fta += 1;
-      } else if (type === "REB") {
-        s.reb += 1;
-      } else if (type === "AST") {
-        s.ast += 1;
-      } else if (type === "TOV") {
-        s.tov += 1;
-      } else if (type === "STL") {
-        s.stl += 1;
-      } else if (type === "BLK") {
-        s.blk += 1;
-      } else if (type === "PF") {
-        s.pf += 1;
-      }
+      applyEvent(map[e.player_id], e.event_type);
     }
 
     return map;
@@ -270,11 +358,9 @@ export default function BoardPage() {
     let away = 0;
 
     for (const e of validEvents) {
-      const type = e.event_type.toUpperCase();
-
-      if (type === "FG2_MAKE") home += 2;
-      if (type === "FG3_MAKE") home += 3;
-      if (type === "FT_MAKE") home += 1;
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") home += pts;
+      if (e.team_side === "B") away += pts;
     }
 
     return { home, away };
@@ -286,16 +372,19 @@ export default function BoardPage() {
       2: { home: 0, away: 0 },
       3: { home: 0, away: 0 },
       4: { home: 0, away: 0 },
+      5: { home: 0, away: 0 },
+      6: { home: 0, away: 0 },
+      7: { home: 0, away: 0 },
+      8: { home: 0, away: 0 },
     };
 
     for (const e of validEvents) {
       const q = e.quarter;
       if (!byQuarter[q]) continue;
 
-      const type = e.event_type.toUpperCase();
-      if (type === "FG2_MAKE") byQuarter[q].home += 2;
-      if (type === "FG3_MAKE") byQuarter[q].home += 3;
-      if (type === "FT_MAKE") byQuarter[q].home += 1;
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") byQuarter[q].home += pts;
+      if (e.team_side === "B") byQuarter[q].away += pts;
     }
 
     return byQuarter;
@@ -319,7 +408,11 @@ export default function BoardPage() {
           </div>
 
           <div style={centerBlockStyle}>
-            <div style={quarterStyle}>Q{clock?.quarter ?? 1}</div>
+            <div style={topInfoRowStyle}>
+              <div style={quarterStyle}>Q{clock?.quarter ?? 1}</div>
+              <div style={viewerStyle}>線上觀看：{viewerCount}</div>
+            </div>
+
             <div style={clockStyle}>{formatClock(clock?.seconds_left ?? 600)}</div>
 
             <div style={quarterLineStyle}>
@@ -429,6 +522,14 @@ const centerBlockStyle: React.CSSProperties = {
   gap: 16,
 };
 
+const topInfoRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 16,
+  flexWrap: "wrap",
+  justifyContent: "center",
+};
+
 const teamLabelStyle: React.CSSProperties = {
   fontSize: 28,
   color: "#b3b3b3",
@@ -444,6 +545,11 @@ const scoreStyle: React.CSSProperties = {
 const quarterStyle: React.CSSProperties = {
   fontSize: 28,
   color: "#b3b3b3",
+};
+
+const viewerStyle: React.CSSProperties = {
+  fontSize: 20,
+  color: "#9a9a9a",
 };
 
 const clockStyle: React.CSSProperties = {
