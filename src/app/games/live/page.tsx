@@ -1,83 +1,82 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type Game = {
-  id: string
-  teamA: string
-  teamB: string
-  home_score: number
-  away_score: number
-}
+type GameLite = {
+  id: string;
+  status: string;
+  game_date: string;
+  teamA: string | null;
+  teamB: string | null;
+};
 
-export default function LivePage(){
+export default function LiveEntryPage() {
+  const router = useRouter();
+  const [msg, setMsg] = useState("正在尋找比賽...");
 
-  const [game,setGame] = useState<Game | null>(null)
-  const [error,setError] = useState("")
-  const [loading,setLoading] = useState(true)
+  useEffect(() => {
+    async function go() {
+      try {
+        const liveRes = await supabase
+          .from("games")
+          .select('id, status, game_date, "teamA", "teamB"')
+          .eq("status", "live")
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-  useEffect(()=>{
-    loadGame()
-  },[])
+        if (liveRes.error) throw liveRes.error;
 
-  async function loadGame(){
+        const liveGame = liveRes.data?.[0] as GameLite | undefined;
+        if (liveGame?.id) {
+          router.replace(`/games/${liveGame.id}/live`);
+          return;
+        }
 
-    const { data, error } = await supabase
-      .from("games")
-      .select("id, teamA, teamB, home_score, away_score")
-      .eq("status","live")
-      .limit(1)
+        const scheduledRes = await supabase
+          .from("games")
+          .select('id, status, game_date, "teamA", "teamB"')
+          .eq("status", "scheduled")
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-    if(error){
-      setError("讀取目前比賽失敗："+error.message)
-      setLoading(false)
-      return
+        if (scheduledRes.error) throw scheduledRes.error;
+
+        const scheduledGame = scheduledRes.data?.[0] as GameLite | undefined;
+        if (scheduledGame?.id) {
+          router.replace(`/games/${scheduledGame.id}/live`);
+          return;
+        }
+
+        const latestRes = await supabase
+          .from("games")
+          .select('id, status, game_date, "teamA", "teamB"')
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (latestRes.error) throw latestRes.error;
+
+        const latestGame = latestRes.data?.[0] as GameLite | undefined;
+        if (latestGame?.id) {
+          router.replace(`/games/${latestGame.id}/live`);
+          return;
+        }
+
+        setMsg("目前沒有任何比賽，先到新增比賽頁建立一場。");
+      } catch (err: any) {
+        setMsg(err.message || "讀取目前比賽失敗");
+      }
     }
 
-    if(!data || data.length === 0){
-      setError("目前沒有 live 比賽")
-      setLoading(false)
-      return
-    }
+    go();
+  }, [router]);
 
-    setGame(data[0])
-    setLoading(false)
-  }
-
-  if(loading){
-    return(
-      <div className="p-6 text-white">
-        讀取比賽中...
+  return (
+    <main className="min-h-screen bg-black text-white px-4 py-6">
+      <div className="mx-auto max-w-xl rounded-3xl border border-white/10 bg-white/5 p-6 text-center">
+        {msg}
       </div>
-    )
-  }
-
-  if(error){
-    return(
-      <div className="p-6 text-red-400">
-        {error}
-      </div>
-    )
-  }
-
-  return(
-
-    <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center">
-
-      <div className="text-center">
-
-        <h1 className="text-3xl font-bold mb-6">
-          {game?.teamA} vs {game?.teamB}
-        </h1>
-
-        <div className="text-6xl font-bold">
-          {game?.home_score} : {game?.away_score}
-        </div>
-
-      </div>
-
-    </div>
-
-  )
+    </main>
+  );
 }
