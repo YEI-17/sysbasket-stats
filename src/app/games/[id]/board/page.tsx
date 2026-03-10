@@ -33,6 +33,7 @@ type Player = {
   id: string;
   name: string;
   number: number | null;
+  active?: boolean;
 };
 
 type Stat = {
@@ -50,6 +51,8 @@ type Stat = {
   blk: number;
   pf: number;
 };
+
+const CLOCK_TABLE = "clock"; // ← 如果你的表名不是 clock，就改這一行
 
 const emptyStat = (): Stat => ({
   pts: 0,
@@ -73,90 +76,136 @@ function formatClock(secondsLeft: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function getEventLabel(type: string) {
-  const t = type.toUpperCase();
-
-  if (t === "FG2_MAKE") return { pts: 2, key: "fg2m" as const, attemptKey: "fg2a" as const };
-  if (t === "FG2_MISS") return { pts: 0, key: null, attemptKey: "fg2a" as const };
-  if (t === "FG3_MAKE") return { pts: 3, key: "fg3m" as const, attemptKey: "fg3a" as const };
-  if (t === "FG3_MISS") return { pts: 0, key: null, attemptKey: "fg3a" as const };
-  if (t === "FT_MAKE") return { pts: 1, key: "ftm" as const, attemptKey: "fta" as const };
-  if (t === "FT_MISS") return { pts: 0, key: null, attemptKey: "fta" as const };
-
-  return null;
-}
-
 export default function BoardPage() {
   const params = useParams();
   const gameId = String(params.id);
 
   const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+
   const [game, setGame] = useState<GameRow | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
-  const [msg, setMsg] = useState("");
 
-  async function loadAll() {
+  async function loadAll(showLoading = false) {
+    if (showLoading) setLoading(true);
     setMsg("");
 
     const [gameRes, playersRes, eventsRes, clockRes] = await Promise.all([
-      supabase.from("games").select("id, teamA, teamB").eq("id", gameId).single(),
-      supabase.from("players").select("id, name, number").eq("active", true).order("number", { ascending: true }),
+      supabase
+        .from("games")
+        .select("id, teamA, teamB")
+        .eq("id", gameId)
+        .single(),
+
+      supabase
+        .from("players")
+        .select("id, name, number, active")
+        .eq("active", true)
+        .order("number", { ascending: true }),
+
       supabase
         .from("events")
         .select("id, game_id, player_id, quarter, event_type, created_at, is_undone, undone_at")
         .eq("game_id", gameId)
         .order("created_at", { ascending: true }),
+
       supabase
-        .from("clock")
+        .from(CLOCK_TABLE)
         .select("game_id, quarter, seconds_left, is_running, updated_at")
         .eq("game_id", gameId)
         .maybeSingle(),
     ]);
 
     if (gameRes.error) {
-      setMsg("讀取比賽資料失敗");
+      setMsg(`讀取 games 失敗：${gameRes.error.message}`);
     } else {
       setGame(gameRes.data as GameRow);
     }
 
     if (playersRes.error) {
-      setMsg("讀取球員資料失敗");
+      setMsg(`讀取 players 失敗：${playersRes.error.message}`);
     } else {
       setPlayers((playersRes.data as Player[]) || []);
     }
 
     if (eventsRes.error) {
-      setMsg("讀取事件資料失敗");
+      setMsg(`讀取 events 失敗：${eventsRes.error.message}`);
     } else {
       setEvents((eventsRes.data as EventRow[]) || []);
     }
 
-    if (!clockRes.error) {
+    if (clockRes.error) {
+      setMsg(`讀取 ${CLOCK_TABLE} 失敗：${clockRes.error.message}`);
+      setClock(null);
+    } else {
       setClock((clockRes.data as ClockRow | null) || null);
     }
 
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }
 
   useEffect(() => {
-    let alive = true;
+    loadAll(true);
 
-    async function firstLoad() {
-      await loadAll();
-    }
+    const eventsChannel = supabase
+      .channel(`board-events-${gameId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "events",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadAll(false);
+        }
+      )
+      .subscribe();
 
-    firstLoad();
+    const gamesChannel = supabase
+      .channel(`board-games-${gameId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "games",
+          filter: `id=eq.${gameId}`,
+        },
+        async () => {
+          await loadAll(false);
+        }
+      )
+      .subscribe();
 
-    const interval = setInterval(() => {
-      if (!alive) return;
-      loadAll();
+    const clockChannel = supabase
+      .channel(`board-clock-${gameId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: CLOCK_TABLE,
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadAll(false);
+        }
+      )
+      .subscribe();
+
+    const poll = setInterval(() => {
+      loadAll(false);
     }, 2000);
 
     return () => {
-      alive = false;
-      clearInterval(interval);
+      clearInterval(poll);
+      supabase.removeChannel(eventsChannel);
+      supabase.removeChannel(gamesChannel);
+      supabase.removeChannel(clockChannel);
     };
   }, [gameId]);
 
@@ -179,20 +228,37 @@ export default function BoardPage() {
       const s = map[e.player_id];
       const type = e.event_type.toUpperCase();
 
-      const shot = getEventLabel(type);
-      if (shot) {
-        s.pts += shot.pts;
-        s[shot.attemptKey] += 1;
-        if (shot.key) s[shot.key] += 1;
-        continue;
+      if (type === "FG2_MAKE") {
+        s.pts += 2;
+        s.fg2m += 1;
+        s.fg2a += 1;
+      } else if (type === "FG2_MISS") {
+        s.fg2a += 1;
+      } else if (type === "FG3_MAKE") {
+        s.pts += 3;
+        s.fg3m += 1;
+        s.fg3a += 1;
+      } else if (type === "FG3_MISS") {
+        s.fg3a += 1;
+      } else if (type === "FT_MAKE") {
+        s.pts += 1;
+        s.ftm += 1;
+        s.fta += 1;
+      } else if (type === "FT_MISS") {
+        s.fta += 1;
+      } else if (type === "REB") {
+        s.reb += 1;
+      } else if (type === "AST") {
+        s.ast += 1;
+      } else if (type === "TOV") {
+        s.tov += 1;
+      } else if (type === "STL") {
+        s.stl += 1;
+      } else if (type === "BLK") {
+        s.blk += 1;
+      } else if (type === "PF") {
+        s.pf += 1;
       }
-
-      if (type === "REB") s.reb += 1;
-      else if (type === "AST") s.ast += 1;
-      else if (type === "TOV") s.tov += 1;
-      else if (type === "STL") s.stl += 1;
-      else if (type === "BLK") s.blk += 1;
-      else if (type === "PF") s.pf += 1;
     }
 
     return map;
@@ -200,22 +266,21 @@ export default function BoardPage() {
 
   const totalScore = useMemo(() => {
     let home = 0;
+    let away = 0;
 
     for (const e of validEvents) {
       const type = e.event_type.toUpperCase();
+
       if (type === "FG2_MAKE") home += 2;
       if (type === "FG3_MAKE") home += 3;
       if (type === "FT_MAKE") home += 1;
     }
 
-    return {
-      home,
-      away: 0,
-    };
+    return { home, away };
   }, [validEvents]);
 
   const quarterScores = useMemo(() => {
-    const byQuarter = {
+    const byQuarter: Record<number, { home: number; away: number }> = {
       1: { home: 0, away: 0 },
       2: { home: 0, away: 0 },
       3: { home: 0, away: 0 },
@@ -223,7 +288,7 @@ export default function BoardPage() {
     };
 
     for (const e of validEvents) {
-      const q = e.quarter as 1 | 2 | 3 | 4;
+      const q = e.quarter;
       if (!byQuarter[q]) continue;
 
       const type = e.event_type.toUpperCase();
@@ -290,7 +355,6 @@ export default function BoardPage() {
                   <th style={thStyle}>PF</th>
                 </tr>
               </thead>
-
               <tbody>
                 {players.map((p) => {
                   const s = statsMap[p.id] || emptyStat();
@@ -302,15 +366,9 @@ export default function BoardPage() {
                         {p.name}
                       </td>
                       <td style={tdStyle}>{s.pts}</td>
-                      <td style={tdStyle}>
-                        {s.fg2m}/{s.fg2a}
-                      </td>
-                      <td style={tdStyle}>
-                        {s.fg3m}/{s.fg3a}
-                      </td>
-                      <td style={tdStyle}>
-                        {s.ftm}/{s.fta}
-                      </td>
+                      <td style={tdStyle}>{s.fg2m}/{s.fg2a}</td>
+                      <td style={tdStyle}>{s.fg3m}/{s.fg3a}</td>
+                      <td style={tdStyle}>{s.ftm}/{s.fta}</td>
                       <td style={tdStyle}>{s.reb}</td>
                       <td style={tdStyle}>{s.ast}</td>
                       <td style={tdStyle}>{s.tov}</td>
