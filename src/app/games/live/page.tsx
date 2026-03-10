@@ -26,6 +26,8 @@ export default function LiveEntryPage() {
           .order("created_at", { ascending: false })
           .limit(1);
 
+        if (liveRes.error) throw liveRes.error;
+
         const liveGame = liveRes.data?.[0] as GameLite | undefined;
         if (liveGame?.id) {
           router.replace(`/games/${liveGame.id}/live`);
@@ -39,6 +41,8 @@ export default function LiveEntryPage() {
           .order("created_at", { ascending: false })
           .limit(1);
 
+        if (scheduledRes.error) throw scheduledRes.error;
+
         const scheduledGame = scheduledRes.data?.[0] as GameLite | undefined;
         if (scheduledGame?.id) {
           router.replace(`/games/${scheduledGame.id}/live`);
@@ -50,6 +54,8 @@ export default function LiveEntryPage() {
           .select('id, status, game_date, "teamA", "teamB"')
           .order("created_at", { ascending: false })
           .limit(1);
+
+        if (latestRes.error) throw latestRes.error;
 
         const latestGame = latestRes.data?.[0] as GameLite | undefined;
         if (latestGame?.id) {
