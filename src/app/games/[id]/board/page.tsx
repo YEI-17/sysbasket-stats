@@ -52,7 +52,7 @@ type Stat = {
   pf: number;
 };
 
-const CLOCK_TABLE = "clock"; // ← 如果你的表名不是 clock，就改這一行
+const CLOCK_TABLE = "game_clock";
 
 const emptyStat = (): Stat => ({
   pts: 0,
@@ -71,8 +71,9 @@ const emptyStat = (): Stat => ({
 });
 
 function formatClock(secondsLeft: number) {
-  const m = Math.floor(secondsLeft / 60);
-  const s = secondsLeft % 60;
+  const safe = Math.max(0, secondsLeft || 0);
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
@@ -355,6 +356,7 @@ export default function BoardPage() {
                   <th style={thStyle}>PF</th>
                 </tr>
               </thead>
+
               <tbody>
                 {players.map((p) => {
                   const s = statsMap[p.id] || emptyStat();
