@@ -7,7 +7,8 @@ type Game = {
   id: string
   teamA: string
   teamB: string
-  status: string
+  home_score: number
+  away_score: number
 }
 
 export default function LivePage(){
@@ -22,16 +23,13 @@ export default function LivePage(){
 
   async function loadGame(){
 
-    setLoading(true)
-
     const { data, error } = await supabase
       .from("games")
-      .select("id, teamA, teamB, status")
+      .select("id, teamA, teamB, home_score, away_score")
       .eq("status","live")
       .limit(1)
 
     if(error){
-      console.error(error)
       setError("讀取目前比賽失敗："+error.message)
       setLoading(false)
       return
@@ -65,15 +63,19 @@ export default function LivePage(){
 
   return(
 
-    <div className="p-6 text-white">
+    <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center">
 
-      <h1 className="text-2xl font-bold">
-        {game?.teamA} vs {game?.teamB}
-      </h1>
+      <div className="text-center">
 
-      <p className="mt-4">
-        比賽ID：{game?.id}
-      </p>
+        <h1 className="text-3xl font-bold mb-6">
+          {game?.teamA} vs {game?.teamB}
+        </h1>
+
+        <div className="text-6xl font-bold">
+          {game?.home_score} : {game?.away_score}
+        </div>
+
+      </div>
 
     </div>
 
