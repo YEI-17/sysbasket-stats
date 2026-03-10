@@ -33,7 +33,7 @@ export default function LoginPage() {
         .from("games")
         .select("id, teamA, teamB, is_live")
         .eq("is_live", true)
-        .order("id", { ascending: false });
+        .order("created_at", { ascending: false });
 
       if (error) {
         setMsg("讀取目前比賽失敗");
@@ -80,25 +80,20 @@ export default function LoginPage() {
     }
   }
 
-  function handleViewerEnter() {
+  function handleViewerGameClick(gameId: string) {
     setMsg("");
 
     if (!viewerName.trim()) {
-      setMsg("請輸入名字");
-      return;
-    }
-
-    if (!selectedGameId) {
-      setMsg("目前沒有可觀看的比賽");
+      setMsg("請先輸入名字");
       return;
     }
 
     setViewerName(viewerName.trim());
     setRole("viewer");
-    router.push(`/games/${selectedGameId}/board`);
+    router.push(`/games/${gameId}/board`);
   }
 
-  function renderLiveGames(clickAction?: (gameId: string) => void) {
+  function renderStaffLiveGames() {
     if (loadingGames) {
       return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
     }
@@ -118,10 +113,7 @@ export default function LoginPage() {
           return (
             <button
               key={game.id}
-              onClick={() => {
-                setSelectedGameId(game.id);
-                clickAction?.(game.id);
-              }}
+              onClick={() => setSelectedGameId(game.id)}
               style={{
                 ...gameBtn,
                 border: active ? "2px solid #22c55e" : "1px solid #333",
@@ -130,7 +122,40 @@ export default function LoginPage() {
             >
               <div style={{ fontWeight: 800, fontSize: 16 }}>{label}</div>
               <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
-                點擊選擇這場比賽
+                {active ? "已選擇這場比賽" : "點擊選擇這場比賽"}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderViewerLiveGames() {
+    if (loadingGames) {
+      return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
+    }
+
+    if (liveGames.length === 0) {
+      return null;
+    }
+
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ color: "#bbb", fontWeight: 700 }}>目前正在進行的比賽</div>
+
+        {liveGames.map((game) => {
+          const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
+
+          return (
+            <button
+              key={game.id}
+              onClick={() => handleViewerGameClick(game.id)}
+              style={gameBtn}
+            >
+              <div style={{ fontWeight: 800, fontSize: 16 }}>{label}</div>
+              <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
+                點擊直接進入觀看
               </div>
             </button>
           );
@@ -197,7 +222,7 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            {renderLiveGames()}
+            {renderStaffLiveGames()}
 
             <button onClick={handleStaffLogin} style={btnGreen}>
               {selectedGameId ? "登入並進入比賽" : "登入並建立新比賽"}
@@ -220,13 +245,7 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            {renderLiveGames()}
-
-            {liveGames.length > 0 && (
-              <button onClick={handleViewerEnter} style={btnGreen}>
-                進入觀看
-              </button>
-            )}
+            {renderViewerLiveGames()}
 
             <button onClick={() => setMode("choose")} style={btnGray}>
               返回
@@ -277,4 +296,6 @@ const gameBtn: React.CSSProperties = {
   borderRadius: 12,
   color: "white",
   cursor: "pointer",
+  border: "1px solid #333",
+  background: "#161616",
 };
