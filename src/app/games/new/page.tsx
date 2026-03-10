@@ -1,141 +1,132 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
 export default function NewGamePage() {
   const router = useRouter();
 
-  const [teamA, setTeamA] = useState("資工");
-  const [teamB, setTeamB] = useState("");
+  const [opponent, setOpponent] = useState("");
   const [location, setLocation] = useState("");
-  const [gameDate, setGameDate] = useState("");
-  const [startTime, setStartTime] = useState("");
+  const [date, setDate] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
 
-  useEffect(() => {
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, "0");
-    const dd = String(now.getDate()).padStart(2, "0");
-    setGameDate(`${yyyy}-${mm}-${dd}`);
-  }, []);
-
-  async function handleCreateGame(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg("");
-
-    if (!teamA.trim() || !teamB.trim()) {
-      setMsg("請輸入雙方隊名");
-      return;
-    }
-
+  async function createGame() {
+    setError("");
     setLoading(true);
 
     try {
-      let start_time: string | null = null;
+      // 1️⃣ 先把舊的 live 比賽關閉
+      const { error: closeError } = await supabase
+        .from("games")
+        .update({ status: "ended" })
+        .eq("status", "live");
 
-      if (gameDate && startTime) {
-        start_time = new Date(`${gameDate}T${startTime}:00`).toISOString();
+      if (closeError) {
+        setError("關閉舊比賽失敗：" + closeError.message);
+        setLoading(false);
+        return;
       }
 
-      const { data, error } = await supabase
+      // 2️⃣ 建立新的 live 比賽
+      const { data: game, error: gameError } = await supabase
         .from("games")
         .insert({
-          game_date: gameDate,
-          start_time,
+          teamA: "我們",
+          teamB: opponent || "對手",
           location: location || null,
-          status: "scheduled",
-          teamA: teamA.trim(),
-          teamB: teamB.trim(),
+          game_date: date || null,
+          status: "live",
+          home_score: 0,
+          away_score: 0,
         })
-        .select('id, game_date, start_time, location, status, "teamA", "teamB"')
+        .select()
         .single();
 
-      if (error) throw error;
-      if (!data?.id) throw new Error("建立比賽失敗，沒有取得比賽 ID");
+      if (gameError) {
+        setError("建立比賽失敗：" + gameError.message);
+        setLoading(false);
+        return;
+      }
 
-      router.push(`/games/${data.id}/live`);
+      // 3️⃣ 建立第一節比賽時間
+      const { error: clockError } = await supabase
+        .from("game_clock")
+        .insert({
+          game_id: game.id,
+          quarter: 1,
+          seconds_left: 600,
+          is_running: false,
+        });
+
+      if (clockError) {
+        setError("建立比賽時間失敗：" + clockError.message);
+        setLoading(false);
+        return;
+      }
+
+      // 4️⃣ 跳轉到 live 比賽頁面
+      router.push("/games/live");
     } catch (err: any) {
-      setMsg(err.message || "建立比賽失敗");
-    } finally {
-      setLoading(false);
+      setError(err.message);
     }
+
+    setLoading(false);
   }
 
   return (
-    <main className="min-h-screen bg-black text-white px-4 py-6">
-      <div className="mx-auto max-w-xl">
-        <h1 className="text-2xl font-bold mb-6">新增比賽</h1>
+    <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center p-6">
+      <div className="w-full max-w-md bg-white/5 border border-white/10 rounded-2xl p-6 space-y-5">
 
-        <form onSubmit={handleCreateGame} className="space-y-4">
-          <div>
-            <label className="block mb-1">我方隊名</label>
-            <input
-              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
-              value={teamA}
-              onChange={(e) => setTeamA(e.target.value)}
-              placeholder="例如：資工"
-            />
+        <h1 className="text-xl font-bold">建立新比賽</h1>
+
+        <div>
+          <label className="text-sm text-white/60">對手</label>
+          <input
+            value={opponent}
+            onChange={(e) => setOpponent(e.target.value)}
+            placeholder="例如：資工系"
+            className="w-full mt-1 px-3 py-2 bg-neutral-900 border border-white/10 rounded-lg outline-none"
+          />
+        </div>
+
+        <div>
+          <label className="text-sm text-white/60">地點</label>
+          <input
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="例如：學校體育館"
+            className="w-full mt-1 px-3 py-2 bg-neutral-900 border border-white/10 rounded-lg outline-none"
+          />
+        </div>
+
+        <div>
+          <label className="text-sm text-white/60">日期</label>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full mt-1 px-3 py-2 bg-neutral-900 border border-white/10 rounded-lg outline-none"
+          />
+        </div>
+
+        {error && (
+          <div className="text-red-400 text-sm">
+            {error}
           </div>
+        )}
 
-          <div>
-            <label className="block mb-1">對手隊名</label>
-            <input
-              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
-              value={teamB}
-              onChange={(e) => setTeamB(e.target.value)}
-              placeholder="例如：機械"
-            />
-          </div>
+        <button
+          onClick={createGame}
+          disabled={loading}
+          className="w-full py-3 bg-emerald-600 rounded-xl font-semibold hover:bg-emerald-700"
+        >
+          {loading ? "建立中..." : "建立比賽"}
+        </button>
 
-          <div>
-            <label className="block mb-1">日期</label>
-            <input
-              type="date"
-              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
-              value={gameDate}
-              onChange={(e) => setGameDate(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label className="block mb-1">開始時間</label>
-            <input
-              type="time"
-              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label className="block mb-1">地點</label>
-            <input
-              className="w-full rounded border border-white/20 bg-white/5 px-3 py-2"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="例如：體育館"
-            />
-          </div>
-
-          {msg && (
-            <div className="rounded bg-red-500/20 border border-red-500/40 px-3 py-2 text-sm">
-              {msg}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded bg-white text-black px-4 py-2 font-semibold disabled:opacity-50"
-          >
-            {loading ? "建立中..." : "建立比賽"}
-          </button>
-        </form>
       </div>
-    </main>
+    </div>
   );
 }
