@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -27,46 +26,24 @@ type EventRow = {
   undone_at?: string | null;
 };
 
-type BoxScoreRow = {
+type PlayerInfo = {
+  id: string;
   name: string;
-  pts: number;
-  fg2m: number;
-  fg2a: number;
-  fg3m: number;
-  fg3a: number;
-  ftm: number;
-  fta: number;
-  reb: number;
-  ast: number;
-  stl: number;
-  blk: number;
-  tov: number;
-  pf: number;
+  number: number | null;
+  position: string | null;
 };
 
-const emptyBox = (): BoxScoreRow[] => [
-  {
-    name: "TEAM",
-    pts: 0,
-    fg2m: 0,
-    fg2a: 0,
-    fg3m: 0,
-    fg3a: 0,
-    ftm: 0,
-    fta: 0,
-    reb: 0,
-    ast: 0,
-    stl: 0,
-    blk: 0,
-    tov: 0,
-    pf: 0,
-  },
-];
+type GamePlayerRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: "teamA" | "teamB";
+  is_starter: boolean;
+  is_active: boolean;
+  player: PlayerInfo | null;
+};
 
-function fmtDate(dateStr?: string | null) {
-  if (!dateStr) return "-";
-  return dateStr;
-}
+type TabKey = "overview" | "events" | "stats" | "players";
 
 function eventLabel(eventType: string, teamA = "隊伍A", teamB = "隊伍B") {
   const map: Record<string, string> = {
@@ -94,16 +71,110 @@ function eventLabel(eventType: string, teamA = "隊伍A", teamB = "隊伍B") {
   return map[eventType] ?? eventType;
 }
 
-export default function LiveGamePage() {
+function getEventSide(eventType: string): "teamA" | "teamB" | "other" {
+  if (eventType.startsWith("teamA_")) return "teamA";
+  if (eventType.startsWith("teamB_")) return "teamB";
+  return "other";
+}
+
+function statEventName(eventType: string) {
+  if (eventType.endsWith("_1pt")) return "FT";
+  if (eventType.endsWith("_2pt")) return "2PT";
+  if (eventType.endsWith("_3pt")) return "3PT";
+  if (eventType.endsWith("_reb")) return "REB";
+  if (eventType.endsWith("_ast")) return "AST";
+  if (eventType.endsWith("_stl")) return "STL";
+  if (eventType.endsWith("_blk")) return "BLK";
+  if (eventType.endsWith("_tov")) return "TO";
+  if (eventType.endsWith("_pf")) return "PF";
+  return eventType;
+}
+
+function formatStatus(status?: string) {
+  if (status === "live") return "LIVE";
+  if (status === "finished") return "FINAL";
+  return "SCHEDULED";
+}
+
+function formatTime(dateStr?: string | null) {
+  if (!dateStr) return "-";
+  try {
+    return new Date(dateStr).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "-";
+  }
+}
+
+function formatDate(dateStr?: string | null) {
+  if (!dateStr) return "-";
+  return dateStr;
+}
+
+function StatCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
+      <div className="text-xs text-white/50">{label}</div>
+      <div className="mt-1 text-2xl font-bold">{value}</div>
+    </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-center text-white/50">
+      {text}
+    </div>
+  );
+}
+
+function normalizeGamePlayers(rows: any[]): GamePlayerRow[] {
+  return rows.map((row) => {
+    const rawPlayer = Array.isArray(row.player) ? row.player[0] : row.player;
+
+    return {
+      id: String(row.id),
+      game_id: String(row.game_id),
+      player_id: String(row.player_id),
+      team_side: row.team_side === "teamB" ? "teamB" : "teamA",
+      is_starter: Boolean(row.is_starter),
+      is_active: Boolean(row.is_active),
+      player: rawPlayer
+        ? {
+            id: String(rawPlayer.id),
+            name: String(rawPlayer.name ?? ""),
+            number:
+              rawPlayer.number === null || rawPlayer.number === undefined
+                ? null
+                : Number(rawPlayer.number),
+            position:
+              rawPlayer.position === null || rawPlayer.position === undefined
+                ? null
+                : String(rawPlayer.position),
+          }
+        : null,
+    };
+  });
+}
+
+export default function GameViewerPage() {
   const params = useParams();
   const gameId = String(params.id);
 
   const [game, setGame] = useState<GameRow | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
-  const [quarter, setQuarter] = useState(1);
+  const [tab, setTab] = useState<TabKey>("overview");
 
   async function fetchGame() {
     const { data, error } = await supabase
@@ -124,14 +195,43 @@ export default function LiveGamePage() {
       .order("created_at", { ascending: true });
 
     if (error) throw error;
-    setEvents(data ?? []);
+    setEvents((data ?? []) as EventRow[]);
+  }
+
+  async function fetchGamePlayers() {
+    const { data, error } = await supabase
+      .from("game_players")
+      .select(`
+        id,
+        game_id,
+        player_id,
+        team_side,
+        is_starter,
+        is_active,
+        player:players (
+          id,
+          name,
+          number,
+          position
+        )
+      `)
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setGamePlayers([]);
+      return;
+    }
+
+    const safeRows = Array.isArray(data) ? normalizeGamePlayers(data) : [];
+    setGamePlayers(safeRows);
   }
 
   async function loadAll() {
     try {
       setLoading(true);
       setMsg("");
-      await Promise.all([fetchGame(), fetchEvents()]);
+      await Promise.all([fetchGame(), fetchEvents(), fetchGamePlayers()]);
     } catch (err: any) {
       setMsg(err.message || "載入失敗");
     } finally {
@@ -141,18 +241,14 @@ export default function LiveGamePage() {
 
   useEffect(() => {
     if (!gameId) return;
+
     loadAll();
 
     const channel = supabase
-      .channel(`league-live-${gameId}`)
+      .channel(`viewer-mobile-${gameId}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "games",
-          filter: `id=eq.${gameId}`,
-        },
+        { event: "*", schema: "public", table: "games", filter: `id=eq.${gameId}` },
         async () => {
           try {
             await fetchGame();
@@ -161,15 +257,19 @@ export default function LiveGamePage() {
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "events",
-          filter: `game_id=eq.${gameId}`,
-        },
+        { event: "*", schema: "public", table: "events", filter: `game_id=eq.${gameId}` },
         async () => {
           try {
             await fetchEvents();
+          } catch {}
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "game_players", filter: `game_id=eq.${gameId}` },
+        async () => {
+          try {
+            await fetchGamePlayers();
           } catch {}
         }
       )
@@ -197,37 +297,20 @@ export default function LiveGamePage() {
     let teamBTov = 0;
     let teamAPf = 0;
     let teamBPf = 0;
-
-    let teamA2m = 0;
-    let teamA2a = 0;
-    let teamA3m = 0;
-    let teamA3a = 0;
-    let teamA1m = 0;
-    let teamA1a = 0;
-
-    let teamB2m = 0;
-    let teamB2a = 0;
-    let teamB3m = 0;
-    let teamB3a = 0;
-    let teamB1m = 0;
-    let teamB1a = 0;
+    let currentQuarter = 1;
 
     for (const e of activeEvents) {
+      if (e.quarter > currentQuarter) currentQuarter = e.quarter;
+
       switch (e.event_type) {
         case "teamA_1pt":
           teamAPoints += 1;
-          teamA1m += 1;
-          teamA1a += 1;
           break;
         case "teamA_2pt":
           teamAPoints += 2;
-          teamA2m += 1;
-          teamA2a += 1;
           break;
         case "teamA_3pt":
           teamAPoints += 3;
-          teamA3m += 1;
-          teamA3a += 1;
           break;
         case "teamA_reb":
           teamAReb += 1;
@@ -250,18 +333,12 @@ export default function LiveGamePage() {
 
         case "teamB_1pt":
           teamBPoints += 1;
-          teamB1m += 1;
-          teamB1a += 1;
           break;
         case "teamB_2pt":
           teamBPoints += 2;
-          teamB2m += 1;
-          teamB2a += 1;
           break;
         case "teamB_3pt":
           teamBPoints += 3;
-          teamB3m += 1;
-          teamB3a += 1;
           break;
         case "teamB_reb":
           teamBReb += 1;
@@ -285,6 +362,7 @@ export default function LiveGamePage() {
     }
 
     return {
+      currentQuarter,
       teamA: {
         pts: teamAPoints,
         reb: teamAReb,
@@ -293,12 +371,6 @@ export default function LiveGamePage() {
         blk: teamABlk,
         tov: teamATov,
         pf: teamAPf,
-        fg2m: teamA2m,
-        fg2a: teamA2a,
-        fg3m: teamA3m,
-        fg3a: teamA3a,
-        ftm: teamA1m,
-        fta: teamA1a,
       },
       teamB: {
         pts: teamBPoints,
@@ -308,632 +380,446 @@ export default function LiveGamePage() {
         blk: teamBBlk,
         tov: teamBTov,
         pf: teamBPf,
-        fg2m: teamB2m,
-        fg2a: teamB2a,
-        fg3m: teamB3m,
-        fg3a: teamB3a,
-        ftm: teamB1m,
-        fta: teamB1a,
       },
     };
   }, [activeEvents]);
 
-  const teamABox = useMemo<BoxScoreRow[]>(() => {
-    const base = emptyBox();
-    base[0] = {
-      name: "TEAM",
-      pts: summary.teamA.pts,
-      fg2m: summary.teamA.fg2m,
-      fg2a: summary.teamA.fg2a,
-      fg3m: summary.teamA.fg3m,
-      fg3a: summary.teamA.fg3a,
-      ftm: summary.teamA.ftm,
-      fta: summary.teamA.fta,
-      reb: summary.teamA.reb,
-      ast: summary.teamA.ast,
-      stl: summary.teamA.stl,
-      blk: summary.teamA.blk,
-      tov: summary.teamA.tov,
-      pf: summary.teamA.pf,
-    };
-    return base;
-  }, [summary.teamA]);
+  const teamAName = game?.teamA ?? "隊伍A";
+  const teamBName = game?.teamB ?? "隊伍B";
 
-  const teamBBox = useMemo<BoxScoreRow[]>(() => {
-    const base = emptyBox();
-    base[0] = {
-      name: "TEAM",
-      pts: summary.teamB.pts,
-      fg2m: summary.teamB.fg2m,
-      fg2a: summary.teamB.fg2a,
-      fg3m: summary.teamB.fg3m,
-      fg3a: summary.teamB.fg3a,
-      ftm: summary.teamB.ftm,
-      fta: summary.teamB.fta,
-      reb: summary.teamB.reb,
-      ast: summary.teamB.ast,
-      stl: summary.teamB.stl,
-      blk: summary.teamB.blk,
-      tov: summary.teamB.tov,
-      pf: summary.teamB.pf,
-    };
-    return base;
-  }, [summary.teamB]);
+  const recentEvents = useMemo(() => {
+    return [...activeEvents].reverse().slice(0, 5);
+  }, [activeEvents]);
 
-  async function startGame() {
-    try {
-      setSaving(true);
-      setMsg("");
-      const { error } = await supabase
-        .from("games")
-        .update({ status: "live" })
-        .eq("id", gameId);
-      if (error) throw error;
-      await fetchGame();
-    } catch (err: any) {
-      setMsg(err.message || "開始比賽失敗");
-    } finally {
-      setSaving(false);
+  const eventsByQuarter = useMemo(() => {
+    const map = new Map<number, EventRow[]>();
+    for (const e of [...activeEvents].reverse()) {
+      if (!map.has(e.quarter)) map.set(e.quarter, []);
+      map.get(e.quarter)!.push(e);
     }
-  }
+    return Array.from(map.entries()).sort((a, b) => b[0] - a[0]);
+  }, [activeEvents]);
 
-  async function pauseGame() {
-    try {
-      setSaving(true);
-      setMsg("");
-      const { error } = await supabase
-        .from("games")
-        .update({ status: "scheduled" })
-        .eq("id", gameId);
-      if (error) throw error;
-      await fetchGame();
-    } catch (err: any) {
-      setMsg(err.message || "暫停失敗");
-    } finally {
-      setSaving(false);
-    }
-  }
+  const scoringLeaders = useMemo(() => {
+    const a = activeEvents.filter((e) =>
+      ["teamA_1pt", "teamA_2pt", "teamA_3pt"].includes(e.event_type)
+    ).length;
+    const b = activeEvents.filter((e) =>
+      ["teamB_1pt", "teamB_2pt", "teamB_3pt"].includes(e.event_type)
+    ).length;
 
-  async function finishGame() {
-    try {
-      setSaving(true);
-      setMsg("");
-      const { error } = await supabase
-        .from("games")
-        .update({ status: "finished" })
-        .eq("id", gameId);
-      if (error) throw error;
-      await fetchGame();
-    } catch (err: any) {
-      setMsg(err.message || "結束比賽失敗");
-    } finally {
-      setSaving(false);
-    }
-  }
+    return [
+      {
+        label: `${teamAName} 進攻事件`,
+        value: a,
+      },
+      {
+        label: `${teamBName} 進攻事件`,
+        value: b,
+      },
+    ];
+  }, [activeEvents, teamAName, teamBName]);
 
-  async function addEvent(eventType: string) {
-    try {
-      setSaving(true);
-      setMsg("");
-      const { error } = await supabase.from("events").insert({
-        game_id: gameId,
-        player_id: null,
-        quarter,
-        event_type: eventType,
-      });
-      if (error) throw error;
-      await fetchEvents();
-    } catch (err: any) {
-      setMsg(err.message || "新增事件失敗");
-    } finally {
-      setSaving(false);
-    }
-  }
+  const teamAPlayers = useMemo(
+    () => gamePlayers.filter((p) => p.team_side === "teamA"),
+    [gamePlayers]
+  );
 
-  async function undoLastEvent() {
-    try {
-      setSaving(true);
-      setMsg("");
+  const teamBPlayers = useMemo(
+    () => gamePlayers.filter((p) => p.team_side === "teamB"),
+    [gamePlayers]
+  );
 
-      const lastEvent = [...activeEvents].reverse()[0];
-      if (!lastEvent) {
-        setMsg("目前沒有可復原的事件");
-        return;
-      }
-
-      const { error } = await supabase
-        .from("events")
-        .update({
-          is_undone: true,
-          undone_at: new Date().toISOString(),
-        })
-        .eq("id", lastEvent.id);
-
-      if (error) throw error;
-      await fetchEvents();
-    } catch (err: any) {
-      setMsg(err.message || "Undo 失敗");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function TeamControlCard({
-    title,
-    side,
-  }: {
-    title: string;
-    side: "teamA" | "teamB";
-  }) {
-    const prefix = side === "teamA" ? "teamA" : "teamB";
-
-    return (
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-2xl font-bold">{title}</h3>
-          <div className="rounded-full border border-white/10 px-3 py-1 text-sm text-white/70">
-            快捷記錄
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <button
-            onClick={() => addEvent(`${prefix}_1pt`)}
-            disabled={saving}
-            className="rounded-2xl bg-white px-4 py-5 text-xl font-bold text-black transition hover:scale-[1.02] disabled:opacity-50"
-          >
-            +1
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_2pt`)}
-            disabled={saving}
-            className="rounded-2xl bg-white px-4 py-5 text-xl font-bold text-black transition hover:scale-[1.02] disabled:opacity-50"
-          >
-            +2
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_3pt`)}
-            disabled={saving}
-            className="rounded-2xl bg-white px-4 py-5 text-xl font-bold text-black transition hover:scale-[1.02] disabled:opacity-50"
-          >
-            +3
-          </button>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3">
-          <button
-            onClick={() => addEvent(`${prefix}_reb`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            籃板
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_ast`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            助攻
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_stl`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            抄截
-          </button>
-
-          <button
-            onClick={() => addEvent(`${prefix}_blk`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            火鍋
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_tov`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            失誤
-          </button>
-          <button
-            onClick={() => addEvent(`${prefix}_pf`)}
-            disabled={saving}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-4 text-lg font-semibold transition hover:bg-white/10 disabled:opacity-50"
-          >
-            犯規
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  function BoxTable({
-    title,
-    rows,
-  }: {
-    title: string;
-    rows: BoxScoreRow[];
-  }) {
-    return (
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-5 overflow-x-auto">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-xl font-bold">{title}</h3>
-          <div className="text-sm text-white/60">即時統計</div>
-        </div>
-
-        <table className="min-w-full text-sm">
-          <thead className="text-white/60">
-            <tr className="border-b border-white/10">
-              <th className="px-3 py-2 text-left">球員</th>
-              <th className="px-3 py-2 text-right">PTS</th>
-              <th className="px-3 py-2 text-right">2FG</th>
-              <th className="px-3 py-2 text-right">3FG</th>
-              <th className="px-3 py-2 text-right">FT</th>
-              <th className="px-3 py-2 text-right">REB</th>
-              <th className="px-3 py-2 text-right">AST</th>
-              <th className="px-3 py-2 text-right">STL</th>
-              <th className="px-3 py-2 text-right">BLK</th>
-              <th className="px-3 py-2 text-right">TO</th>
-              <th className="px-3 py-2 text-right">PF</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, idx) => (
-              <tr key={`${row.name}-${idx}`} className="border-b border-white/5">
-                <td className="px-3 py-3 font-semibold">{row.name}</td>
-                <td className="px-3 py-3 text-right">{row.pts}</td>
-                <td className="px-3 py-3 text-right">
-                  {row.fg2m}/{row.fg2a}
-                </td>
-                <td className="px-3 py-3 text-right">
-                  {row.fg3m}/{row.fg3a}
-                </td>
-                <td className="px-3 py-3 text-right">
-                  {row.ftm}/{row.fta}
-                </td>
-                <td className="px-3 py-3 text-right">{row.reb}</td>
-                <td className="px-3 py-3 text-right">{row.ast}</td>
-                <td className="px-3 py-3 text-right">{row.stl}</td>
-                <td className="px-3 py-3 text-right">{row.blk}</td>
-                <td className="px-3 py-3 text-right">{row.tov}</td>
-                <td className="px-3 py-3 text-right">{row.pf}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: "overview", label: "總覽" },
+    { key: "events", label: "事件" },
+    { key: "stats", label: "數據" },
+    { key: "players", label: "球員" },
+  ];
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-black text-white px-4 py-6">
-        <div className="mx-auto max-w-7xl">載入中...</div>
+      <main className="min-h-screen bg-black text-white">
+        <div className="mx-auto max-w-5xl px-4 py-6">載入中...</div>
       </main>
     );
   }
 
-  const teamAName = game?.teamA ?? "隊伍A";
-  const teamBName = game?.teamB ?? "隊伍B";
-  const totalQuarters = game?.quarters ?? 4;
-  const recentFive = [...activeEvents].reverse().slice(0, 5);
-
   return (
-    <main className="min-h-screen bg-black text-white px-4 py-6">
-      <div className="mx-auto max-w-7xl space-y-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="text-sm tracking-[0.3em] text-white/40">LEAGUE LIVE CONSOLE</div>
-            <h1 className="mt-1 text-4xl font-black">比賽控制台</h1>
-          </div>
+    <main className="min-h-screen bg-black text-white">
+      <div className="mx-auto max-w-5xl">
+        <div className="sticky top-0 z-30 border-b border-white/10 bg-black/95 backdrop-blur">
+          <div className="px-4 pt-4 pb-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="text-xs tracking-[0.25em] text-white/40">
+                LEAGUE VIEW
+              </div>
+              <div
+                className={`rounded-full px-3 py-1 text-xs font-bold ${
+                  game?.status === "live"
+                    ? "bg-green-500/20 text-green-300"
+                    : game?.status === "finished"
+                    ? "bg-white/10 text-white"
+                    : "bg-yellow-500/20 text-yellow-300"
+                }`}
+              >
+                {formatStatus(game?.status)}
+              </div>
+            </div>
 
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href={`/games/${gameId}/view`}
-              className="rounded-2xl bg-white px-5 py-3 text-lg font-bold text-black"
-            >
-              觀眾畫面
-            </Link>
-          </div>
-        </div>
+            <div className="rounded-[28px] border border-white/10 bg-gradient-to-b from-white/10 to-white/5 px-4 py-4 shadow-2xl">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm text-white/50">HOME</div>
+                  <div className="truncate text-2xl font-black">{teamAName}</div>
+                </div>
 
-        {msg && (
-          <div className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-base">
-            {msg}
-          </div>
-        )}
-
-        <section className="rounded-[28px] border border-white/10 bg-gradient-to-b from-white/10 to-white/5 p-5 shadow-2xl">
-          <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-            <div className="rounded-3xl border border-white/10 bg-black/40 p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm text-white/50">比賽資訊</div>
-                  <div className="text-2xl font-bold">
-                    {teamAName} vs {teamBName}
+                <div className="text-center">
+                  <div className="text-4xl font-black sm:text-6xl">
+                    {summary.teamA.pts} : {summary.teamB.pts}
+                  </div>
+                  <div className="mt-1 text-sm text-white/60">
+                    Q{summary.currentQuarter}
                   </div>
                 </div>
 
-                <div className="rounded-full border border-white/10 px-4 py-2 text-sm text-white/70">
-                  狀態：{game?.status ?? "-"}
+                <div className="min-w-0 text-right">
+                  <div className="truncate text-sm text-white/50">AWAY</div>
+                  <div className="truncate text-2xl font-black">{teamBName}</div>
                 </div>
               </div>
 
-              <div className="grid gap-4 lg:grid-cols-3">
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-5 text-center">
-                  <div className="text-sm text-white/50">賽事日期</div>
-                  <div className="mt-2 text-2xl font-bold">{fmtDate(game?.game_date)}</div>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                  <div className="text-white/50">日期</div>
+                  <div className="mt-1 font-semibold">{formatDate(game?.game_date)}</div>
                 </div>
-
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-5 text-center">
-                  <div className="text-sm text-white/50">比賽地點</div>
-                  <div className="mt-2 text-2xl font-bold">{game?.location || "-"}</div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                  <div className="text-white/50">時間</div>
+                  <div className="mt-1 font-semibold">{formatTime(game?.start_time)}</div>
                 </div>
-
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-5 text-center">
-                  <div className="text-sm text-white/50">目前節次</div>
-                  <div className="mt-2 text-2xl font-bold">
-                    Q{quarter} / {totalQuarters}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 rounded-[28px] border border-white/10 bg-black/50 px-5 py-7">
-                <div className="grid items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
-                  <div className="text-center md:text-left">
-                    <div className="text-sm text-white/50">HOME</div>
-                    <div className="text-4xl font-black">{teamAName}</div>
-                  </div>
-
-                  <div className="text-center">
-                    <div className="text-7xl font-black tracking-tight">
-                      {summary.teamA.pts} : {summary.teamB.pts}
-                    </div>
-                    <div className="mt-2 text-xl text-white/60">Q{quarter}</div>
-                  </div>
-
-                  <div className="text-center md:text-right">
-                    <div className="text-sm text-white/50">AWAY</div>
-                    <div className="text-4xl font-black">{teamBName}</div>
-                  </div>
-                </div>
-
-                <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center">
-                    <div className="text-xs text-white/50">REB</div>
-                    <div className="mt-1 text-2xl font-bold">{summary.teamA.reb}</div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center">
-                    <div className="text-xs text-white/50">AST</div>
-                    <div className="mt-1 text-2xl font-bold">{summary.teamA.ast}</div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center">
-                    <div className="text-xs text-white/50">REB</div>
-                    <div className="mt-1 text-2xl font-bold">{summary.teamB.reb}</div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center">
-                    <div className="text-xs text-white/50">AST</div>
-                    <div className="mt-1 text-2xl font-bold">{summary.teamB.ast}</div>
-                  </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                  <div className="text-white/50">地點</div>
+                  <div className="mt-1 truncate font-semibold">{game?.location || "-"}</div>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-3xl border border-white/10 bg-black/40 p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-2xl font-bold">比賽控制</h2>
-                <div className="text-sm text-white/50">Record Desk</div>
+            <div className="mt-3 overflow-x-auto">
+              <div className="flex min-w-max gap-2">
+                {tabs.map((item) => (
+                  <button
+                    key={item.key}
+                    onClick={() => setTab(item.key)}
+                    className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
+                      tab === item.key
+                        ? "bg-white text-black"
+                        : "border border-white/10 bg-white/5 text-white/80"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
+            </div>
+          </div>
+        </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={startGame}
-                  disabled={saving || game?.status === "live"}
-                  className="rounded-2xl bg-green-500 px-4 py-4 text-lg font-black text-black disabled:opacity-50"
-                >
-                  開始比賽
-                </button>
-                <button
-                  onClick={pauseGame}
-                  disabled={saving}
-                  className="rounded-2xl bg-yellow-400 px-4 py-4 text-lg font-black text-black disabled:opacity-50"
-                >
-                  暫停比賽
-                </button>
-                <button
-                  onClick={finishGame}
-                  disabled={saving || game?.status === "finished"}
-                  className="rounded-2xl bg-red-600 px-4 py-4 text-lg font-black disabled:opacity-50"
-                >
-                  結束比賽
-                </button>
-                <button
-                  onClick={undoLastEvent}
-                  disabled={saving}
-                  className="rounded-2xl bg-white px-4 py-4 text-lg font-black text-black disabled:opacity-50"
-                >
-                  Undo 最後一筆
-                </button>
-              </div>
+        <div className="px-4 py-4">
+          {msg && (
+            <div className="mb-4 rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3">
+              {msg}
+            </div>
+          )}
 
-              <div className="mt-5 rounded-3xl border border-white/10 bg-white/5 p-4">
-                <div className="mb-3 text-lg font-bold">節次管理</div>
-                <div className="grid grid-cols-2 gap-3">
-                  {Array.from({ length: totalQuarters }, (_, i) => i + 1).map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => setQuarter(q)}
-                      className={`rounded-2xl px-4 py-4 text-lg font-bold transition ${
-                        quarter === q
-                          ? "bg-white text-black"
-                          : "border border-white/10 bg-black/30"
-                      }`}
-                    >
-                      第 {q} 節
-                    </button>
-                  ))}
+          {tab === "overview" && (
+            <div className="space-y-4">
+              <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label={`${teamAName} 籃板`} value={summary.teamA.reb} />
+                <StatCard label={`${teamAName} 助攻`} value={summary.teamA.ast} />
+                <StatCard label={`${teamBName} 籃板`} value={summary.teamB.reb} />
+                <StatCard label={`${teamBName} 助攻`} value={summary.teamB.ast} />
+              </section>
+
+              <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-xl font-bold">最近事件</h2>
+                  <div className="text-sm text-white/50">最新 5 筆</div>
                 </div>
-              </div>
 
-              <div className="mt-5 rounded-3xl border border-white/10 bg-white/5 p-4">
-                <div className="mb-3 text-lg font-bold">最近事件</div>
-                {recentFive.length === 0 ? (
-                  <div className="text-white/50">目前還沒有事件</div>
+                {recentEvents.length === 0 ? (
+                  <EmptyState text="目前還沒有事件" />
                 ) : (
-                  <div className="space-y-2">
-                    {recentFive.map((e) => (
+                  <div className="space-y-3">
+                    {recentEvents.map((e) => (
                       <div
                         key={e.id}
-                        className="rounded-2xl border border-white/10 bg-black/30 px-3 py-3"
+                        className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3"
                       >
-                        <div className="text-sm text-white/50">
-                          Q{e.quarter} ｜ {new Date(e.created_at).toLocaleTimeString()}
-                        </div>
-                        <div className="mt-1 font-semibold">
-                          {eventLabel(e.event_type, teamAName, teamBName)}
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-white/50">Q{e.quarter}</div>
+                            <div className="mt-1 font-semibold">
+                              {eventLabel(e.event_type, teamAName, teamBName)}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-sm text-white/50">
+                            {new Date(e.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })}
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
-            </div>
-          </div>
-        </section>
+              </section>
 
-        <section className="grid gap-5 xl:grid-cols-[1fr_0.9fr_1fr]">
-          <TeamControlCard title={teamAName} side="teamA" />
+              <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-3 text-xl font-bold">比賽摘要</div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-2xl font-bold">事件時間軸</h2>
-              <div className="rounded-full border border-white/10 px-3 py-1 text-sm text-white/60">
-                共 {activeEvents.length} 筆
-              </div>
-            </div>
-
-            <div className="max-h-[540px] space-y-3 overflow-y-auto pr-1">
-              {activeEvents.length === 0 ? (
-                <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-6 text-white/50">
-                  目前還沒有事件
+                <div className="grid grid-cols-2 gap-3">
+                  <StatCard label={`${teamAName} 失誤`} value={summary.teamA.tov} />
+                  <StatCard label={`${teamBName} 失誤`} value={summary.teamB.tov} />
+                  <StatCard label={`${teamAName} 犯規`} value={summary.teamA.pf} />
+                  <StatCard label={`${teamBName} 犯規`} value={summary.teamB.pf} />
                 </div>
-              ) : (
-                [...activeEvents].reverse().map((e, idx) => (
-                  <div
-                    key={e.id}
-                    className="rounded-2xl border border-white/10 bg-black/30 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm text-white/50">
-                          #{activeEvents.length - idx} ｜ Q{e.quarter}
-                        </div>
-                        <div className="mt-1 text-lg font-bold">
-                          {eventLabel(e.event_type, teamAName, teamBName)}
-                        </div>
-                      </div>
 
-                      <div className="text-sm text-white/50">
-                        {new Date(e.created_at).toLocaleTimeString()}
-                      </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {scoringLeaders.map((item) => (
+                    <div
+                      key={item.label}
+                      className="rounded-2xl border border-white/10 bg-black/30 p-4"
+                    >
+                      <div className="text-sm text-white/50">{item.label}</div>
+                      <div className="mt-1 text-2xl font-black">{item.value}</div>
                     </div>
-                  </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {tab === "events" && (
+            <div className="space-y-4">
+              {eventsByQuarter.length === 0 ? (
+                <EmptyState text="目前還沒有事件紀錄" />
+              ) : (
+                eventsByQuarter.map(([quarter, rows]) => (
+                  <section
+                    key={quarter}
+                    className="rounded-3xl border border-white/10 bg-white/5 p-4"
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <h2 className="text-xl font-bold">第 {quarter} 節</h2>
+                      <div className="text-sm text-white/50">{rows.length} 筆</div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {rows.map((e) => {
+                        const side = getEventSide(e.event_type);
+                        return (
+                          <div
+                            key={e.id}
+                            className={`rounded-2xl border px-4 py-3 ${
+                              side === "teamA"
+                                ? "border-blue-500/20 bg-blue-500/10"
+                                : side === "teamB"
+                                ? "border-orange-500/20 bg-orange-500/10"
+                                : "border-white/10 bg-black/30"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-xs text-white/50">
+                                  {statEventName(e.event_type)}
+                                </div>
+                                <div className="mt-1 font-semibold">
+                                  {eventLabel(e.event_type, teamAName, teamBName)}
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-sm text-white/50">
+                                {new Date(e.created_at).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
                 ))
               )}
             </div>
-          </div>
+          )}
 
-          <TeamControlCard title={teamBName} side="teamB" />
-        </section>
+          {tab === "stats" && (
+            <div className="space-y-4">
+              <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-4 text-xl font-bold">團隊數據比較</div>
 
-        <section className="grid gap-5 xl:grid-cols-2">
-          <BoxTable title={`${teamAName} Box Score`} rows={teamABox} />
-          <BoxTable title={`${teamBName} Box Score`} rows={teamBBox} />
-        </section>
-
-        <section className="grid gap-5 xl:grid-cols-2">
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="mb-4 text-2xl font-bold">{teamAName} 團隊數據</div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">得分</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.pts}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">籃板</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.reb}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">助攻</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.ast}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">失誤</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.tov}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">犯規</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.pf}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">抄截</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.stl}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">火鍋</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamA.blk}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">2FG / 3FG</div>
-                <div className="mt-1 text-xl font-black">
-                  {summary.teamA.fg2m}/{summary.teamA.fg2a} ｜ {summary.teamA.fg3m}/{summary.teamA.fg3a}
+                <div className="space-y-3">
+                  {[
+                    { label: "得分", a: summary.teamA.pts, b: summary.teamB.pts },
+                    { label: "籃板", a: summary.teamA.reb, b: summary.teamB.reb },
+                    { label: "助攻", a: summary.teamA.ast, b: summary.teamB.ast },
+                    { label: "抄截", a: summary.teamA.stl, b: summary.teamB.stl },
+                    { label: "火鍋", a: summary.teamA.blk, b: summary.teamB.blk },
+                    { label: "失誤", a: summary.teamA.tov, b: summary.teamB.tov },
+                    { label: "犯規", a: summary.teamA.pf, b: summary.teamB.pf },
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3"
+                    >
+                      <div className="mb-2 text-center text-sm text-white/50">
+                        {item.label}
+                      </div>
+                      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                        <div className="text-left">
+                          <div className="text-xs text-white/50">{teamAName}</div>
+                          <div className="text-2xl font-black">{item.a}</div>
+                        </div>
+                        <div className="text-white/40">vs</div>
+                        <div className="text-right">
+                          <div className="text-xs text-white/50">{teamBName}</div>
+                          <div className="text-2xl font-black">{item.b}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            </div>
-          </div>
+              </section>
 
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="mb-4 text-2xl font-bold">{teamBName} 團隊數據</div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">得分</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.pts}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">籃板</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.reb}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">助攻</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.ast}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">失誤</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.tov}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">犯規</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.pf}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">抄截</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.stl}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">火鍋</div>
-                <div className="mt-1 text-3xl font-black">{summary.teamB.blk}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm text-white/50">2FG / 3FG</div>
-                <div className="mt-1 text-xl font-black">
-                  {summary.teamB.fg2m}/{summary.teamB.fg2a} ｜ {summary.teamB.fg3m}/{summary.teamB.fg3a}
+              <section className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                  <div className="mb-3 text-xl font-bold">{teamAName}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <StatCard label="PTS" value={summary.teamA.pts} />
+                    <StatCard label="REB" value={summary.teamA.reb} />
+                    <StatCard label="AST" value={summary.teamA.ast} />
+                    <StatCard label="TO" value={summary.teamA.tov} />
+                    <StatCard label="STL" value={summary.teamA.stl} />
+                    <StatCard label="PF" value={summary.teamA.pf} />
+                  </div>
                 </div>
-              </div>
+
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                  <div className="mb-3 text-xl font-bold">{teamBName}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <StatCard label="PTS" value={summary.teamB.pts} />
+                    <StatCard label="REB" value={summary.teamB.reb} />
+                    <StatCard label="AST" value={summary.teamB.ast} />
+                    <StatCard label="TO" value={summary.teamB.tov} />
+                    <StatCard label="STL" value={summary.teamB.stl} />
+                    <StatCard label="PF" value={summary.teamB.pf} />
+                  </div>
+                </div>
+              </section>
             </div>
-          </div>
-        </section>
+          )}
+
+          {tab === "players" && (
+            <div className="space-y-4">
+              <section className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-xl font-bold">{teamAName}</h2>
+                    <div className="text-sm text-white/50">球員名單</div>
+                  </div>
+
+                  {teamAPlayers.length === 0 ? (
+                    <EmptyState text="目前沒有 teamA 球員資料" />
+                  ) : (
+                    <div className="space-y-3">
+                      {teamAPlayers.map((p) => (
+                        <div
+                          key={p.id}
+                          className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-semibold">
+                                {p.player?.number != null ? `#${p.player.number} ` : ""}
+                                {p.player?.name ?? "未命名球員"}
+                              </div>
+                              <div className="mt-1 text-sm text-white/50">
+                                {p.player?.position || "-"}
+                              </div>
+                            </div>
+
+                            <div className="flex gap-2">
+                              {p.is_starter && (
+                                <span className="rounded-full bg-green-500/20 px-2 py-1 text-xs font-bold text-green-300">
+                                  先發
+                                </span>
+                              )}
+                              {p.is_active && (
+                                <span className="rounded-full bg-white/10 px-2 py-1 text-xs font-bold text-white/80">
+                                  啟用
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-xl font-bold">{teamBName}</h2>
+                    <div className="text-sm text-white/50">球員名單</div>
+                  </div>
+
+                  {teamBPlayers.length === 0 ? (
+                    <EmptyState text="目前沒有 teamB 球員資料" />
+                  ) : (
+                    <div className="space-y-3">
+                      {teamBPlayers.map((p) => (
+                        <div
+                          key={p.id}
+                          className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-semibold">
+                                {p.player?.number != null ? `#${p.player.number} ` : ""}
+                                {p.player?.name ?? "未命名球員"}
+                              </div>
+                              <div className="mt-1 text-sm text-white/50">
+                                {p.player?.position || "-"}
+                              </div>
+                            </div>
+
+                            <div className="flex gap-2">
+                              {p.is_starter && (
+                                <span className="rounded-full bg-green-500/20 px-2 py-1 text-xs font-bold text-green-300">
+                                  先發
+                                </span>
+                              )}
+                              {p.is_active && (
+                                <span className="rounded-full bg-white/10 px-2 py-1 text-xs font-bold text-white/80">
+                                  啟用
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );
