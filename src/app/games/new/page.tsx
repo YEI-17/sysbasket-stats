@@ -11,8 +11,6 @@ export default function NewGamePage() {
 
   const [teamA, setTeamA] = useState("");
   const [teamB, setTeamB] = useState("");
-  const [location, setLocation] = useState("");
-  const [date, setDate] = useState("");
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<string[]>([]);
   const [msg, setMsg] = useState("");
@@ -55,7 +53,6 @@ export default function NewGamePage() {
     setCreating(true);
 
     try {
-      // 先把其他 live 比賽全部關掉
       const { error: closeError } = await supabase
         .from("games")
         .update({ is_live: false })
@@ -66,19 +63,13 @@ export default function NewGamePage() {
         return setMsg(closeError.message);
       }
 
-      // 建立新比賽，直接設為 live
-      const insertPayload: Record<string, unknown> = {
-        teamA: teamA.trim(),
-        teamB: teamB.trim(),
-        is_live: true,
-      };
-
-      if (location.trim()) insertPayload.location = location.trim();
-      if (date.trim()) insertPayload.date = date;
-
       const { data: gameData, error: gameError } = await supabase
         .from("games")
-        .insert(insertPayload)
+        .insert({
+          teamA: teamA.trim(),
+          teamB: teamB.trim(),
+          is_live: true,
+        })
         .select("id")
         .single();
 
@@ -89,7 +80,6 @@ export default function NewGamePage() {
 
       const gameId = gameData.id as string;
 
-      // 建立比賽時順便建立計時器
       const { error: clockError } = await supabase.from("game_clock").upsert({
         game_id: gameId,
         quarter: 1,
@@ -102,7 +92,6 @@ export default function NewGamePage() {
         return setMsg(clockError.message);
       }
 
-      // 如果你有 game_players 關聯表，就把勾選球員加進去
       if (selectedPlayers.length > 0) {
         const rows = selectedPlayers.map((playerId) => ({
           game_id: gameId,
@@ -161,20 +150,6 @@ export default function NewGamePage() {
           style={inputStyle}
         />
 
-        <input
-          placeholder="比賽地點（可不填）"
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-          style={inputStyle}
-        />
-
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          style={inputStyle}
-        />
-
         <div style={{ marginTop: 8 }}>
           <div style={{ marginBottom: 10, fontWeight: 800 }}>選擇本隊球員（可不選）</div>
 
@@ -202,7 +177,11 @@ export default function NewGamePage() {
           </div>
         </div>
 
-        <button onClick={handleCreateGame} style={creating ? btnDisabled : btnGreen} disabled={creating}>
+        <button
+          onClick={handleCreateGame}
+          style={creating ? btnDisabled : btnGreen}
+          disabled={creating}
+        >
           {creating ? "建立中..." : "建立比賽"}
         </button>
 
