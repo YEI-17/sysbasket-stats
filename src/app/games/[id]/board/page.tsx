@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import LogoutButton from "@/components/LogoutButton";
 
 type EventRow = {
   id: string;
@@ -30,6 +31,7 @@ type GameRow = {
   teamB: string | null;
   is_live?: boolean | null;
   ended_at?: string | null;
+  status?: string | null;
 };
 
 type Player = {
@@ -53,9 +55,11 @@ type Stat = {
   stl: number;
   blk: number;
   pf: number;
+  plusMinus: number | null;
 };
 
 const CLOCK_TABLE = "game_clock";
+const REGULAR_SECONDS = 600;
 
 const emptyStat = (): Stat => ({
   pts: 0,
@@ -71,6 +75,7 @@ const emptyStat = (): Stat => ({
   stl: 0,
   blk: 0,
   pf: 0,
+  plusMinus: null,
 });
 
 function formatClock(secondsLeft: number) {
@@ -137,7 +142,7 @@ function getPoints(eventType: string) {
 }
 
 function computeDisplaySeconds(clock: ClockRow | null) {
-  if (!clock) return 600;
+  if (!clock) return REGULAR_SECONDS;
 
   const base = Math.max(0, clock.seconds_left ?? 0);
 
@@ -161,6 +166,11 @@ function computeDisplaySeconds(clock: ClockRow | null) {
   return Math.max(0, base - elapsedSeconds);
 }
 
+function getQuarterLabel(quarter: number) {
+  if (quarter <= 4) return `Q${quarter}`;
+  return `OT${quarter - 4}`;
+}
+
 export default function BoardPage() {
   const params = useParams();
   const gameId = String(params.id);
@@ -172,7 +182,7 @@ export default function BoardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
-  const [displaySeconds, setDisplaySeconds] = useState(600);
+  const [displaySeconds, setDisplaySeconds] = useState(REGULAR_SECONDS);
   const [viewerCount, setViewerCount] = useState(1);
 
   const presenceKeyRef = useRef(`admin-${Math.random().toString(36).slice(2)}`);
@@ -180,7 +190,7 @@ export default function BoardPage() {
   async function loadGame() {
     const { data, error } = await supabase
       .from("games")
-      .select("id, teamA, teamB, is_live, ended_at")
+      .select("id, teamA, teamB, is_live, ended_at, status")
       .eq("id", gameId)
       .single();
 
@@ -243,7 +253,7 @@ export default function BoardPage() {
         .insert({
           game_id: gameId,
           quarter: 1,
-          seconds_left: 600,
+          seconds_left: REGULAR_SECONDS,
           is_running: false,
         })
         .select("game_id, quarter, seconds_left, is_running, updated_at")
@@ -276,7 +286,6 @@ export default function BoardPage() {
     loadAll(true);
   }, [gameId]);
 
-  // 關鍵修正：大錶以 updated_at + seconds_left + is_running 推算
   useEffect(() => {
     setDisplaySeconds(computeDisplaySeconds(clock));
 
@@ -416,35 +425,28 @@ export default function BoardPage() {
   }, [validEvents]);
 
   const quarterScores = useMemo(() => {
-    const byQuarter: Record<number, { home: number; away: number }> = {
-      1: { home: 0, away: 0 },
-      2: { home: 0, away: 0 },
-      3: { home: 0, away: 0 },
-      4: { home: 0, away: 0 },
-      5: { home: 0, away: 0 },
-      6: { home: 0, away: 0 },
-      7: { home: 0, away: 0 },
-      8: { home: 0, away: 0 },
-    };
+    const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
+    const byQuarter: Record<number, { home: number; away: number }> = {};
+
+    for (let q = 1; q <= maxQuarter; q += 1) {
+      byQuarter[q] = { home: 0, away: 0 };
+    }
 
     for (const e of validEvents) {
-      const q = e.quarter;
-      if (!byQuarter[q]) continue;
+      if (!byQuarter[e.quarter]) {
+        byQuarter[e.quarter] = { home: 0, away: 0 };
+      }
 
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") byQuarter[q].home += pts;
-      if (e.team_side === "B") byQuarter[q].away += pts;
+      if (e.team_side === "A") byQuarter[e.quarter].home += pts;
+      if (e.team_side === "B") byQuarter[e.quarter].away += pts;
     }
 
     return byQuarter;
-  }, [validEvents]);
+  }, [validEvents, clock?.quarter]);
 
-  const overtimeRows = useMemo(() => {
-    return Object.keys(quarterScores)
-      .map(Number)
-      .filter((q) => q >= 5)
-      .filter((q) => quarterScores[q].home !== 0 || quarterScores[q].away !== 0);
-  }, [quarterScores]);
+  const starters = useMemo(() => players.slice(0, 5), [players]);
+  const benchPlayers = useMemo(() => players.slice(5), [players]);
 
   if (loading) {
     return (
@@ -457,46 +459,93 @@ export default function BoardPage() {
   return (
     <main style={pageStyle}>
       <div style={containerStyle}>
+        <div style={topBarStyle}>
+          <div style={{ fontSize: 14, color: "#9a9a9a" }}>比賽看板</div>
+          <LogoutButton />
+        </div>
+
         <section style={scoreCardStyle}>
-          <div style={teamBlockStyle}>
+          <div style={teamBigBlockStyle}>
             <div style={teamLabelStyle}>{game?.teamA || "主場"}</div>
-            <div style={scoreStyle}>{totalScore.home}</div>
+            <div style={bigScoreStyle}>{totalScore.home}</div>
           </div>
 
           <div style={centerBlockStyle}>
             <div style={topInfoRowStyle}>
-              <div style={quarterStyle}>Q{clock?.quarter ?? 1}</div>
+              <div style={quarterStyle}>{getQuarterLabel(clock?.quarter ?? 1)}</div>
               <div style={viewerStyle}>線上觀看：{viewerCount}</div>
               <div
                 style={{
                   ...statusBadgeStyle,
-                  background: game?.is_live === false ? "#3a1111" : "#102814",
-                  color: game?.is_live === false ? "#ff9c9c" : "#9effae",
-                  borderColor: game?.is_live === false ? "#5a2020" : "#1f5a2c",
+                  background:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#3a1111"
+                      : "#102814",
+                  color:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#ff9c9c"
+                      : "#9effae",
+                  borderColor:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#5a2020"
+                      : "#1f5a2c",
                 }}
               >
-                {game?.is_live === false ? "比賽已結束" : clock?.is_running ? "計時中" : "暫停中"}
+                {game?.status === "finished" || game?.is_live === false
+                  ? "比賽已結束"
+                  : clock?.is_running
+                  ? "計時中"
+                  : "暫停中"}
               </div>
             </div>
 
             <div style={clockStyle}>{formatClock(displaySeconds)}</div>
 
             <div style={quarterLineStyle}>
-              <span>Q1 {quarterScores[1].home}:{quarterScores[1].away}</span>
-              <span>Q2 {quarterScores[2].home}:{quarterScores[2].away}</span>
-              <span>Q3 {quarterScores[3].home}:{quarterScores[3].away}</span>
-              <span>Q4 {quarterScores[4].home}:{quarterScores[4].away}</span>
-              {overtimeRows.map((q) => (
-                <span key={q}>
-                  OT{q - 4} {quarterScores[q].home}:{quarterScores[q].away}
-                </span>
+              {Object.keys(quarterScores)
+                .map(Number)
+                .sort((a, b) => a - b)
+                .map((q) => (
+                  <span key={q}>
+                    {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
+                  </span>
+                ))}
+            </div>
+          </div>
+
+          <div style={teamBigBlockStyle}>
+            <div style={teamLabelStyle}>{game?.teamB || "客場"}</div>
+            <div style={bigScoreStyle}>{totalScore.away}</div>
+          </div>
+        </section>
+
+        <section style={splitCardStyle}>
+          <div style={miniCardStyle}>
+            <div style={sectionTitleStyle}>先發五人</div>
+            <div style={playerGroupStyle}>
+              {starters.map((p) => (
+                <div key={p.id} style={playerChipStyle}>
+                  {p.number ? `#${p.number} ` : ""}
+                  {p.name}
+                </div>
               ))}
             </div>
           </div>
 
-          <div style={teamBlockStyle}>
-            <div style={teamLabelStyle}>{game?.teamB || "客場"}</div>
-            <div style={scoreStyle}>{totalScore.away}</div>
+          <div style={miniCardStyle}>
+            <div style={sectionTitleStyle}>板凳球員</div>
+            <div style={playerGroupStyle}>
+              {benchPlayers.length === 0 ? (
+                <div style={{ color: "#888" }}>目前沒有板凳球員</div>
+              ) : (
+                benchPlayers.map((p) => (
+                  <div key={p.id} style={playerChipStyle}>
+                    {p.number ? `#${p.number} ` : ""}
+                    {p.name}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </section>
 
@@ -518,6 +567,7 @@ export default function BoardPage() {
                   <th style={thStyle}>STL</th>
                   <th style={thStyle}>BLK</th>
                   <th style={thStyle}>PF</th>
+                  <th style={thStyle}>+/-</th>
                 </tr>
               </thead>
 
@@ -532,15 +582,22 @@ export default function BoardPage() {
                         {p.name}
                       </td>
                       <td style={tdStyle}>{s.pts}</td>
-                      <td style={tdStyle}>{s.fg2m}/{s.fg2a}</td>
-                      <td style={tdStyle}>{s.fg3m}/{s.fg3a}</td>
-                      <td style={tdStyle}>{s.ftm}/{s.fta}</td>
+                      <td style={tdStyle}>
+                        {s.fg2m}/{s.fg2a}
+                      </td>
+                      <td style={tdStyle}>
+                        {s.fg3m}/{s.fg3a}
+                      </td>
+                      <td style={tdStyle}>
+                        {s.ftm}/{s.fta}
+                      </td>
                       <td style={tdStyle}>{s.reb}</td>
                       <td style={tdStyle}>{s.ast}</td>
                       <td style={tdStyle}>{s.tov}</td>
                       <td style={tdStyle}>{s.stl}</td>
                       <td style={tdStyle}>{s.blk}</td>
                       <td style={tdStyle}>{s.pf}</td>
+                      <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
                     </tr>
                   );
                 })}
@@ -564,10 +621,16 @@ const pageStyle: React.CSSProperties = {
 
 const containerStyle: React.CSSProperties = {
   width: "100%",
-  maxWidth: 1400,
+  maxWidth: 1500,
   margin: "0 auto",
   display: "grid",
   gap: 16,
+};
+
+const topBarStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
 };
 
 const scoreCardStyle: React.CSSProperties = {
@@ -576,15 +639,15 @@ const scoreCardStyle: React.CSSProperties = {
   borderRadius: 24,
   padding: 24,
   display: "grid",
-  gridTemplateColumns: "1fr 1fr 1fr",
+  gridTemplateColumns: "1.2fr 1fr 1.2fr",
   alignItems: "center",
-  gap: 16,
+  gap: 20,
 };
 
-const teamBlockStyle: React.CSSProperties = {
+const teamBigBlockStyle: React.CSSProperties = {
   display: "grid",
+  gap: 14,
   justifyItems: "center",
-  gap: 12,
 };
 
 const centerBlockStyle: React.CSSProperties = {
@@ -602,20 +665,21 @@ const topInfoRowStyle: React.CSSProperties = {
 };
 
 const teamLabelStyle: React.CSSProperties = {
-  fontSize: 28,
-  color: "#b3b3b3",
+  fontSize: 30,
+  color: "#c7c7c7",
   fontWeight: 700,
 };
 
-const scoreStyle: React.CSSProperties = {
-  fontSize: 110,
+const bigScoreStyle: React.CSSProperties = {
+  fontSize: 140,
   lineHeight: 1,
-  fontWeight: 800,
+  fontWeight: 900,
 };
 
 const quarterStyle: React.CSSProperties = {
-  fontSize: 28,
-  color: "#b3b3b3",
+  fontSize: 30,
+  color: "#d0d0d0",
+  fontWeight: 800,
 };
 
 const viewerStyle: React.CSSProperties = {
@@ -632,18 +696,45 @@ const statusBadgeStyle: React.CSSProperties = {
 };
 
 const clockStyle: React.CSSProperties = {
-  fontSize: 92,
+  fontSize: 96,
   lineHeight: 1,
-  fontWeight: 800,
+  fontWeight: 900,
 };
 
 const quarterLineStyle: React.CSSProperties = {
   display: "flex",
-  gap: 20,
+  gap: 14,
   flexWrap: "wrap",
   justifyContent: "center",
   color: "#9a9a9a",
-  fontSize: 20,
+  fontSize: 18,
+};
+
+const splitCardStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 16,
+};
+
+const miniCardStyle: React.CSSProperties = {
+  background: "#0b0b0b",
+  border: "1px solid #222",
+  borderRadius: 24,
+  padding: 18,
+};
+
+const playerGroupStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const playerChipStyle: React.CSSProperties = {
+  border: "1px solid #2b2b2b",
+  background: "#121212",
+  borderRadius: 999,
+  padding: "10px 14px",
+  fontSize: 16,
 };
 
 const tableCardStyle: React.CSSProperties = {
@@ -667,7 +758,7 @@ const tableWrapStyle: React.CSSProperties = {
 
 const tableStyle: React.CSSProperties = {
   width: "100%",
-  minWidth: 980,
+  minWidth: 1080,
   borderCollapse: "collapse",
 };
 
