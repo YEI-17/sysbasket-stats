@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
@@ -40,6 +41,14 @@ type ClockRow = {
   updated_at?: string;
 };
 
+type GamePlayerRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: "A" | "B";
+  is_starter: boolean;
+};
+
 type Stat = {
   pts: number;
   fg2m: number;
@@ -54,7 +63,7 @@ type Stat = {
   stl: number;
   blk: number;
   pf: number;
-  plusMinus: number | null;
+  plusMinus: number;
 };
 
 const REGULAR_SECONDS = 600;
@@ -74,7 +83,7 @@ const emptyStat = (): Stat => ({
   stl: 0,
   blk: 0,
   pf: 0,
-  plusMinus: null,
+  plusMinus: 0,
 });
 
 const EVENT_LABELS: Record<string, string> = {
@@ -90,6 +99,8 @@ const EVENT_LABELS: Record<string, string> = {
   stl: "抄截",
   blk: "阻攻",
   pf: "犯規",
+  sub_in: "上場",
+  sub_out: "下場",
 };
 
 function formatTime(total: number) {
@@ -170,6 +181,10 @@ function buildQuarterRange(maxQuarter: number) {
   return Array.from({ length: Math.max(1, maxQuarter) }, (_, i) => i + 1);
 }
 
+function sortByNumber(players: Player[]) {
+  return [...players].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+}
+
 export default function LiveGamePage() {
   const params = useParams();
   const gameId = String(params.id);
@@ -181,6 +196,7 @@ export default function LiveGamePage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
 
   const [viewerCount, setViewerCount] = useState(1);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
@@ -188,6 +204,11 @@ export default function LiveGamePage() {
   const [editingTeamA, setEditingTeamA] = useState("");
   const [savingTeamA, setSavingTeamA] = useState(false);
   const [endingGame, setEndingGame] = useState(false);
+
+  const [benchOpen, setBenchOpen] = useState(false);
+  const [subOutPlayerId, setSubOutPlayerId] = useState("");
+  const [subInPlayerId, setSubInPlayerId] = useState("");
+  const [submittingSub, setSubmittingSub] = useState(false);
 
   const tickerRef = useRef<NodeJS.Timeout | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
@@ -231,6 +252,20 @@ export default function LiveGamePage() {
     if (list.length > 0 && !selectedPlayerId) {
       setSelectedPlayerId(list[0].id);
     }
+  }
+
+  async function loadGamePlayers(targetGameId: string) {
+    const { data, error } = await supabase
+      .from("game_players")
+      .select("id, game_id, player_id, team_side, is_starter")
+      .eq("game_id", targetGameId);
+
+    if (error) {
+      setError((prev) => prev || `讀取上場名單失敗：${error.message}`);
+      return;
+    }
+
+    setGamePlayers((data ?? []) as GamePlayerRow[]);
   }
 
   async function loadEvents(targetGameId: string) {
@@ -296,7 +331,11 @@ export default function LiveGamePage() {
     const g = await loadCurrentGame();
 
     if (g) {
-      await Promise.all([loadEvents(g.id), loadClock(g.id)]);
+      await Promise.all([
+        loadEvents(g.id),
+        loadClock(g.id),
+        loadGamePlayers(g.id),
+      ]);
     }
 
     setLoading(false);
@@ -356,6 +395,18 @@ export default function LiveGamePage() {
         },
         async () => {
           await loadCurrentGame();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "game_players",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadGamePlayers(gameId);
         }
       )
       .subscribe(async (status) => {
@@ -532,17 +583,17 @@ export default function LiveGamePage() {
     }
 
     const payload: {
-  game_id: string;
-  player_id?: string | null;
-  quarter: number;
-  event_type: string;
-  team_side: "A" | "B";
-} = {
-  game_id: game.id,
-  quarter: clock.quarter,
-  event_type: eventType,
-  team_side: teamSide,
-};
+      game_id: string;
+      player_id?: string | null;
+      quarter: number;
+      event_type: string;
+      team_side: "A" | "B";
+    } = {
+      game_id: game.id,
+      quarter: clock.quarter,
+      event_type:eventType,
+      team_side: teamSide,
+    };
 
     if (teamSide === "A") {
       if (!selectedPlayerId) {
@@ -594,29 +645,167 @@ export default function LiveGamePage() {
     return events.filter((e) => !e.is_undone);
   }, [events]);
 
-  const starters = useMemo(() => players.slice(0, 5), [players]);
-  const benchPlayers = useMemo(() => players.slice(5), [players]);
+  const teamAPlayerIds = useMemo(() => {
+    const ids = gamePlayers
+      .filter((gp) => gp.team_side === "A")
+      .map((gp) => gp.player_id);
 
-  const statsByPlayer = useMemo(() => {
-    const result: Record<string, Stat> = {};
+    if (ids.length > 0) return ids;
 
-    for (const p of players) {
-      result[p.id] = emptyStat();
-    }
+    return players.map((p) => p.id);
+  }, [gamePlayers, players]);
+
+  const teamAPlayers = useMemo(() => {
+    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
+  }, [players, teamAPlayerIds]);
+
+  const starterIds = useMemo(() => {
+    const starterFromDb = gamePlayers
+      .filter((gp) => gp.team_side === "A" && gp.is_starter)
+      .map((gp) => gp.player_id);
+
+    if (starterFromDb.length > 0) return starterFromDb;
+
+    return teamAPlayers.slice(0, 5).map((p) => p.id);
+  }, [gamePlayers, teamAPlayers]);
+
+  const currentOnCourtIds = useMemo(() => {
+    const lineup = new Set<string>(starterIds);
 
     for (const e of validEvents) {
       if (e.team_side !== "A") continue;
       if (!e.player_id) continue;
 
-      if (!result[e.player_id]) {
-        result[e.player_id] = emptyStat();
+      if (e.event_type === "sub_in") lineup.add(e.player_id);
+      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+    }
+
+    return Array.from(lineup);
+  }, [starterIds, validEvents]);
+
+  const onCourtPlayers = useMemo(() => {
+    return sortByNumber(teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id)));
+  }, [teamAPlayers, currentOnCourtIds]);
+
+  const benchPlayers = useMemo(() => {
+    return sortByNumber(teamAPlayers.filter((p) => !currentOnCourtIds.includes(p.id)));
+  }, [teamAPlayers, currentOnCourtIds]);
+
+  useEffect(() => {
+    if (!selectedPlayerId && onCourtPlayers.length > 0) {
+      setSelectedPlayerId(onCourtPlayers[0].id);
+    }
+  }, [selectedPlayerId, onCourtPlayers]);
+
+  useEffect(() => {
+    if (!subOutPlayerId && onCourtPlayers.length > 0) {
+      setSubOutPlayerId(onCourtPlayers[0].id);
+    }
+  }, [subOutPlayerId, onCourtPlayers]);
+
+  useEffect(() => {
+    if (!subInPlayerId && benchPlayers.length > 0) {
+      setSubInPlayerId(benchPlayers[0].id);
+    }
+  }, [subInPlayerId, benchPlayers]);
+
+  async function makeSubstitution() {
+    if (!game || !clock) return;
+    if (game.status === "finished") {
+      setError("比賽已結束，不能換人");
+      return;
+    }
+
+    if (!subOutPlayerId || !subInPlayerId) {
+      setError("請選擇下場與上場球員");
+      return;
+    }
+
+    if (subOutPlayerId === subInPlayerId) {
+      setError("上場與下場不能是同一人");
+      return;
+    }
+
+    setSubmittingSub(true);
+    setError("");
+
+    const payload = [
+      {
+        game_id: game.id,
+        player_id: subOutPlayerId,
+        quarter: clock.quarter,
+        event_type: "sub_out",
+        team_side: "A" as const,
+      },
+      {
+        game_id: game.id,
+        player_id: subInPlayerId,
+        quarter: clock.quarter,
+        event_type: "sub_in",
+        team_side: "A" as const,
+      },
+    ];
+
+    const { error } = await supabase.from("events").insert(payload);
+
+    setSubmittingSub(false);
+
+    if (error) {
+      setError(`換人失敗：${error.message}`);
+      return;
+    }
+
+    setSelectedPlayerId(subInPlayerId);
+    await loadEvents(game.id);
+  }
+
+  const statsByPlayer = useMemo(() => {
+    const result: Record<string, Stat> = {};
+
+    for (const p of teamAPlayers) {
+      result[p.id] = emptyStat();
+    }
+
+    const lineupA = new Set<string>(starterIds);
+    const lineupB = new Set<string>();
+
+    const sortedEvents = [...validEvents].sort(
+      (a, b) => +new Date(a.created_at) - +new Date(b.created_at)
+    );
+
+    for (const e of sortedEvents) {
+      const pts = getPoints(e.event_type);
+
+      if (e.team_side === "A" && e.player_id && result[e.player_id]) {
+        applyEvent(result[e.player_id], e.event_type);
       }
 
-      applyEvent(result[e.player_id], e.event_type);
+      if (e.event_type === "sub_in" && e.player_id && e.team_side === "A") {
+        lineupA.add(e.player_id);
+      }
+
+      if (e.event_type === "sub_out" && e.player_id && e.team_side === "A") {
+        lineupA.delete(e.player_id);
+      }
+
+      if (pts > 0) {
+        if (e.team_side === "A") {
+          for (const pid of lineupA) {
+            if (result[pid]) result[pid].plusMinus += pts;
+          }
+        } else if (e.team_side === "B") {
+          for (const pid of lineupA) {
+            if (result[pid]) result[pid].plusMinus -= pts;
+          }
+          // 預留給未來如果你也要記錄對手上場五人
+          for (const _pid of lineupB) {
+          }
+        }
+      }
     }
 
     return result;
-  }, [players, validEvents]);
+  }, [teamAPlayers, validEvents, starterIds]);
 
   const teamScore = useMemo(() => {
     let scoreA = 0;
@@ -677,15 +866,15 @@ export default function LiveGamePage() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white p-4 md:p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-neutral-950 p-4 text-white md:p-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4 md:p-6">
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div className="space-y-3">
                 <div>
                   <div className="text-sm text-white/60">目前比賽</div>
-                  <h1 className="text-2xl md:text-3xl font-bold">
+                  <h1 className="text-2xl font-bold md:text-3xl">
                     {game?.teamA || "我方"} vs {game?.teamB || "對手"}
                   </h1>
                 </div>
@@ -695,7 +884,7 @@ export default function LiveGamePage() {
                     value={editingTeamA}
                     onChange={(e) => setEditingTeamA(e.target.value)}
                     placeholder="輸入我方隊名"
-                    className="rounded-xl bg-neutral-900 border border-white/10 px-3 py-2 outline-none"
+                    className="rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 outline-none"
                   />
                   <button
                     onClick={saveTeamAName}
@@ -727,18 +916,18 @@ export default function LiveGamePage() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-[1fr_auto_1fr] items-center rounded-2xl border border-white/10 bg-black/20 p-4 md:p-6">
+            <div className="grid items-center gap-4 rounded-2xl border border-white/10 bg-black/20 p-4 md:grid-cols-[1fr_auto_1fr] md:p-6">
               <div className="text-center md:text-left">
-                <div className="text-white/60 text-sm mb-1">主隊</div>
-                <div className="text-2xl md:text-3xl font-bold">{game?.teamA || "我方"}</div>
-                <div className="text-6xl md:text-7xl font-extrabold mt-2">{teamScore.scoreA}</div>
+                <div className="mb-1 text-sm text-white/60">主隊</div>
+                <div className="text-2xl font-bold md:text-3xl">{game?.teamA || "我方"}</div>
+                <div className="mt-2 text-6xl font-extrabold md:text-7xl">{teamScore.scoreA}</div>
               </div>
 
-              <div className="text-center space-y-3">
-                <div className="text-xl md:text-2xl font-bold">
+              <div className="space-y-3 text-center">
+                <div className="text-xl font-bold md:text-2xl">
                   {getQuarterLabel(clock?.quarter ?? 1)}
                 </div>
-                <div className="text-5xl md:text-6xl font-extrabold tracking-wider">
+                <div className="text-5xl font-extrabold tracking-wider md:text-6xl">
                   {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
                 </div>
                 <div className="flex flex-wrap justify-center gap-2 text-sm">
@@ -752,9 +941,9 @@ export default function LiveGamePage() {
               </div>
 
               <div className="text-center md:text-right">
-                <div className="text-white/60 text-sm mb-1">客隊</div>
-                <div className="text-2xl md:text-3xl font-bold">{game?.teamB || "對手"}</div>
-                <div className="text-6xl md:text-7xl font-extrabold mt-2">{teamScore.scoreB}</div>
+                <div className="mb-1 text-sm text-white/60">客隊</div>
+                <div className="text-2xl font-bold md:text-3xl">{game?.teamB || "對手"}</div>
+                <div className="mt-2 text-6xl font-extrabold md:text-7xl">{teamScore.scoreB}</div>
               </div>
             </div>
 
@@ -777,16 +966,84 @@ export default function LiveGamePage() {
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
+        <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
           <div className="space-y-6">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-sm text-white/60">場上五人 / 場下名單</div>
+                <Link
+                  href={`/games/${gameId}/stats`}
+                  className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-semibold"
+                >
+                  球員數據頁
+                </Link>
+              </div>
+
+              <div className="mb-3 text-xs text-white/40">
+                點場上球員可直接切換快捷紀錄對象
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {onCourtPlayers.map((p) => {
+                  const selected = selectedPlayerId === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => setSelectedPlayerId(p.id)}
+                      className={`rounded-xl border px-3 py-3 text-left transition ${
+                        selected
+                          ? "border-emerald-400 bg-emerald-500/20"
+                          : "border-emerald-500/20 bg-emerald-500/10"
+                      }`}
+                    >
+                      <div className="font-bold">#{p.number ?? "-"} {p.name}</div>
+                      <div className="text-xs text-white/60">場上</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                onClick={() => setBenchOpen((v) => !v)}
+                className="mt-3 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm"
+              >
+                {benchOpen ? "收起場下名單" : `展開場下名單（${benchPlayers.length}）`}
+              </button>
+
+              {benchOpen && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {benchPlayers.length === 0 ? (
+                    <div className="text-sm text-white/50">目前沒有場下球員</div>
+                  ) : (
+                    benchPlayers.map((p) => {
+                      const selected = selectedPlayerId === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => setSelectedPlayerId(p.id)}
+                          className={`rounded-full border px-3 py-2 text-sm ${
+                            selected
+                              ? "border-blue-400 bg-blue-500/20"
+                              : "border-white/10 bg-white/5"
+                          }`}
+                        >
+                          #{p.number ?? "-"} {p.name}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="text-sm text-white/60 mb-2">比賽時間</div>
 
-              <div className="text-center text-5xl font-bold tracking-wider mb-4">
+              <div className="mb-4 text-center text-5xl font-bold tracking-wider">
                 {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
               </div>
 
-              <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="mb-3 grid grid-cols-2 gap-2">
                 <button
                   onClick={startClock}
                   disabled={game?.status === "finished"}
@@ -815,7 +1072,7 @@ export default function LiveGamePage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 mb-4">
+              <div className="mb-4 grid grid-cols-3 gap-2">
                 <button
                   onClick={() => adjustClock(-60)}
                   className="rounded-xl bg-white/10 px-3 py-2"
@@ -869,7 +1126,7 @@ export default function LiveGamePage() {
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="flex items-center justify-between mb-3">
+              <div className="mb-3 flex items-center justify-between">
                 <div className="text-sm text-white/60">我方快捷記錄</div>
                 <button
                   onClick={undoLastEvent}
@@ -879,8 +1136,8 @@ export default function LiveGamePage() {
                 </button>
               </div>
 
-              <div className="text-sm text-white/60 mb-2">目前選擇球員</div>
-              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 mb-4">
+              <div className="mb-2 text-sm text-white/60">目前選擇球員</div>
+              <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-3">
                 {selectedPlayerId
                   ? (() => {
                       const p = players.find((x) => x.id === selectedPlayerId);
@@ -902,6 +1159,57 @@ export default function LiveGamePage() {
                     {btn.label}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="mb-3 text-sm text-white/60">快速換人</div>
+
+              <div className="grid gap-3">
+                <div>
+                  <div className="mb-1 text-xs text-white/50">下場球員</div>
+                  <select
+                    value={subOutPlayerId}
+                    onChange={(e) => setSubOutPlayerId(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-neutral-900 px-3 py-3 outline-none"
+                  >
+                    <option value="">請選擇</option>
+                    {onCourtPlayers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        #{p.number ?? "-"} {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs text-white/50">上場球員</div>
+                  <select
+                    value={subInPlayerId}
+                    onChange={(e) => setSubInPlayerId(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-neutral-900 px-3 py-3 outline-none"
+                  >
+                    <option value="">請選擇</option>
+                    {benchPlayers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        #{p.number ?? "-"} {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  onClick={makeSubstitution}
+                  disabled={
+                    submittingSub ||
+                    game?.status === "finished" ||
+                    onCourtPlayers.length === 0 ||
+                    benchPlayers.length === 0
+                  }
+                  className="rounded-xl bg-sky-600 px-4 py-3 font-semibold disabled:opacity-50"
+                >
+                  {submittingSub ? "換人中..." : "確認換人"}
+                </button>
               </div>
             </div>
 
@@ -932,84 +1240,36 @@ export default function LiveGamePage() {
                 </button>
               </div>
             </div>
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="text-sm text-white/60 mb-3">先發五人</div>
-              <div className="grid grid-cols-2 gap-2">
-                {starters.map((p) => {
-                  const selected = selectedPlayerId === p.id;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedPlayerId(p.id)}
-                      className={`rounded-xl border px-3 py-3 text-left transition ${
-                        selected
-                          ? "border-emerald-400 bg-emerald-500/20"
-                          : "border-white/10 bg-black/20"
-                      }`}
-                    >
-                      <div className="font-bold">#{p.number ?? "-"} {p.name}</div>
-                      <div className="text-xs text-white/60">先發</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="text-sm text-white/60 mb-3">板凳球員</div>
-              {benchPlayers.length === 0 ? (
-                <div className="text-white/50 text-sm">目前沒有板凳球員</div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {benchPlayers.map((p) => {
-                    const selected = selectedPlayerId === p.id;
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => setSelectedPlayerId(p.id)}
-                        className={`rounded-xl border px-3 py-3 text-left transition ${
-                          selected
-                            ? "border-blue-400 bg-blue-500/20"
-                            : "border-white/10 bg-black/20"
-                        }`}
-                      >
-                        <div className="font-bold">#{p.number ?? "-"} {p.name}</div>
-                        <div className="text-xs text-white/60">板凳</div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           </div>
 
           <div className="space-y-6">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4 overflow-x-auto">
-              <div className="text-sm text-white/60 mb-3">球員數據</div>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm text-white/60">場上球員即時數據（含 +/-）</div>
+                <Link
+                  href={`/games/${gameId}/stats`}
+                  className="rounded-xl bg-white/10 px-3 py-2 text-sm"
+                >
+                  前往完整數據頁
+                </Link>
+              </div>
 
-              <table className="w-full min-w-[980px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead>
                   <tr className="border-b border-white/10 text-white/60">
-                    <th className="text-left py-2">球員</th>
+                    <th className="py-2 text-left">球員</th>
                     <th className="py-2">PTS</th>
-                    <th className="py-2">2M</th>
-                    <th className="py-2">2A</th>
-                    <th className="py-2">3M</th>
-                    <th className="py-2">3A</th>
-                    <th className="py-2">FTM</th>
-                    <th className="py-2">FTA</th>
                     <th className="py-2">REB</th>
                     <th className="py-2">AST</th>
-                    <th className="py-2">TOV</th>
                     <th className="py-2">STL</th>
                     <th className="py-2">BLK</th>
+                    <th className="py-2">TOV</th>
                     <th className="py-2">PF</th>
                     <th className="py-2">+/-</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {players.map((p) => {
+                  {onCourtPlayers.map((p) => {
                     const s = statsByPlayer[p.id] ?? emptyStat();
                     const selected = selectedPlayerId === p.id;
 
@@ -1022,19 +1282,13 @@ export default function LiveGamePage() {
                           #{p.number ?? "-"} {p.name}
                         </td>
                         <td className="text-center">{s.pts}</td>
-                        <td className="text-center">{s.fg2m}</td>
-                        <td className="text-center">{s.fg2a}</td>
-                        <td className="text-center">{s.fg3m}</td>
-                        <td className="text-center">{s.fg3a}</td>
-                        <td className="text-center">{s.ftm}</td>
-                        <td className="text-center">{s.fta}</td>
                         <td className="text-center">{s.reb}</td>
                         <td className="text-center">{s.ast}</td>
-                        <td className="text-center">{s.tov}</td>
                         <td className="text-center">{s.stl}</td>
                         <td className="text-center">{s.blk}</td>
+                        <td className="text-center">{s.tov}</td>
                         <td className="text-center">{s.pf}</td>
-                        <td className="text-center">{s.plusMinus ?? "—"}</td>
+                        <td className="text-center font-bold">{s.plusMinus}</td>
                       </tr>
                     );
                   })}
@@ -1045,7 +1299,7 @@ export default function LiveGamePage() {
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="text-sm text-white/60 mb-3">事件紀錄</div>
 
-              <div className="max-h-[420px] overflow-y-auto space-y-2">
+              <div className="max-h-[520px] space-y-2 overflow-y-auto">
                 {[...validEvents]
                   .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
                   .map((e) => {
