@@ -52,23 +52,6 @@ type GamePlayerRow = {
 const REGULAR_SECONDS = 600;
 const OT_SECONDS = 300;
 
-const EVENT_LABELS: Record<string, string> = {
-  fg2_made: "2分進",
-  fg2_miss: "2分鐵",
-  fg3_made: "3分進",
-  fg3_miss: "3分鐵",
-  ft_made: "罰球進",
-  ft_miss: "罰球鐵",
-  reb: "籃板",
-  ast: "助攻",
-  tov: "失誤",
-  stl: "抄截",
-  blk: "阻攻",
-  pf: "犯規",
-  sub_in: "上場",
-  sub_out: "下場",
-};
-
 function formatTime(total: number) {
   const s = Math.max(0, total || 0);
   const mm = Math.floor(s / 60)
@@ -754,12 +737,6 @@ export default function LiveGamePage() {
     { key: "pf", label: "犯規", strong: false },
   ];
 
-  const lastThreeEvents = useMemo(() => {
-    return [...validEvents]
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
-      .slice(0, 3);
-  }, [validEvents]);
-
   if (loading) {
     return <div className="p-6 text-white">載入中...</div>;
   }
@@ -915,7 +892,7 @@ export default function LiveGamePage() {
 
             <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <div className="text-sm font-semibold">場下名單</div>
+                <div className="text-sm font-semibold">場下名單／快速換人</div>
                 <button
                   onClick={() => setBenchOpen((v) => !v)}
                   className="rounded-xl bg-white/10 px-3 py-1 text-[11px]"
@@ -925,35 +902,115 @@ export default function LiveGamePage() {
               </div>
 
               {benchOpen ? (
-                benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/50">
-                    目前沒有場下球員
-                  </div>
-                ) : (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {benchPlayers.map((p) => {
-                      const selected = selectedPlayerId === p.id;
-                      return (
-                        <button
-                          key={p.id}
-                          onClick={() => setSelectedPlayerId(p.id)}
-                          className={`shrink-0 rounded-2xl border px-3 py-3 text-center transition active:scale-[0.98] ${
-                            selected
-                              ? "border-blue-400 bg-blue-500/20"
-                              : "border-white/10 bg-white/5"
-                          }`}
-                        >
-                          <div className="text-base font-extrabold leading-none">
-                            #{p.number ?? "-"}
+                <div className="space-y-3">
+                  {benchPlayers.length === 0 ? (
+                    <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/50">
+                      目前沒有場下球員
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {benchPlayers.map((p) => {
+                          const selected = selectedPlayerId === p.id;
+                          return (
+                            <button
+                              key={p.id}
+                              onClick={() => setSelectedPlayerId(p.id)}
+                              className={`shrink-0 rounded-2xl border px-3 py-3 text-center transition active:scale-[0.98] ${
+                                selected
+                                  ? "border-blue-400 bg-blue-500/20"
+                                  : "border-white/10 bg-white/5"
+                              }`}
+                            >
+                              <div className="text-base font-extrabold leading-none">
+                                #{p.number ?? "-"}
+                              </div>
+                              <div className="mt-1 text-[10px]">{p.name}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                        <div className="mb-2">
+                          <div className="text-sm font-semibold">快速換人</div>
+                          <div className="text-[11px] text-white/50">
+                            先選下場，再選上場，最後確認
                           </div>
-                          <div className="mt-1 text-[10px]">{p.name}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )
+                        </div>
+
+                        <div className="space-y-3">
+                          <div className="rounded-2xl border border-orange-500/20 bg-orange-500/10 p-3">
+                            <div className="text-[11px] text-orange-200/80">要下場</div>
+                            <div className="mt-1 text-base font-bold">
+                              {subOutPlayer ? getPlayerDisplayName(subOutPlayer) : "未選擇"}
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 overflow-x-auto pb-1">
+                            {onCourtPlayers.map((p) => (
+                              <button
+                                key={p.id}
+                                onClick={() => setSubOutPlayerId(p.id)}
+                                className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
+                                  subOutPlayerId === p.id
+                                    ? "border-orange-400 bg-orange-500/20"
+                                    : "border-white/10 bg-white/5"
+                                }`}
+                              >
+                                #{p.number ?? "-"} {p.name}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3">
+                            <div className="text-[11px] text-sky-200/80">要上場</div>
+                            <div className="mt-1 text-base font-bold">
+                              {subInPlayer ? getPlayerDisplayName(subInPlayer) : "未選擇"}
+                            </div>
+                          </div>
+
+                          {benchPlayers.length === 0 ? (
+                            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
+                              目前沒有可換上的場下球員
+                            </div>
+                          ) : (
+                            <div className="flex gap-2 overflow-x-auto pb-1">
+                              {benchPlayers.map((p) => (
+                                <button
+                                  key={p.id}
+                                  onClick={() => setSubInPlayerId(p.id)}
+                                  className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
+                                    subInPlayerId === p.id
+                                      ? "border-sky-400 bg-sky-500/20"
+                                      : "border-white/10 bg-white/5"
+                                  }`}
+                                >
+                                  #{p.number ?? "-"} {p.name}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          <button
+                            onClick={makeSubstitution}
+                            disabled={
+                              submittingSub ||
+                              game?.status === "finished" ||
+                              onCourtPlayers.length === 0 ||
+                              benchPlayers.length === 0
+                            }
+                            className="w-full rounded-2xl bg-sky-600 px-4 py-4 text-base font-extrabold disabled:opacity-50"
+                          >
+                            {submittingSub ? "換人中..." : "確認換人"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
-                <div className="text-[11px] text-white/50">點展開可快速選擇場下球員</div>
+                <div className="text-[11px] text-white/50">點展開可查看場下名單與快速換人</div>
               )}
             </div>
 
@@ -994,36 +1051,6 @@ export default function LiveGamePage() {
                   </button>
                 ))}
               </div>
-
-              {lastThreeEvents.length > 0 && (
-                <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-                  <div className="mb-2 text-[11px] text-white/50">最近 3 筆</div>
-                  <div className="space-y-2">
-                    {lastThreeEvents.map((e) => {
-                      const player =
-                        e.player_id ? players.find((p) => p.id === e.player_id) : null;
-
-                      return (
-                        <div
-                          key={e.id}
-                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs"
-                        >
-                          <div className="font-semibold">
-                            {getQuarterLabel(e.quarter)}｜
-                            {e.team_side === "A" ? game?.teamA || "我方" : game?.teamB || "對手"}
-                          </div>
-                          <div className="text-white/70">
-                            {e.team_side === "A" && player
-                              ? `${getPlayerDisplayName(player)}｜`
-                              : ""}
-                            {EVENT_LABELS[e.event_type] ?? e.event_type}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
@@ -1139,80 +1166,6 @@ export default function LiveGamePage() {
                   className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
                 >
                   +1分
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2">
-                <div className="text-sm font-semibold">快速換人</div>
-                <div className="text-[11px] text-white/50">先選下場，再選上場，最後確認</div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-orange-500/20 bg-orange-500/10 p-3">
-                  <div className="text-[11px] text-orange-200/80">要下場</div>
-                  <div className="mt-1 text-base font-bold">
-                    {subOutPlayer ? getPlayerDisplayName(subOutPlayer) : "未選擇"}
-                  </div>
-                </div>
-
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {onCourtPlayers.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSubOutPlayerId(p.id)}
-                      className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                        subOutPlayerId === p.id
-                          ? "border-orange-400 bg-orange-500/20"
-                          : "border-white/10 bg-white/5"
-                      }`}
-                    >
-                      #{p.number ?? "-"} {p.name}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3">
-                  <div className="text-[11px] text-sky-200/80">要上場</div>
-                  <div className="mt-1 text-base font-bold">
-                    {subInPlayer ? getPlayerDisplayName(subInPlayer) : "未選擇"}
-                  </div>
-                </div>
-
-                {benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
-                    目前沒有可換上的場下球員
-                  </div>
-                ) : (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {benchPlayers.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => setSubInPlayerId(p.id)}
-                        className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                          subInPlayerId === p.id
-                            ? "border-sky-400 bg-sky-500/20"
-                            : "border-white/10 bg-white/5"
-                        }`}
-                      >
-                        #{p.number ?? "-"} {p.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  onClick={makeSubstitution}
-                  disabled={
-                    submittingSub ||
-                    game?.status === "finished" ||
-                    onCourtPlayers.length === 0 ||
-                    benchPlayers.length === 0
-                  }
-                  className="rounded-2xl bg-sky-600 px-4 py-4 text-base font-extrabold disabled:opacity-50"
-                >
-                  {submittingSub ? "換人中..." : "確認換人"}
                 </button>
               </div>
             </div>
