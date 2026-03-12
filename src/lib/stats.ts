@@ -1,8 +1,16 @@
 export type EventType =
-  | "FG2_MAKE" | "FG2_MISS"
-  | "FG3_MAKE" | "FG3_MISS"
-  | "FT_MAKE"  | "FT_MISS"
-  | "REB" | "AST" | "STL" | "BLK" | "TOV" | "PF";
+  | "FG2_MAKE"
+  | "FG2_MISS"
+  | "FG3_MAKE"
+  | "FG3_MISS"
+  | "FT_MAKE"
+  | "FT_MISS"
+  | "REB"
+  | "AST"
+  | "STL"
+  | "BLK"
+  | "TOV"
+  | "PF";
 
 export type EventRow = {
   player_id: string | null;
@@ -52,7 +60,8 @@ function isValidEvent(e: EventRow) {
 export function calcPlayerStats(events: EventRow[]): Stat {
   const validEvents = events.filter(isValidEvent);
 
-  const c = (t: EventType) => validEvents.filter((e) => e.event_type === t).length;
+  const c = (t: EventType) =>
+    validEvents.filter((e) => e.event_type === t).length;
 
   const fg2m = c("FG2_MAKE");
   const fg2x = c("FG2_MISS");
