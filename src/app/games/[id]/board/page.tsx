@@ -94,6 +94,13 @@ function formatClock(secondsLeft: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function formatMinutesFromSeconds(totalSeconds: number) {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function applyEvent(stat: Stat, eventType: string) {
   switch (eventType) {
     case "fg2_made":
@@ -174,6 +181,16 @@ function getQuarterLabel(quarter: number) {
 
 function sortPlayers(list: Player[]) {
   return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+}
+
+function getQuarterPlayedSeconds(
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number
+) {
+  if (quarter < currentQuarter) return REGULAR_SECONDS;
+  if (quarter > currentQuarter) return 0;
+  return REGULAR_SECONDS - currentDisplaySeconds;
 }
 
 export default function BoardPage() {
@@ -485,6 +502,93 @@ export default function BoardPage() {
     return map;
   }, [teamAPlayers, validEvents]);
 
+  const minutesMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    const currentQuarter = clock?.quarter ?? 1;
+
+    for (const p of teamAPlayers) {
+      map[p.id] = 0;
+    }
+
+    const activeStartByPlayerQuarter: Record<string, number | null> = {};
+
+    for (let q = 1; q <= currentQuarter; q += 1) {
+      const playedSecondsThisQuarter = getQuarterPlayedSeconds(q, currentQuarter, displaySeconds);
+
+      const quarterEvents = validEvents.filter(
+        (e) => e.team_side === "A" && e.quarter === q && !!e.player_id
+      );
+
+      const initialOnCourt = new Set<string>();
+
+      if (q === 1) {
+        starterIds.forEach((id) => initialOnCourt.add(id));
+      } else {
+        const prevQuarterLineup = new Set<string>(starterIds);
+
+        for (const e of validEvents) {
+          if (e.team_side !== "A") continue;
+          if (!e.player_id) continue;
+          if (e.quarter >= q) break;
+
+          if (e.event_type === "sub_in") prevQuarterLineup.add(e.player_id);
+          if (e.event_type === "sub_out") prevQuarterLineup.delete(e.player_id);
+        }
+
+        prevQuarterLineup.forEach((id) => initialOnCourt.add(id));
+      }
+
+      for (const p of teamAPlayers) {
+        const key = `${p.id}-${q}`;
+        activeStartByPlayerQuarter[key] = initialOnCourt.has(p.id) ? 0 : null;
+      }
+
+      for (const e of quarterEvents) {
+        const elapsedApprox = Math.min(
+          playedSecondsThisQuarter,
+          Math.max(
+            0,
+            Math.floor(
+              ((new Date(e.created_at).getTime() -
+                new Date(
+                  quarterEvents[0]?.created_at ?? e.created_at
+                ).getTime()) /
+                1000)
+            )
+          )
+        );
+
+        const playerId = e.player_id!;
+        const key = `${playerId}-${q}`;
+        const startAt = activeStartByPlayerQuarter[key];
+
+        if (e.event_type === "sub_in") {
+          if (startAt == null) {
+            activeStartByPlayerQuarter[key] = elapsedApprox;
+          }
+        }
+
+        if (e.event_type === "sub_out") {
+          if (startAt != null) {
+            map[playerId] = (map[playerId] || 0) + Math.max(0, elapsedApprox - startAt);
+            activeStartByPlayerQuarter[key] = null;
+          }
+        }
+      }
+
+      for (const p of teamAPlayers) {
+        const key = `${p.id}-${q}`;
+        const startAt = activeStartByPlayerQuarter[key];
+
+        if (startAt != null) {
+          map[p.id] = (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startAt);
+        }
+      }
+    }
+
+    return map;
+  }, [teamAPlayers, validEvents, starterIds, clock?.quarter, displaySeconds]);
+
   const totalScore = useMemo(() => {
     let home = 0;
     let away = 0;
@@ -519,11 +623,51 @@ export default function BoardPage() {
     return byQuarter;
   }, [validEvents, clock?.quarter]);
 
+  const onCourtPlayers = useMemo(() => {
+    return teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id));
+  }, [teamAPlayers, currentOnCourtIds]);
+
+  const benchPlayers = useMemo(() => {
+    return teamAPlayers.filter((p) => !currentOnCourtIds.includes(p.id));
+  }, [teamAPlayers, currentOnCourtIds]);
+
   if (loading) {
     return (
       <main style={pageStyle}>
         <div style={{ color: "#aaa", fontSize: 18 }}>載入中...</div>
       </main>
+    );
+  }
+
+  function renderPlayerRow(p: Player) {
+    const s = statsMap[p.id] || emptyStat();
+    const min = formatMinutesFromSeconds(minutesMap[p.id] || 0);
+
+    return (
+      <tr key={p.id}>
+        <td style={tdNameStyle}>
+          {p.number ? `#${p.number} ` : ""}
+          {p.name}
+        </td>
+        <td style={tdStyle}>{min}</td>
+        <td style={tdStyle}>{s.pts}</td>
+        <td style={tdStyle}>
+          {s.fg2m}/{s.fg2a}
+        </td>
+        <td style={tdStyle}>
+          {s.fg3m}/{s.fg3a}
+        </td>
+        <td style={tdStyle}>
+          {s.ftm}/{s.fta}
+        </td>
+        <td style={tdStyle}>{s.reb}</td>
+        <td style={tdStyle}>{s.ast}</td>
+        <td style={tdStyle}>{s.tov}</td>
+        <td style={tdStyle}>{s.stl}</td>
+        <td style={tdStyle}>{s.blk}</td>
+        <td style={tdStyle}>{s.pf}</td>
+        <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
+      </tr>
     );
   }
 
@@ -593,11 +737,23 @@ export default function BoardPage() {
         <section style={tableCardStyle}>
           <div style={sectionTitleStyle}>球員數據</div>
 
+          <div style={lineupSummaryStyle}>
+            <div style={lineupGroupStyle}>
+              <span style={lineupDotOnStyle} />
+              <span>場上 5 人</span>
+            </div>
+            <div style={lineupGroupStyle}>
+              <span style={lineupDotBenchStyle} />
+              <span>場下球員</span>
+            </div>
+          </div>
+
           <div style={tableWrapStyle}>
             <table style={tableStyle}>
               <thead>
                 <tr>
-                  <th style={thStyle}>球員</th>
+                  <th style={thNameStyle}>球員</th>
+                  <th style={thStyle}>MIN</th>
                   <th style={thStyle}>PTS</th>
                   <th style={thStyle}>2PT</th>
                   <th style={thStyle}>3PT</th>
@@ -613,51 +769,21 @@ export default function BoardPage() {
               </thead>
 
               <tbody>
-                {teamAPlayers.map((p) => {
-                  const s = statsMap[p.id] || emptyStat();
-                  const isOnCourt = currentOnCourtIds.includes(p.id);
+                {onCourtPlayers.map(renderPlayerRow)}
 
-                  return (
-                    <tr key={p.id}>
-                      <td style={tdNameStyle}>
-                        <div style={nameCellWrapStyle}>
-                          <span>
-                            {p.number ? `#${p.number} ` : ""}
-                            {p.name}
-                          </span>
+                {benchPlayers.length > 0 && (
+                  <tr>
+                    <td colSpan={13} style={dividerCellStyle}>
+                      <div style={dividerWrapStyle}>
+                        <div style={dividerLineStyle} />
+                        <div style={dividerLabelStyle}>場上 / 場下分隔</div>
+                        <div style={dividerLineStyle} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
 
-                          <span
-                            style={{
-                              ...statusPillStyle,
-                              background: isOnCourt ? "#10351d" : "#2b2b2b",
-                              color: isOnCourt ? "#8df0a8" : "#cfcfcf",
-                              borderColor: isOnCourt ? "#1d6a38" : "#444",
-                            }}
-                          >
-                            {isOnCourt ? "場上" : "未上場"}
-                          </span>
-                        </div>
-                      </td>
-                      <td style={tdStyle}>{s.pts}</td>
-                      <td style={tdStyle}>
-                        {s.fg2m}/{s.fg2a}
-                      </td>
-                      <td style={tdStyle}>
-                        {s.fg3m}/{s.fg3a}
-                      </td>
-                      <td style={tdStyle}>
-                        {s.ftm}/{s.fta}
-                      </td>
-                      <td style={tdStyle}>{s.reb}</td>
-                      <td style={tdStyle}>{s.ast}</td>
-                      <td style={tdStyle}>{s.tov}</td>
-                      <td style={tdStyle}>{s.stl}</td>
-                      <td style={tdStyle}>{s.blk}</td>
-                      <td style={tdStyle}>{s.pf}</td>
-                      <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
-                    </tr>
-                  );
-                })}
+                {benchPlayers.map(renderPlayerRow)}
               </tbody>
             </table>
           </div>
@@ -791,6 +917,38 @@ const sectionTitleStyle: React.CSSProperties = {
   borderBottom: "1px solid #1f1f1f",
 };
 
+const lineupSummaryStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 18,
+  alignItems: "center",
+  padding: "12px 20px 0 20px",
+  color: "#cfcfcf",
+  fontSize: 14,
+  flexWrap: "wrap",
+};
+
+const lineupGroupStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const lineupDotOnStyle: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  background: "#67e08a",
+  display: "inline-block",
+};
+
+const lineupDotBenchStyle: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  background: "#666",
+  display: "inline-block",
+};
+
 const tableWrapStyle: React.CSSProperties = {
   width: "100%",
   overflowX: "auto",
@@ -798,13 +956,23 @@ const tableWrapStyle: React.CSSProperties = {
 
 const tableStyle: React.CSSProperties = {
   width: "100%",
-  minWidth: 1080,
+  minWidth: 1180,
   borderCollapse: "collapse",
 };
 
 const thStyle: React.CSSProperties = {
   textAlign: "center",
   padding: "16px 10px",
+  borderBottom: "1px solid #222",
+  color: "#cfcfcf",
+  fontSize: 18,
+  fontWeight: 800,
+  whiteSpace: "nowrap",
+};
+
+const thNameStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "16px 14px",
   borderBottom: "1px solid #222",
   color: "#cfcfcf",
   fontSize: 18,
@@ -830,21 +998,30 @@ const tdNameStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-const nameCellWrapStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
+const dividerCellStyle: React.CSSProperties = {
+  padding: "14px 12px",
+  background: "#050505",
+  borderBottom: "1px solid #1b1b1b",
 };
 
-const statusPillStyle: React.CSSProperties = {
-  display: "inline-flex",
+const dividerWrapStyle: React.CSSProperties = {
+  display: "flex",
   alignItems: "center",
-  justifyContent: "center",
-  borderRadius: 999,
-  padding: "4px 10px",
-  fontSize: 12,
+  gap: 12,
+};
+
+const dividerLineStyle: React.CSSProperties = {
+  flex: 1,
+  height: 1,
+  background: "#2a2a2a",
+};
+
+const dividerLabelStyle: React.CSSProperties = {
+  fontSize: 13,
   fontWeight: 800,
-  border: "1px solid #444",
+  color: "#8f8f8f",
+  whiteSpace: "nowrap",
+  letterSpacing: 1,
 };
 
 const msgStyle: React.CSSProperties = {
