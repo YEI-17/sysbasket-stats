@@ -778,7 +778,7 @@ export default function LiveGamePage() {
 
             <div className="flex shrink-0 items-center gap-2">
               <Link
-                href={`/games/${gameId}/stats`}
+                href={`/games/${gameId}/box`}
                 className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-semibold md:text-sm"
               >
                 數據頁
