@@ -110,7 +110,6 @@ export default function LiveGamePage() {
   const [savingTeamA, setSavingTeamA] = useState(false);
   const [endingGame, setEndingGame] = useState(false);
 
-  const [benchOpen, setBenchOpen] = useState(true);
   const [subOutPlayerId, setSubOutPlayerId] = useState("");
   const [subInPlayerId, setSubInPlayerId] = useState("");
   const [submittingSub, setSubmittingSub] = useState(false);
@@ -722,21 +721,6 @@ export default function LiveGamePage() {
     return result;
   }, [validEvents, clock?.quarter]);
 
-  const eventButtons = [
-    { key: "fg2_made", label: "2分進", strong: true },
-    { key: "fg2_miss", label: "2分鐵", strong: false },
-    { key: "fg3_made", label: "3分進", strong: true },
-    { key: "fg3_miss", label: "3分鐵", strong: false },
-    { key: "ft_made", label: "罰球進", strong: true },
-    { key: "ft_miss", label: "罰球鐵", strong: false },
-    { key: "reb", label: "籃板", strong: false },
-    { key: "ast", label: "助攻", strong: false },
-    { key: "tov", label: "失誤", strong: false },
-    { key: "stl", label: "抄截", strong: false },
-    { key: "blk", label: "阻攻", strong: false },
-    { key: "pf", label: "犯規", strong: false },
-  ];
-
   if (loading) {
     return <div className="p-6 text-white">載入中...</div>;
   }
@@ -862,9 +846,6 @@ export default function LiveGamePage() {
                   <div className="text-sm font-semibold">場上五人</div>
                   <div className="text-[11px] text-white/50">點球員後可直接記錄</div>
                 </div>
-                <div className="max-w-[52%] truncate rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] text-emerald-300">
-                  {selectedPlayer ? getPlayerDisplayName(selectedPlayer) : "未選擇"}
-                </div>
               </div>
 
               <div className="grid grid-cols-5 gap-2">
@@ -876,7 +857,7 @@ export default function LiveGamePage() {
                       onClick={() => setSelectedPlayerId(p.id)}
                       className={`rounded-2xl border px-1 py-3 text-center transition active:scale-[0.98] ${
                         selected
-                          ? "border-emerald-400 bg-emerald-500/20"
+                          ? "border-emerald-300 bg-emerald-500/25 shadow-[0_0_0_1px_rgba(110,231,183,0.2)]"
                           : "border-emerald-500/20 bg-emerald-500/10"
                       }`}
                     >
@@ -884,6 +865,9 @@ export default function LiveGamePage() {
                         #{p.number ?? "-"}
                       </div>
                       <div className="mt-1 truncate text-[10px] md:text-xs">{p.name}</div>
+                      {selected && (
+                        <div className="mt-1 text-[10px] font-bold text-emerald-200">已選取</div>
+                      )}
                     </button>
                   );
                 })}
@@ -891,127 +875,77 @@ export default function LiveGamePage() {
             </div>
 
             <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-sm font-semibold">場下名單／快速換人</div>
-                <button
-                  onClick={() => setBenchOpen((v) => !v)}
-                  className="rounded-xl bg-white/10 px-3 py-1 text-[11px]"
-                >
-                  {benchOpen ? "收起" : `展開（${benchPlayers.length}）`}
-                </button>
+              <div className="mb-2">
+                <div className="text-sm font-semibold">快速換人</div>
+                <div className="text-[11px] text-white/50">先選下場，再選上場，最後確認</div>
               </div>
 
-              {benchOpen ? (
-                <div className="space-y-3">
-                  {benchPlayers.length === 0 ? (
-                    <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/50">
-                      目前沒有場下球員
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex gap-2 overflow-x-auto pb-1">
-                        {benchPlayers.map((p) => {
-                          const selected = selectedPlayerId === p.id;
-                          return (
-                            <button
-                              key={p.id}
-                              onClick={() => setSelectedPlayerId(p.id)}
-                              className={`shrink-0 rounded-2xl border px-3 py-3 text-center transition active:scale-[0.98] ${
-                                selected
-                                  ? "border-blue-400 bg-blue-500/20"
-                                  : "border-white/10 bg-white/5"
-                              }`}
-                            >
-                              <div className="text-base font-extrabold leading-none">
-                                #{p.number ?? "-"}
-                              </div>
-                              <div className="mt-1 text-[10px]">{p.name}</div>
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                        <div className="mb-2">
-                          <div className="text-sm font-semibold">快速換人</div>
-                          <div className="text-[11px] text-white/50">
-                            先選下場，再選上場，最後確認
-                          </div>
-                        </div>
-
-                        <div className="space-y-3">
-                          <div className="rounded-2xl border border-orange-500/20 bg-orange-500/10 p-3">
-                            <div className="text-[11px] text-orange-200/80">要下場</div>
-                            <div className="mt-1 text-base font-bold">
-                              {subOutPlayer ? getPlayerDisplayName(subOutPlayer) : "未選擇"}
-                            </div>
-                          </div>
-
-                          <div className="flex gap-2 overflow-x-auto pb-1">
-                            {onCourtPlayers.map((p) => (
-                              <button
-                                key={p.id}
-                                onClick={() => setSubOutPlayerId(p.id)}
-                                className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                                  subOutPlayerId === p.id
-                                    ? "border-orange-400 bg-orange-500/20"
-                                    : "border-white/10 bg-white/5"
-                                }`}
-                              >
-                                #{p.number ?? "-"} {p.name}
-                              </button>
-                            ))}
-                          </div>
-
-                          <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3">
-                            <div className="text-[11px] text-sky-200/80">要上場</div>
-                            <div className="mt-1 text-base font-bold">
-                              {subInPlayer ? getPlayerDisplayName(subInPlayer) : "未選擇"}
-                            </div>
-                          </div>
-
-                          {benchPlayers.length === 0 ? (
-                            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
-                              目前沒有可換上的場下球員
-                            </div>
-                          ) : (
-                            <div className="flex gap-2 overflow-x-auto pb-1">
-                              {benchPlayers.map((p) => (
-                                <button
-                                  key={p.id}
-                                  onClick={() => setSubInPlayerId(p.id)}
-                                  className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                                    subInPlayerId === p.id
-                                      ? "border-sky-400 bg-sky-500/20"
-                                      : "border-white/10 bg-white/5"
-                                  }`}
-                                >
-                                  #{p.number ?? "-"} {p.name}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-
-                          <button
-                            onClick={makeSubstitution}
-                            disabled={
-                              submittingSub ||
-                              game?.status === "finished" ||
-                              onCourtPlayers.length === 0 ||
-                              benchPlayers.length === 0
-                            }
-                            className="w-full rounded-2xl bg-sky-600 px-4 py-4 text-base font-extrabold disabled:opacity-50"
-                          >
-                            {submittingSub ? "換人中..." : "確認換人"}
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-orange-500/20 bg-orange-500/10 p-3">
+                  <div className="text-[11px] text-orange-200/80">要下場</div>
+                  <div className="mt-1 text-base font-bold">
+                    {subOutPlayer ? getPlayerDisplayName(subOutPlayer) : "未選擇"}
+                  </div>
                 </div>
-              ) : (
-                <div className="text-[11px] text-white/50">點展開可查看場下名單與快速換人</div>
-              )}
+
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {onCourtPlayers.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => setSubOutPlayerId(p.id)}
+                      className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
+                        subOutPlayerId === p.id
+                          ? "border-orange-400 bg-orange-500/20"
+                          : "border-white/10 bg-white/5"
+                      }`}
+                    >
+                      #{p.number ?? "-"} {p.name}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3">
+                  <div className="text-[11px] text-sky-200/80">要上場</div>
+                  <div className="mt-1 text-base font-bold">
+                    {subInPlayer ? getPlayerDisplayName(subInPlayer) : "未選擇"}
+                  </div>
+                </div>
+
+                {benchPlayers.length === 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
+                    目前沒有可換上的場下球員
+                  </div>
+                ) : (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {benchPlayers.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => setSubInPlayerId(p.id)}
+                        className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
+                          subInPlayerId === p.id
+                            ? "border-sky-400 bg-sky-500/20"
+                            : "border-white/10 bg-white/5"
+                        }`}
+                      >
+                        #{p.number ?? "-"} {p.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  onClick={makeSubstitution}
+                  disabled={
+                    submittingSub ||
+                    game?.status === "finished" ||
+                    onCourtPlayers.length === 0 ||
+                    benchPlayers.length === 0
+                  }
+                  className="w-full rounded-2xl bg-sky-600 px-4 py-4 text-base font-extrabold disabled:opacity-50"
+                >
+                  {submittingSub ? "換人中..." : "確認換人"}
+                </button>
+              </div>
             </div>
 
             <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
@@ -1028,28 +962,110 @@ export default function LiveGamePage() {
                 </button>
               </div>
 
-              <div className="mb-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3">
-                <div className="text-[11px] text-emerald-200/80">目前選擇球員</div>
-                <div className="mt-1 text-lg font-extrabold">
-                  {selectedPlayer ? getPlayerDisplayName(selectedPlayer) : "未選擇"}
-                </div>
-              </div>
+              <div className="space-y-3">
+                <div>
+                  <div className="mb-2 text-[11px] font-semibold text-white/50">得分事件</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => addEvent("fg2_made", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-emerald-700 px-2 py-4 text-sm font-extrabold disabled:opacity-50"
+                    >
+                      2分進
+                    </button>
+                    <button
+                      onClick={() => addEvent("fg2_miss", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-white/10 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      2分鐵
+                    </button>
+                    <button
+                      onClick={() => addEvent("reb", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-slate-700 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      籃板
+                    </button>
 
-              <div className="grid grid-cols-3 gap-2 md:grid-cols-4">
-                {eventButtons.map((btn) => (
-                  <button
-                    key={btn.key}
-                    onClick={() => addEvent(btn.key, "A")}
-                    disabled={game?.status === "finished"}
-                    className={`rounded-2xl px-2 py-4 text-sm font-bold transition active:scale-[0.98] disabled:opacity-50 ${
-                      btn.strong
-                        ? "bg-emerald-700 hover:bg-emerald-600"
-                        : "bg-white/10 hover:bg-white/15"
-                    }`}
-                  >
-                    {btn.label}
-                  </button>
-                ))}
+                    <button
+                      onClick={() => addEvent("fg3_made", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-emerald-700 px-2 py-4 text-sm font-extrabold disabled:opacity-50"
+                    >
+                      3分進
+                    </button>
+                    <button
+                      onClick={() => addEvent("fg3_miss", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-white/10 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      3分鐵
+                    </button>
+                    <button
+                      onClick={() => addEvent("ast", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-blue-700 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      助攻
+                    </button>
+
+                    <button
+                      onClick={() => addEvent("ft_made", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-emerald-700 px-2 py-4 text-sm font-extrabold disabled:opacity-50"
+                    >
+                      罰進
+                    </button>
+                    <button
+                      onClick={() => addEvent("ft_miss", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-white/10 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      罰鐵
+                    </button>
+                    <button
+                      onClick={() => addEvent("pf", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-orange-700 px-2 py-4 text-sm font-bold disabled:opacity-50"
+                    >
+                      犯規
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-2 text-[11px] font-semibold text-white/50">其他事件</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <button
+                      onClick={() => addEvent("tov", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-red-700 px-2 py-3 text-sm font-bold disabled:opacity-50"
+                    >
+                      失誤
+                    </button>
+                    <button
+                      onClick={() => addEvent("stl", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-cyan-700 px-2 py-3 text-sm font-bold disabled:opacity-50"
+                    >
+                      抄截
+                    </button>
+                    <button
+                      onClick={() => addEvent("blk", "A")}
+                      disabled={game?.status === "finished"}
+                      className="rounded-2xl bg-indigo-700 px-2 py-3 text-sm font-bold disabled:opacity-50"
+                    >
+                      阻攻
+                    </button>
+                    <button
+                      onClick={undoLastEvent}
+                      className="rounded-2xl bg-red-500/20 px-2 py-3 text-sm font-bold text-red-300"
+                    >
+                      復原
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
