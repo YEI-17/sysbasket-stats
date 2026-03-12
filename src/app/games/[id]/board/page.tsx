@@ -1,25 +1,9 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
-
-type Player = {
-  id: string;
-  name: string;
-  number: number | null;
-  position?: string | null;
-  active?: boolean;
-};
-
-type GameRow = {
-  id: string;
-  teamA: string | null;
-  teamB: string | null;
-  status?: string | null;
-};
 
 type EventRow = {
   id: string;
@@ -41,41 +25,113 @@ type ClockRow = {
   updated_at?: string;
 };
 
-type GamePlayerRow = {
+type GameRow = {
   id: string;
-  game_id: string;
-  player_id: string;
-  team_side: "A" | "B";
-  is_starter: boolean;
+  teamA: string | null;
+  teamB: string | null;
+  is_live?: boolean | null;
+  ended_at?: string | null;
+  status?: string | null;
 };
 
+type Player = {
+  id: string;
+  name: string;
+  number: number | null;
+  active?: boolean;
+};
+
+type Stat = {
+  pts: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  reb: number;
+  ast: number;
+  tov: number;
+  stl: number;
+  blk: number;
+  pf: number;
+  plusMinus: number | null;
+};
+
+const CLOCK_TABLE = "game_clock";
 const REGULAR_SECONDS = 600;
-const OT_SECONDS = 300;
 
-const EVENT_LABELS: Record<string, string> = {
-  fg2_made: "2分進",
-  fg2_miss: "2分鐵",
-  fg3_made: "3分進",
-  fg3_miss: "3分鐵",
-  ft_made: "罰球進",
-  ft_miss: "罰球鐵",
-  reb: "籃板",
-  ast: "助攻",
-  tov: "失誤",
-  stl: "抄截",
-  blk: "阻攻",
-  pf: "犯規",
-  sub_in: "上場",
-  sub_out: "下場",
-};
+const emptyStat = (): Stat => ({
+  pts: 0,
+  fg2m: 0,
+  fg2a: 0,
+  fg3m: 0,
+  fg3a: 0,
+  ftm: 0,
+  fta: 0,
+  reb: 0,
+  ast: 0,
+  tov: 0,
+  stl: 0,
+  blk: 0,
+  pf: 0,
+  plusMinus: null,
+});
 
-function formatTime(total: number) {
-  const s = Math.max(0, total || 0);
-  const mm = Math.floor(s / 60)
-    .toString()
-    .padStart(2, "0");
-  const ss = (s % 60).toString().padStart(2, "0");
-  return `${mm}:${ss}`;
+function formatClock(secondsLeft: number) {
+  const safe = Math.max(0, secondsLeft || 0);
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function applyEvent(stat: Stat, eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      stat.fg2m += 1;
+      stat.fg2a += 1;
+      break;
+    case "fg2_miss":
+      stat.fg2a += 1;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      stat.fg3m += 1;
+      stat.fg3a += 1;
+      break;
+    case "fg3_miss":
+      stat.fg3a += 1;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      stat.ftm += 1;
+      stat.fta += 1;
+      break;
+    case "ft_miss":
+      stat.fta += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "tov":
+      stat.tov += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    case "pf":
+      stat.pf += 1;
+      break;
+    default:
+      break;
+  }
 }
 
 function getPoints(eventType: string) {
@@ -85,148 +141,117 @@ function getPoints(eventType: string) {
   return 0;
 }
 
+function computeDisplaySeconds(clock: ClockRow | null) {
+  if (!clock) return REGULAR_SECONDS;
+
+  const base = Math.max(0, clock.seconds_left ?? 0);
+
+  if (!clock.is_running) {
+    return base;
+  }
+
+  if (!clock.updated_at) {
+    return base;
+  }
+
+  const updatedAtMs = new Date(clock.updated_at).getTime();
+
+  if (Number.isNaN(updatedAtMs)) {
+    return base;
+  }
+
+  const nowMs = Date.now();
+  const elapsedSeconds = Math.floor((nowMs - updatedAtMs) / 1000);
+
+  return Math.max(0, base - elapsedSeconds);
+}
+
 function getQuarterLabel(quarter: number) {
   if (quarter <= 4) return `Q${quarter}`;
   return `OT${quarter - 4}`;
 }
 
-function getQuarterSeconds(quarter: number) {
-  return quarter <= 4 ? REGULAR_SECONDS : OT_SECONDS;
-}
-
-function buildQuarterRange(maxQuarter: number) {
-  return Array.from({ length: Math.max(1, maxQuarter) }, (_, i) => i + 1);
-}
-
-function sortByNumber(players: Player[]) {
-  return [...players].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
-}
-
-function getPlayerDisplayName(player?: Player | null) {
-  if (!player) return "未選擇";
-  return `#${player.number ?? "-"} ${player.name}`;
-}
-
-export default function LiveGamePage() {
+export default function BoardPage() {
   const params = useParams();
   const gameId = String(params.id);
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
 
   const [game, setGame] = useState<GameRow | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
-  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
-
+  const [displaySeconds, setDisplaySeconds] = useState(REGULAR_SECONDS);
   const [viewerCount, setViewerCount] = useState(1);
-  const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
 
-  const [editingTeamA, setEditingTeamA] = useState("");
-  const [savingTeamA, setSavingTeamA] = useState(false);
-  const [endingGame, setEndingGame] = useState(false);
+  const presenceKeyRef = useRef(`admin-${Math.random().toString(36).slice(2)}`);
 
-  const [benchOpen, setBenchOpen] = useState(true);
-  const [subOutPlayerId, setSubOutPlayerId] = useState("");
-  const [subInPlayerId, setSubInPlayerId] = useState("");
-  const [submittingSub, setSubmittingSub] = useState(false);
-
-  const tickerRef = useRef<NodeJS.Timeout | null>(null);
-  const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
-
-  async function loadCurrentGame() {
-    if (!gameId) return null;
-
-    setError("");
-
+  async function loadGame() {
     const { data, error } = await supabase
       .from("games")
-      .select("id, teamA, teamB, status")
+      .select("id, teamA, teamB, is_live, ended_at, status")
       .eq("id", gameId)
       .single();
 
     if (error) {
-      setError(`讀取目前比賽失敗：${error.message}`);
-      return null;
+      setMsg(`讀取 games 失敗：${error.message}`);
+      return;
     }
 
-    setGame(data);
-    setEditingTeamA(data.teamA ?? "");
-    return data;
+    setGame(data as GameRow);
   }
 
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
-      .select("id, name, number, position, active")
+      .select("id, name, number, active")
       .eq("active", true)
       .order("number", { ascending: true });
 
     if (error) {
-      setError((prev) => prev || `讀取球員失敗：${error.message}`);
+      setMsg(`讀取 players 失敗：${error.message}`);
       return;
     }
 
-    const list = data ?? [];
-    setPlayers(list);
-
-    if (list.length > 0 && !selectedPlayerId) {
-      setSelectedPlayerId(list[0].id);
-    }
+    setPlayers((data as Player[]) || []);
   }
 
-  async function loadGamePlayers(targetGameId: string) {
-    const { data, error } = await supabase
-      .from("game_players")
-      .select("id, game_id, player_id, team_side, is_starter")
-      .eq("game_id", targetGameId);
-
-    if (error) {
-      setError((prev) => prev || `讀取上場名單失敗：${error.message}`);
-      return;
-    }
-
-    setGamePlayers((data ?? []) as GamePlayerRow[]);
-  }
-
-  async function loadEvents(targetGameId: string) {
+  async function loadEvents() {
     const { data, error } = await supabase
       .from("events")
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-      )
-      .eq("game_id", targetGameId)
+      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+      .eq("game_id", gameId)
       .order("created_at", { ascending: true });
 
     if (error) {
-      setError((prev) => prev || `讀取事件失敗：${error.message}`);
+      setMsg(`讀取 events 失敗：${error.message}`);
       return;
     }
 
-    setEvents(data ?? []);
+    setEvents((data as EventRow[]) || []);
   }
 
-  async function loadClock(targetGameId: string) {
+  async function loadClock() {
     const { data, error } = await supabase
-      .from("game_clock")
+      .from(CLOCK_TABLE)
       .select("game_id, quarter, seconds_left, is_running, updated_at")
-      .eq("game_id", targetGameId)
+      .eq("game_id", gameId)
       .order("quarter", { ascending: false })
       .limit(1);
 
     if (error) {
-      setError((prev) => prev || `讀取比賽時間失敗：${error.message}`);
+      setMsg(`讀取 ${CLOCK_TABLE} 失敗：${error.message}`);
       return;
     }
 
-    let currentClock = data?.[0] ?? null;
+    const latest = (data as ClockRow[] | null)?.[0] ?? null;
 
-    if (!currentClock) {
+    if (!latest) {
       const { data: inserted, error: insertError } = await supabase
-        .from("game_clock")
+        .from(CLOCK_TABLE)
         .insert({
-          game_id: targetGameId,
+          game_id: gameId,
           quarter: 1,
           seconds_left: REGULAR_SECONDS,
           is_running: false,
@@ -235,52 +260,96 @@ export default function LiveGamePage() {
         .single();
 
       if (insertError) {
-        setError((prev) => prev || `建立比賽時間失敗：${insertError.message}`);
+        setMsg(`建立 ${CLOCK_TABLE} 失敗：${insertError.message}`);
         return;
       }
 
-      currentClock = inserted;
+      setClock(inserted as ClockRow);
+      return;
     }
 
-    setClock(currentClock);
+    setClock(latest);
   }
 
-  async function init() {
+  async function loadAll(showLoading = false) {
     if (!gameId) return;
+    if (showLoading) setLoading(true);
+    setMsg("");
 
-    setLoading(true);
-    setError("");
+    await Promise.all([loadGame(), loadPlayers(), loadEvents(), loadClock()]);
 
-    await loadPlayers();
-    const g = await loadCurrentGame();
-
-    if (g) {
-      await Promise.all([loadEvents(g.id), loadClock(g.id), loadGamePlayers(g.id)]);
-    }
-
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }
 
   useEffect(() => {
     if (!gameId) return;
-    init();
+    loadAll(true);
   }, [gameId]);
 
   useEffect(() => {
+    setDisplaySeconds(computeDisplaySeconds(clock));
+
+    const timer = setInterval(() => {
+      setDisplaySeconds(computeDisplaySeconds(clock));
+    }, 250);
+
+    return () => clearInterval(timer);
+  }, [clock]);
+
+  useEffect(() => {
     if (!gameId) return;
 
-    const channel = supabase.channel(`live-room-${gameId}`, {
+    const presenceChannel = supabase.channel(`game-presence-${gameId}`, {
       config: {
         presence: { key: presenceKeyRef.current },
       },
     });
 
-    channel
+    presenceChannel
       .on("presence", { event: "sync" }, () => {
-        const state = channel.presenceState();
+        const state = presenceChannel.presenceState();
         const count = Object.keys(state).length;
         setViewerCount(count || 1);
       })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({
+            role: "admin",
+            page: "board",
+            gameId,
+            joinedAt: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(presenceChannel);
+    };
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    const dataChannel = supabase.channel(`game-data-${gameId}`);
+
+    dataChannel
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "games",
+          filter: `id=eq.${gameId}`,
+        },
+        (payload) => {
+          const newRow = payload.new as GameRow | undefined;
+          if (newRow && newRow.id) {
+            setGame(newRow);
+          } else {
+            loadGame();
+          }
+        }
+      )
       .on(
         "postgres_changes",
         {
@@ -290,7 +359,7 @@ export default function LiveGamePage() {
           filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadEvents(gameId);
+          await loadEvents();
         }
       )
       .on(
@@ -298,939 +367,430 @@ export default function LiveGamePage() {
         {
           event: "*",
           schema: "public",
-          table: "game_clock",
+          table: CLOCK_TABLE,
           filter: `game_id=eq.${gameId}`,
         },
-        async () => {
-          await loadClock(gameId);
+        (payload) => {
+          const newRow = payload.new as ClockRow | undefined;
+          if (newRow && newRow.game_id) {
+            setClock(newRow);
+          } else {
+            loadClock();
+          }
         }
       )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "games",
-          filter: `id=eq.${gameId}`,
-        },
-        async () => {
-          await loadCurrentGame();
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "game_players",
-          filter: `game_id=eq.${gameId}`,
-        },
-        async () => {
-          await loadGamePlayers(gameId);
-        }
-      )
-      .subscribe(async (status) => {
-        if (status === "SUBSCRIBED") {
-          await channel.track({
-            online_at: new Date().toISOString(),
-            page: "live",
-            gameId,
-          });
-        }
-      });
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(dataChannel);
     };
   }, [gameId]);
-
-  useEffect(() => {
-    if (!clock?.is_running) {
-      if (tickerRef.current) {
-        clearInterval(tickerRef.current);
-        tickerRef.current = null;
-      }
-      return;
-    }
-
-    if (tickerRef.current) clearInterval(tickerRef.current);
-
-    tickerRef.current = setInterval(() => {
-      setClock((prev) => {
-        if (!prev) return prev;
-        if (prev.seconds_left <= 0) {
-          return { ...prev, is_running: false, seconds_left: 0 };
-        }
-        return { ...prev, seconds_left: prev.seconds_left - 1 };
-      });
-    }, 1000);
-
-    return () => {
-      if (tickerRef.current) {
-        clearInterval(tickerRef.current);
-        tickerRef.current = null;
-      }
-    };
-  }, [clock?.is_running]);
-
-  async function persistClock(next: ClockRow) {
-    const { error } = await supabase
-      .from("game_clock")
-      .upsert(
-        {
-          game_id: next.game_id,
-          quarter: next.quarter,
-          seconds_left: next.seconds_left,
-          is_running: next.is_running,
-        },
-        { onConflict: "game_id,quarter" }
-      );
-
-    if (error) {
-      setError(`更新比賽時間失敗：${error.message}`);
-    }
-  }
-
-  async function startClock() {
-    if (!clock || game?.status === "finished") return;
-    const next = { ...clock, is_running: true };
-    setClock(next);
-    await persistClock(next);
-  }
-
-  async function pauseClock() {
-    if (!clock) return;
-    const next = { ...clock, is_running: false };
-    setClock(next);
-    await persistClock(next);
-  }
-
-  async function resetClock() {
-    if (!clock) return;
-    const nextSeconds = getQuarterSeconds(clock.quarter);
-    const next = { ...clock, seconds_left: nextSeconds, is_running: false };
-    setClock(next);
-    await persistClock(next);
-  }
-
-  async function adjustClock(delta: number) {
-    if (!clock) return;
-    const maxSeconds = getQuarterSeconds(clock.quarter);
-    const next = {
-      ...clock,
-      seconds_left: Math.max(0, Math.min(maxSeconds, clock.seconds_left + delta)),
-    };
-    setClock(next);
-    await persistClock(next);
-  }
-
-  async function nextQuarter() {
-    if (!clock || !game) return;
-
-    const nextQuarterNum = clock.quarter + 1;
-    const next: ClockRow = {
-      game_id: game.id,
-      quarter: nextQuarterNum,
-      seconds_left: getQuarterSeconds(nextQuarterNum),
-      is_running: false,
-    };
-
-    setClock(next);
-    await persistClock(next);
-  }
-
-  async function endGame() {
-    if (!game || endingGame) return;
-
-    setEndingGame(true);
-    setError("");
-
-    try {
-      if (clock) {
-        const pausedClock = { ...clock, is_running: false };
-        setClock(pausedClock);
-        await persistClock(pausedClock);
-      }
-
-      const { error } = await supabase
-        .from("games")
-        .update({ status: "finished" })
-        .eq("id", game.id);
-
-      if (error) {
-        setError(`結束比賽失敗：${error.message}`);
-        return;
-      }
-
-      setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
-    } finally {
-      setEndingGame(false);
-    }
-  }
-
-  async function saveTeamAName() {
-    if (!game) return;
-
-    const trimmed = editingTeamA.trim();
-    if (!trimmed) {
-      setError("我方隊名不能是空白");
-      return;
-    }
-
-    setSavingTeamA(true);
-    setError("");
-
-    const { error } = await supabase
-      .from("games")
-      .update({ teamA: trimmed })
-      .eq("id", game.id);
-
-    setSavingTeamA(false);
-
-    if (error) {
-      setError(`更新隊名失敗：${error.message}`);
-      return;
-    }
-
-    setGame((prev) => (prev ? { ...prev, teamA: trimmed } : prev));
-  }
-
-  async function addEvent(eventType: string, teamSide: "A" | "B" = "A") {
-    if (!game || !clock) return;
-
-    if (game.status === "finished") {
-      setError("比賽已結束，不能再新增紀錄");
-      return;
-    }
-
-    const payload: {
-      game_id: string;
-      player_id?: string | null;
-      quarter: number;
-      event_type: string;
-      team_side: "A" | "B";
-    } = {
-      game_id: game.id,
-      quarter: clock.quarter,
-      event_type: eventType,
-      team_side: teamSide,
-    };
-
-    if (teamSide === "A") {
-      if (!selectedPlayerId) {
-        setError("請先選擇球員");
-        return;
-      }
-      payload.player_id = selectedPlayerId;
-    } else {
-      payload.player_id = null;
-    }
-
-    const { error } = await supabase.from("events").insert(payload);
-
-    if (error) {
-      setError(`新增事件失敗：${error.message}`);
-      return;
-    }
-
-    await loadEvents(game.id);
-  }
-
-  async function undoLastEvent() {
-    if (!game) return;
-
-    const validEvents = [...events]
-      .filter((e) => !e.is_undone)
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-
-    const last = validEvents[0];
-    if (!last) return;
-
-    const { error } = await supabase
-      .from("events")
-      .update({
-        is_undone: true,
-        undone_at: new Date().toISOString(),
-      })
-      .eq("id", last.id);
-
-    if (error) {
-      setError(`復原失敗：${error.message}`);
-      return;
-    }
-
-    await loadEvents(game.id);
-  }
 
   const validEvents = useMemo(() => {
     return events.filter((e) => !e.is_undone);
   }, [events]);
 
-  const teamAPlayerIds = useMemo(() => {
-    const ids = gamePlayers
-      .filter((gp) => gp.team_side === "A")
-      .map((gp) => gp.player_id);
+  const statsMap = useMemo(() => {
+    const map: Record<string, Stat> = {};
 
-    if (ids.length > 0) return ids;
-    return players.map((p) => p.id);
-  }, [gamePlayers, players]);
-
-  const teamAPlayers = useMemo(() => {
-    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
-  }, [players, teamAPlayerIds]);
-
-  const starterIds = useMemo(() => {
-    const starterFromDb = gamePlayers
-      .filter((gp) => gp.team_side === "A" && gp.is_starter)
-      .map((gp) => gp.player_id);
-
-    if (starterFromDb.length > 0) return starterFromDb;
-    return teamAPlayers.slice(0, 5).map((p) => p.id);
-  }, [gamePlayers, teamAPlayers]);
-
-  const currentOnCourtIds = useMemo(() => {
-    const lineup = new Set<string>(starterIds);
+    for (const p of players) {
+      map[p.id] = emptyStat();
+    }
 
     for (const e of validEvents) {
       if (e.team_side !== "A") continue;
       if (!e.player_id) continue;
 
-      if (e.event_type === "sub_in") lineup.add(e.player_id);
-      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+      if (!map[e.player_id]) {
+        map[e.player_id] = emptyStat();
+      }
+
+      applyEvent(map[e.player_id], e.event_type);
     }
 
-    return Array.from(lineup);
-  }, [starterIds, validEvents]);
+    return map;
+  }, [players, validEvents]);
 
-  const onCourtPlayers = useMemo(() => {
-    return sortByNumber(teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id)));
-  }, [teamAPlayers, currentOnCourtIds]);
-
-  const benchPlayers = useMemo(() => {
-    return sortByNumber(teamAPlayers.filter((p) => !currentOnCourtIds.includes(p.id)));
-  }, [teamAPlayers, currentOnCourtIds]);
-
-  useEffect(() => {
-    if (!selectedPlayerId && onCourtPlayers.length > 0) {
-      setSelectedPlayerId(onCourtPlayers[0].id);
-      return;
-    }
-
-    if (
-      selectedPlayerId &&
-      !teamAPlayers.some((p) => p.id === selectedPlayerId) &&
-      onCourtPlayers.length > 0
-    ) {
-      setSelectedPlayerId(onCourtPlayers[0].id);
-    }
-  }, [selectedPlayerId, onCourtPlayers, teamAPlayers]);
-
-  useEffect(() => {
-    if (!subOutPlayerId && onCourtPlayers.length > 0) {
-      setSubOutPlayerId(onCourtPlayers[0].id);
-    }
-  }, [subOutPlayerId, onCourtPlayers]);
-
-  useEffect(() => {
-    if (!subInPlayerId && benchPlayers.length > 0) {
-      setSubInPlayerId(benchPlayers[0].id);
-    }
-  }, [subInPlayerId, benchPlayers]);
-
-  const selectedPlayer = useMemo(
-    () => players.find((p) => p.id === selectedPlayerId) ?? null,
-    [players, selectedPlayerId]
-  );
-
-  const subOutPlayer = useMemo(
-    () => players.find((p) => p.id === subOutPlayerId) ?? null,
-    [players, subOutPlayerId]
-  );
-
-  const subInPlayer = useMemo(
-    () => players.find((p) => p.id === subInPlayerId) ?? null,
-    [players, subInPlayerId]
-  );
-
-  async function makeSubstitution() {
-    if (!game || !clock) return;
-    if (game.status === "finished") {
-      setError("比賽已結束，不能換人");
-      return;
-    }
-
-    if (!subOutPlayerId || !subInPlayerId) {
-      setError("請選擇下場與上場球員");
-      return;
-    }
-
-    if (subOutPlayerId === subInPlayerId) {
-      setError("上場與下場不能是同一人");
-      return;
-    }
-
-    setSubmittingSub(true);
-    setError("");
-
-    const payload = [
-      {
-        game_id: game.id,
-        player_id: subOutPlayerId,
-        quarter: clock.quarter,
-        event_type: "sub_out",
-        team_side: "A" as const,
-      },
-      {
-        game_id: game.id,
-        player_id: subInPlayerId,
-        quarter: clock.quarter,
-        event_type: "sub_in",
-        team_side: "A" as const,
-      },
-    ];
-
-    const { error } = await supabase.from("events").insert(payload);
-
-    setSubmittingSub(false);
-
-    if (error) {
-      setError(`換人失敗：${error.message}`);
-      return;
-    }
-
-    setSelectedPlayerId(subInPlayerId);
-    setSubOutPlayerId("");
-    setSubInPlayerId("");
-    await loadEvents(game.id);
-  }
-
-  const teamScore = useMemo(() => {
-    let scoreA = 0;
-    let scoreB = 0;
+  const totalScore = useMemo(() => {
+    let home = 0;
+    let away = 0;
 
     for (const e of validEvents) {
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") scoreA += pts;
-      if (e.team_side === "B") scoreB += pts;
+      if (e.team_side === "A") home += pts;
+      if (e.team_side === "B") away += pts;
     }
 
-    return { scoreA, scoreB };
+    return { home, away };
   }, [validEvents]);
 
   const quarterScores = useMemo(() => {
     const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
+    const byQuarter: Record<number, { home: number; away: number }> = {};
 
-    const result: Record<number, { home: number; away: number }> = {};
-
-    for (const q of buildQuarterRange(maxQuarter)) {
-      result[q] = { home: 0, away: 0 };
+    for (let q = 1; q <= maxQuarter; q += 1) {
+      byQuarter[q] = { home: 0, away: 0 };
     }
 
     for (const e of validEvents) {
-      if (!result[e.quarter]) {
-        result[e.quarter] = { home: 0, away: 0 };
+      if (!byQuarter[e.quarter]) {
+        byQuarter[e.quarter] = { home: 0, away: 0 };
       }
 
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") result[e.quarter].home += pts;
-      if (e.team_side === "B") result[e.quarter].away += pts;
+      if (e.team_side === "A") byQuarter[e.quarter].home += pts;
+      if (e.team_side === "B") byQuarter[e.quarter].away += pts;
     }
 
-    return result;
+    return byQuarter;
   }, [validEvents, clock?.quarter]);
 
-  const eventButtons = [
-    { key: "fg2_made", label: "2分進", strong: true },
-    { key: "fg2_miss", label: "2分鐵", strong: false },
-    { key: "fg3_made", label: "3分進", strong: true },
-    { key: "fg3_miss", label: "3分鐵", strong: false },
-    { key: "ft_made", label: "罰球進", strong: true },
-    { key: "ft_miss", label: "罰球鐵", strong: false },
-    { key: "reb", label: "籃板", strong: false },
-    { key: "ast", label: "助攻", strong: false },
-    { key: "tov", label: "失誤", strong: false },
-    { key: "stl", label: "抄截", strong: false },
-    { key: "blk", label: "阻攻", strong: false },
-    { key: "pf", label: "犯規", strong: false },
-  ];
-
-  const lastThreeEvents = useMemo(() => {
-    return [...validEvents]
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
-      .slice(0, 3);
-  }, [validEvents]);
+  const starters = useMemo(() => players.slice(0, 5), [players]);
+  const benchPlayers = useMemo(() => players.slice(5), [players]);
 
   if (loading) {
-    return <div className="p-6 text-white">載入中...</div>;
+    return (
+      <main style={pageStyle}>
+        <div style={{ color: "#aaa", fontSize: 18 }}>載入中...</div>
+      </main>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 p-2 text-white md:p-4">
-      <div className="mx-auto max-w-7xl space-y-3">
-        <div className="rounded-3xl border border-white/10 bg-white/5 p-3 md:p-4">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-white/50">目前比賽</div>
-              <h1 className="truncate text-xl font-extrabold md:text-3xl">
-                {game?.teamA || "我方"} vs {game?.teamB || "對手"}
-              </h1>
-            </div>
+    <main style={pageStyle}>
+      <div style={containerStyle}>
+        <div style={topBarStyle}>
+          <div style={{ fontSize: 14, color: "#9a9a9a" }}>比賽看板</div>
+          <LogoutButton />
+        </div>
 
-            <div className="flex shrink-0 items-center gap-2">
-              <Link
-                href={`/games/${gameId}/stats`}
-                className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-semibold md:text-sm"
+        <section style={scoreCardStyle}>
+          <div style={teamBigBlockStyle}>
+            <div style={teamLabelStyle}>{game?.teamA || "主場"}</div>
+            <div style={bigScoreStyle}>{totalScore.home}</div>
+          </div>
+
+          <div style={centerBlockStyle}>
+            <div style={topInfoRowStyle}>
+              <div style={quarterStyle}>{getQuarterLabel(clock?.quarter ?? 1)}</div>
+              <div style={viewerStyle}>線上觀看：{viewerCount}</div>
+              <div
+                style={{
+                  ...statusBadgeStyle,
+                  background:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#3a1111"
+                      : "#102814",
+                  color:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#ff9c9c"
+                      : "#9effae",
+                  borderColor:
+                    game?.status === "finished" || game?.is_live === false
+                      ? "#5a2020"
+                      : "#1f5a2c",
+                }}
               >
-                數據頁
-              </Link>
-              <LogoutButton />
-            </div>
-          </div>
-
-          <div className="mb-3 flex flex-col gap-2 sm:flex-row">
-            <input
-              value={editingTeamA}
-              onChange={(e) => setEditingTeamA(e.target.value)}
-              placeholder="輸入我方隊名"
-              className="flex-1 rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
-            />
-            <button
-              onClick={saveTeamAName}
-              disabled={savingTeamA}
-              className="rounded-2xl bg-blue-600 px-4 py-3 font-semibold disabled:opacity-60"
-            >
-              {savingTeamA ? "儲存中..." : "更新我方隊名"}
-            </button>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-black/30 p-3 md:p-4">
-            <div className="grid items-center gap-3 grid-cols-[1fr_auto_1fr]">
-              <div className="min-w-0 text-center md:text-left">
-                <div className="text-[11px] text-white/50 md:text-sm">主隊</div>
-                <div className="truncate text-lg font-bold md:text-3xl">
-                  {game?.teamA || "我方"}
-                </div>
-                <div className="mt-1 text-4xl font-extrabold leading-none md:mt-2 md:text-7xl">
-                  {teamScore.scoreA}
-                </div>
-              </div>
-
-              <div className="text-center">
-                <div className="text-lg font-bold md:text-2xl">
-                  {getQuarterLabel(clock?.quarter ?? 1)}
-                </div>
-                <div className="mt-1 text-4xl font-extrabold tracking-wider md:mt-2 md:text-6xl">
-                  {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
-                </div>
-                <div className="mt-2 flex flex-wrap justify-center gap-1 md:gap-2">
-                  <div className="rounded-full bg-white/10 px-2 py-1 text-[10px] md:px-4 md:py-2 md:text-sm">
-                    觀看 {viewerCount}
-                  </div>
-                  <div
-                    className={`rounded-full px-2 py-1 text-[10px] font-bold md:px-4 md:py-2 md:text-sm ${
-                      game?.status === "finished"
-                        ? "bg-red-500/20 text-red-300"
-                        : clock?.is_running
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-yellow-500/20 text-yellow-300"
-                    }`}
-                  >
-                    {game?.status === "finished"
-                      ? "比賽已結束"
-                      : clock?.is_running
-                      ? "計時中"
-                      : "暫停中"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="min-w-0 text-center md:text-right">
-                <div className="text-[11px] text-white/50 md:text-sm">客隊</div>
-                <div className="truncate text-lg font-bold md:text-3xl">
-                  {game?.teamB || "對手"}
-                </div>
-                <div className="mt-1 text-4xl font-extrabold leading-none md:mt-2 md:text-7xl">
-                  {teamScore.scoreB}
-                </div>
+                {game?.status === "finished" || game?.is_live === false
+                  ? "比賽已結束"
+                  : clock?.is_running
+                  ? "計時中"
+                  : "暫停中"}
               </div>
             </div>
 
-            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+            <div style={clockStyle}>{formatClock(displaySeconds)}</div>
+
+            <div style={quarterLineStyle}>
               {Object.keys(quarterScores)
                 .map(Number)
                 .sort((a, b) => a - b)
                 .map((q) => (
-                  <div
-                    key={q}
-                    className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] md:px-3 md:py-2 md:text-sm"
-                  >
+                  <span key={q}>
                     {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
-                  </div>
+                  </span>
                 ))}
             </div>
           </div>
 
-          {error && (
-            <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-              {error}
+          <div style={teamBigBlockStyle}>
+            <div style={teamLabelStyle}>{game?.teamB || "客場"}</div>
+            <div style={bigScoreStyle}>{totalScore.away}</div>
+          </div>
+        </section>
+
+        <section style={splitCardStyle}>
+          <div style={miniCardStyle}>
+            <div style={sectionTitleStyle}>先發五人</div>
+            <div style={playerGroupStyle}>
+              {starters.map((p) => (
+                <div key={p.id} style={playerChipStyle}>
+                  {p.number ? `#${p.number} ` : ""}
+                  {p.name}
+                </div>
+              ))}
             </div>
-          )}
-        </div>
+          </div>
 
-        <div className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
-          <div className="space-y-3">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-semibold">場上五人</div>
-                  <div className="text-[11px] text-white/50">點球員後可直接記錄</div>
-                </div>
-                <div className="max-w-[52%] truncate rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] text-emerald-300">
-                  {selectedPlayer ? getPlayerDisplayName(selectedPlayer) : "未選擇"}
-                </div>
-              </div>
+          <div style={miniCardStyle}>
+            <div style={sectionTitleStyle}>板凳球員</div>
+            <div style={playerGroupStyle}>
+              {benchPlayers.length === 0 ? (
+                <div style={{ color: "#888" }}>目前沒有板凳球員</div>
+              ) : (
+                benchPlayers.map((p) => (
+                  <div key={p.id} style={playerChipStyle}>
+                    {p.number ? `#${p.number} ` : ""}
+                    {p.name}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
 
-              <div className="grid grid-cols-5 gap-2">
-                {onCourtPlayers.slice(0, 5).map((p) => {
-                  const selected = selectedPlayerId === p.id;
+        <section style={tableCardStyle}>
+          <div style={sectionTitleStyle}>球員數據</div>
+
+          <div style={tableWrapStyle}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>球員</th>
+                  <th style={thStyle}>PTS</th>
+                  <th style={thStyle}>2PT</th>
+                  <th style={thStyle}>3PT</th>
+                  <th style={thStyle}>FT</th>
+                  <th style={thStyle}>REB</th>
+                  <th style={thStyle}>AST</th>
+                  <th style={thStyle}>TOV</th>
+                  <th style={thStyle}>STL</th>
+                  <th style={thStyle}>BLK</th>
+                  <th style={thStyle}>PF</th>
+                  <th style={thStyle}>+/-</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {players.map((p) => {
+                  const s = statsMap[p.id] || emptyStat();
+
                   return (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedPlayerId(p.id)}
-                      className={`rounded-2xl border px-1 py-3 text-center transition active:scale-[0.98] ${
-                        selected
-                          ? "border-emerald-400 bg-emerald-500/20"
-                          : "border-emerald-500/20 bg-emerald-500/10"
-                      }`}
-                    >
-                      <div className="text-base font-extrabold leading-none md:text-lg">
-                        #{p.number ?? "-"}
-                      </div>
-                      <div className="mt-1 truncate text-[10px] md:text-xs">{p.name}</div>
-                    </button>
+                    <tr key={p.id}>
+                      <td style={tdNameStyle}>
+                        {p.number ? `#${p.number} ` : ""}
+                        {p.name}
+                      </td>
+                      <td style={tdStyle}>{s.pts}</td>
+                      <td style={tdStyle}>
+                        {s.fg2m}/{s.fg2a}
+                      </td>
+                      <td style={tdStyle}>
+                        {s.fg3m}/{s.fg3a}
+                      </td>
+                      <td style={tdStyle}>
+                        {s.ftm}/{s.fta}
+                      </td>
+                      <td style={tdStyle}>{s.reb}</td>
+                      <td style={tdStyle}>{s.ast}</td>
+                      <td style={tdStyle}>{s.tov}</td>
+                      <td style={tdStyle}>{s.stl}</td>
+                      <td style={tdStyle}>{s.blk}</td>
+                      <td style={tdStyle}>{s.pf}</td>
+                      <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
+                    </tr>
                   );
                 })}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-sm font-semibold">場下名單</div>
-                <button
-                  onClick={() => setBenchOpen((v) => !v)}
-                  className="rounded-xl bg-white/10 px-3 py-1 text-[11px]"
-                >
-                  {benchOpen ? "收起" : `展開（${benchPlayers.length}）`}
-                </button>
-              </div>
-
-              {benchOpen ? (
-                benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/50">
-                    目前沒有場下球員
-                  </div>
-                ) : (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {benchPlayers.map((p) => {
-                      const selected = selectedPlayerId === p.id;
-                      return (
-                        <button
-                          key={p.id}
-                          onClick={() => setSelectedPlayerId(p.id)}
-                          className={`shrink-0 rounded-2xl border px-3 py-3 text-center transition active:scale-[0.98] ${
-                            selected
-                              ? "border-blue-400 bg-blue-500/20"
-                              : "border-white/10 bg-white/5"
-                          }`}
-                        >
-                          <div className="text-base font-extrabold leading-none">
-                            #{p.number ?? "-"}
-                          </div>
-                          <div className="mt-1 text-[10px]">{p.name}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )
-              ) : (
-                <div className="text-[11px] text-white/50">點展開可快速選擇場下球員</div>
-              )}
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-semibold">我方快速紀錄</div>
-                  <div className="text-[11px] text-white/50">先點球員，再點事件</div>
-                </div>
-                <button
-                  onClick={undoLastEvent}
-                  className="rounded-xl bg-red-500/20 px-3 py-2 text-xs font-semibold text-red-300"
-                >
-                  復原上一筆
-                </button>
-              </div>
-
-              <div className="mb-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3">
-                <div className="text-[11px] text-emerald-200/80">目前選擇球員</div>
-                <div className="mt-1 text-lg font-extrabold">
-                  {selectedPlayer ? getPlayerDisplayName(selectedPlayer) : "未選擇"}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 md:grid-cols-4">
-                {eventButtons.map((btn) => (
-                  <button
-                    key={btn.key}
-                    onClick={() => addEvent(btn.key, "A")}
-                    disabled={game?.status === "finished"}
-                    className={`rounded-2xl px-2 py-4 text-sm font-bold transition active:scale-[0.98] disabled:opacity-50 ${
-                      btn.strong
-                        ? "bg-emerald-700 hover:bg-emerald-600"
-                        : "bg-white/10 hover:bg-white/15"
-                    }`}
-                  >
-                    {btn.label}
-                  </button>
-                ))}
-              </div>
-
-              {lastThreeEvents.length > 0 && (
-                <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-                  <div className="mb-2 text-[11px] text-white/50">最近 3 筆</div>
-                  <div className="space-y-2">
-                    {lastThreeEvents.map((e) => {
-                      const player =
-                        e.player_id ? players.find((p) => p.id === e.player_id) : null;
-
-                      return (
-                        <div
-                          key={e.id}
-                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs"
-                        >
-                          <div className="font-semibold">
-                            {getQuarterLabel(e.quarter)}｜
-                            {e.team_side === "A" ? game?.teamA || "我方" : game?.teamB || "對手"}
-                          </div>
-                          <div className="text-white/70">
-                            {e.team_side === "A" && player
-                              ? `${getPlayerDisplayName(player)}｜`
-                              : ""}
-                            {EVENT_LABELS[e.event_type] ?? e.event_type}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2">
-                <div className="text-sm font-semibold">對手快速加分</div>
-                <div className="text-[11px] text-white/50">快速記錄對手得分</div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={() => addEvent("ft_made", "B")}
-                  disabled={game?.status === "finished"}
-                  className="rounded-2xl bg-orange-600 px-3 py-4 text-lg font-extrabold disabled:opacity-50"
-                >
-                  +1
-                </button>
-                <button
-                  onClick={() => addEvent("fg2_made", "B")}
-                  disabled={game?.status === "finished"}
-                  className="rounded-2xl bg-orange-600 px-3 py-4 text-lg font-extrabold disabled:opacity-50"
-                >
-                  +2
-                </button>
-                <button
-                  onClick={() => addEvent("fg3_made", "B")}
-                  disabled={game?.status === "finished"}
-                  className="rounded-2xl bg-orange-600 px-3 py-4 text-lg font-extrabold disabled:opacity-50"
-                >
-                  +3
-                </button>
-              </div>
-            </div>
+              </tbody>
+            </table>
           </div>
+        </section>
 
-          <div className="space-y-3">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2">
-                <div className="text-sm font-semibold">比賽時間控制</div>
-                <div className="text-[11px] text-white/50">手機也方便操作</div>
-              </div>
-
-              <div className="mb-3 rounded-3xl border border-white/10 bg-black/30 p-4 text-center">
-                <div className="text-sm font-bold text-white/70">
-                  {getQuarterLabel(clock?.quarter ?? 1)}
-                </div>
-                <div className="mt-1 text-5xl font-extrabold tracking-wider md:text-6xl">
-                  {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={startClock}
-                  disabled={game?.status === "finished"}
-                  className="rounded-2xl bg-emerald-600 px-4 py-4 text-sm font-bold disabled:opacity-50"
-                >
-                  開始
-                </button>
-                <button
-                  onClick={pauseClock}
-                  className="rounded-2xl bg-yellow-600 px-4 py-4 text-sm font-bold"
-                >
-                  暫停
-                </button>
-                <button
-                  onClick={resetClock}
-                  className="rounded-2xl bg-red-600 px-4 py-4 text-sm font-bold"
-                >
-                  重設本節
-                </button>
-                <button
-                  onClick={nextQuarter}
-                  disabled={game?.status === "finished"}
-                  className="rounded-2xl bg-blue-600 px-4 py-4 text-sm font-bold disabled:opacity-50"
-                >
-                  下一節
-                </button>
-              </div>
-
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                <button
-                  onClick={() => adjustClock(-60)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  -1分
-                </button>
-                <button
-                  onClick={() => adjustClock(-10)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  -10秒
-                </button>
-                <button
-                  onClick={() => adjustClock(-1)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  -1秒
-                </button>
-                <button
-                  onClick={() => adjustClock(1)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  +1秒
-                </button>
-                <button
-                  onClick={() => adjustClock(10)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  +10秒
-                </button>
-                <button
-                  onClick={() => adjustClock(60)}
-                  className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-semibold"
-                >
-                  +1分
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
-              <div className="mb-2">
-                <div className="text-sm font-semibold">快速換人</div>
-                <div className="text-[11px] text-white/50">先選下場，再選上場，最後確認</div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-orange-500/20 bg-orange-500/10 p-3">
-                  <div className="text-[11px] text-orange-200/80">要下場</div>
-                  <div className="mt-1 text-base font-bold">
-                    {subOutPlayer ? getPlayerDisplayName(subOutPlayer) : "未選擇"}
-                  </div>
-                </div>
-
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {onCourtPlayers.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSubOutPlayerId(p.id)}
-                      className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                        subOutPlayerId === p.id
-                          ? "border-orange-400 bg-orange-500/20"
-                          : "border-white/10 bg-white/5"
-                      }`}
-                    >
-                      #{p.number ?? "-"} {p.name}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3">
-                  <div className="text-[11px] text-sky-200/80">要上場</div>
-                  <div className="mt-1 text-base font-bold">
-                    {subInPlayer ? getPlayerDisplayName(subInPlayer) : "未選擇"}
-                  </div>
-                </div>
-
-                {benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
-                    目前沒有可換上的場下球員
-                  </div>
-                ) : (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {benchPlayers.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => setSubInPlayerId(p.id)}
-                        className={`shrink-0 rounded-2xl border px-3 py-3 text-sm ${
-                          subInPlayerId === p.id
-                            ? "border-sky-400 bg-sky-500/20"
-                            : "border-white/10 bg-white/5"
-                        }`}
-                      >
-                        #{p.number ?? "-"} {p.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  onClick={makeSubstitution}
-                  disabled={
-                    submittingSub ||
-                    game?.status === "finished" ||
-                    onCourtPlayers.length === 0 ||
-                    benchPlayers.length === 0
-                  }
-                  className="rounded-2xl bg-sky-600 px-4 py-4 text-base font-extrabold disabled:opacity-50"
-                >
-                  {submittingSub ? "換人中..." : "確認換人"}
-                </button>
-              </div>
-            </div>
-
-            <button
-              onClick={endGame}
-              disabled={endingGame || game?.status === "finished"}
-              className="w-full rounded-3xl bg-rose-700 px-4 py-5 text-base font-extrabold disabled:opacity-50"
-            >
-              {game?.status === "finished"
-                ? "比賽已結束"
-                : endingGame
-                ? "結束中..."
-                : "結束該場比賽"}
-            </button>
-          </div>
-        </div>
+        {msg && <div style={msgStyle}>{msg}</div>}
       </div>
-    </div>
+    </main>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  minHeight: "100vh",
+  background: "#000",
+  color: "#fff",
+  padding: 16,
+};
+
+const containerStyle: React.CSSProperties = {
+  width: "100%",
+  maxWidth: 1500,
+  margin: "0 auto",
+  display: "grid",
+  gap: 16,
+};
+
+const topBarStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+};
+
+const scoreCardStyle: React.CSSProperties = {
+  background: "#0b0b0b",
+  border: "1px solid #222",
+  borderRadius: 24,
+  padding: 24,
+  display: "grid",
+  gridTemplateColumns: "1.2fr 1fr 1.2fr",
+  alignItems: "center",
+  gap: 20,
+};
+
+const teamBigBlockStyle: React.CSSProperties = {
+  display: "grid",
+  gap: 14,
+  justifyItems: "center",
+};
+
+const centerBlockStyle: React.CSSProperties = {
+  display: "grid",
+  justifyItems: "center",
+  gap: 16,
+};
+
+const topInfoRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 16,
+  flexWrap: "wrap",
+  justifyContent: "center",
+};
+
+const teamLabelStyle: React.CSSProperties = {
+  fontSize: 30,
+  color: "#c7c7c7",
+  fontWeight: 700,
+};
+
+const bigScoreStyle: React.CSSProperties = {
+  fontSize: 140,
+  lineHeight: 1,
+  fontWeight: 900,
+};
+
+const quarterStyle: React.CSSProperties = {
+  fontSize: 30,
+  color: "#d0d0d0",
+  fontWeight: 800,
+};
+
+const viewerStyle: React.CSSProperties = {
+  fontSize: 20,
+  color: "#9a9a9a",
+};
+
+const statusBadgeStyle: React.CSSProperties = {
+  fontSize: 16,
+  fontWeight: 700,
+  padding: "8px 12px",
+  borderRadius: 999,
+  border: "1px solid #333",
+};
+
+const clockStyle: React.CSSProperties = {
+  fontSize: 96,
+  lineHeight: 1,
+  fontWeight: 900,
+};
+
+const quarterLineStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 14,
+  flexWrap: "wrap",
+  justifyContent: "center",
+  color: "#9a9a9a",
+  fontSize: 18,
+};
+
+const splitCardStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 16,
+};
+
+const miniCardStyle: React.CSSProperties = {
+  background: "#0b0b0b",
+  border: "1px solid #222",
+  borderRadius: 24,
+  padding: 18,
+};
+
+const playerGroupStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const playerChipStyle: React.CSSProperties = {
+  border: "1px solid #2b2b2b",
+  background: "#121212",
+  borderRadius: 999,
+  padding: "10px 14px",
+  fontSize: 16,
+};
+
+const tableCardStyle: React.CSSProperties = {
+  background: "#0b0b0b",
+  border: "1px solid #222",
+  borderRadius: 24,
+  overflow: "hidden",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  padding: "18px 20px",
+  fontSize: 22,
+  fontWeight: 800,
+  borderBottom: "1px solid #1f1f1f",
+};
+
+const tableWrapStyle: React.CSSProperties = {
+  width: "100%",
+  overflowX: "auto",
+};
+
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  minWidth: 1080,
+  borderCollapse: "collapse",
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "16px 10px",
+  borderBottom: "1px solid #222",
+  color: "#cfcfcf",
+  fontSize: 18,
+  fontWeight: 800,
+  whiteSpace: "nowrap",
+};
+
+const tdStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "16px 10px",
+  borderBottom: "1px solid #1b1b1b",
+  fontSize: 18,
+  color: "#f5f5f5",
+  whiteSpace: "nowrap",
+};
+
+const tdNameStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "16px 14px",
+  borderBottom: "1px solid #1b1b1b",
+  fontSize: 18,
+  color: "#f5f5f5",
+  whiteSpace: "nowrap",
+};
+
+const msgStyle: React.CSSProperties = {
+  color: "#d1d1d1",
+  padding: "8px 4px",
+};
