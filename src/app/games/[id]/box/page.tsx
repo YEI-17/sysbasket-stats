@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useParams, useRouter } from "next/navigation";
-import { calcPlayerStats, pct, type EventRow } from "@/lib/stats";
+import { calcPlayerStats, calcTeamStats, pct, type EventRow } from "@/lib/stats";
 
 type Player = {
   id: string;
@@ -11,9 +11,9 @@ type Player = {
   number: number | null;
 };
 
-type GamePlayerWithPlayer = {
+type GamePlayerRow = {
   player_id: string;
-  players: Player | Player[] | null;
+  team_side: "A" | "B";
 };
 
 type EventDbRow = {
@@ -35,32 +35,12 @@ export default function BoxPage() {
 
   useEffect(() => {
     async function loadData() {
+      if (!gameId) return;
+
       setLoading(true);
       setMsg("");
 
       try {
-        const { data: gp, error: gpError } = await supabase
-          .from("game_players")
-          .select("player_id, players(id,name,number)")
-          .eq("game_id", gameId);
-
-        if (gpError) {
-          throw new Error(`讀取球員名單失敗：${gpError.message}`);
-        }
-
-        const roster = ((gp ?? []) as GamePlayerWithPlayer[])
-          .map((row) => {
-            if (!row.players) return null;
-            return Array.isArray(row.players) ? row.players[0] ?? null : row.players;
-          })
-          .filter((p): p is Player => Boolean(p));
-
-        const uniqueRoster = Array.from(
-          new Map(roster.map((p) => [p.id, p])).values()
-        ).sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
-
-        setPlayers(uniqueRoster);
-
         const { data: ev, error: evError } = await supabase
           .from("events")
           .select("player_id, event_type, team_side, is_undone")
@@ -79,6 +59,46 @@ export default function BoxPage() {
         }));
 
         setEvents(normalizedEvents);
+
+        const { data: gp, error: gpError } = await supabase
+          .from("game_players")
+          .select("player_id, team_side")
+          .eq("game_id", gameId)
+          .eq("team_side", "A");
+
+        if (gpError) {
+          throw new Error(`讀取球員名單失敗：${gpError.message}`);
+        }
+
+        let playerIds = ((gp ?? []) as GamePlayerRow[]).map((row) => row.player_id);
+
+        if (playerIds.length === 0) {
+          playerIds = Array.from(
+            new Set(
+              normalizedEvents
+                .filter((e) => e.team_side === "A" && e.player_id)
+                .map((e) => e.player_id as string)
+            )
+          );
+        }
+
+        if (playerIds.length === 0) {
+          setPlayers([]);
+          setLoading(false);
+          return;
+        }
+
+        const { data: playerData, error: playerError } = await supabase
+          .from("players")
+          .select("id, name, number")
+          .in("id", playerIds)
+          .order("number", { ascending: true });
+
+        if (playerError) {
+          throw new Error(`讀取球員詳細資料失敗：${playerError.message}`);
+        }
+
+        setPlayers((playerData ?? []) as Player[]);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "讀取資料失敗";
@@ -90,21 +110,21 @@ export default function BoxPage() {
       }
     }
 
-    if (gameId) {
-      loadData();
-    }
+    loadData();
   }, [gameId]);
 
   const rows = useMemo(() => {
     return players.map((player) => {
-      const playerEvents = events.filter((e) => e.player_id === player.id);
+      const playerEvents = events.filter(
+        (e) => e.team_side === "A" && e.player_id === player.id
+      );
       const stat = calcPlayerStats(playerEvents);
       return { player, stat };
     });
   }, [players, events]);
 
   const team = useMemo(() => {
-    return calcPlayerStats(events);
+    return calcTeamStats(events, "A");
   }, [events]);
 
   return (

@@ -1,16 +1,18 @@
 export type EventType =
-  | "FG2_MAKE"
-  | "FG2_MISS"
-  | "FG3_MAKE"
-  | "FG3_MISS"
-  | "FT_MAKE"
-  | "FT_MISS"
-  | "REB"
-  | "AST"
-  | "STL"
-  | "BLK"
-  | "TOV"
-  | "PF";
+  | "fg2_made"
+  | "fg2_miss"
+  | "fg3_made"
+  | "fg3_miss"
+  | "ft_made"
+  | "ft_miss"
+  | "reb"
+  | "ast"
+  | "stl"
+  | "blk"
+  | "tov"
+  | "pf"
+  | "sub_in"
+  | "sub_out";
 
 export type EventRow = {
   player_id: string | null;
@@ -63,12 +65,12 @@ export function calcPlayerStats(events: EventRow[]): Stat {
   const c = (t: EventType) =>
     validEvents.filter((e) => e.event_type === t).length;
 
-  const fg2m = c("FG2_MAKE");
-  const fg2x = c("FG2_MISS");
-  const fg3m = c("FG3_MAKE");
-  const fg3x = c("FG3_MISS");
-  const ftm = c("FT_MAKE");
-  const ftx = c("FT_MISS");
+  const fg2m = c("fg2_made");
+  const fg2x = c("fg2_miss");
+  const fg3m = c("fg3_made");
+  const fg3x = c("fg3_miss");
+  const ftm = c("ft_made");
+  const ftx = c("ft_miss");
 
   const pts = fg2m * 2 + fg3m * 3 + ftm;
 
@@ -80,12 +82,12 @@ export function calcPlayerStats(events: EventRow[]): Stat {
     fg3a: fg3m + fg3x,
     ftm,
     fta: ftm + ftx,
-    reb: c("REB"),
-    ast: c("AST"),
-    stl: c("STL"),
-    blk: c("BLK"),
-    tov: c("TOV"),
-    pf: c("PF"),
+    reb: c("reb"),
+    ast: c("ast"),
+    stl: c("stl"),
+    blk: c("blk"),
+    tov: c("tov"),
+    pf: c("pf"),
   };
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
@@ -39,6 +40,14 @@ type Player = {
   name: string;
   number: number | null;
   active?: boolean;
+};
+
+type GamePlayerRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: "A" | "B";
+  is_starter: boolean;
 };
 
 type Stat = {
@@ -146,19 +155,11 @@ function computeDisplaySeconds(clock: ClockRow | null) {
 
   const base = Math.max(0, clock.seconds_left ?? 0);
 
-  if (!clock.is_running) {
-    return base;
-  }
-
-  if (!clock.updated_at) {
-    return base;
-  }
+  if (!clock.is_running) return base;
+  if (!clock.updated_at) return base;
 
   const updatedAtMs = new Date(clock.updated_at).getTime();
-
-  if (Number.isNaN(updatedAtMs)) {
-    return base;
-  }
+  if (Number.isNaN(updatedAtMs)) return base;
 
   const nowMs = Date.now();
   const elapsedSeconds = Math.floor((nowMs - updatedAtMs) / 1000);
@@ -169,6 +170,10 @@ function computeDisplaySeconds(clock: ClockRow | null) {
 function getQuarterLabel(quarter: number) {
   if (quarter <= 4) return `Q${quarter}`;
   return `OT${quarter - 4}`;
+}
+
+function sortPlayers(list: Player[]) {
+  return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
 }
 
 export default function BoardPage() {
@@ -182,10 +187,11 @@ export default function BoardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [displaySeconds, setDisplaySeconds] = useState(REGULAR_SECONDS);
   const [viewerCount, setViewerCount] = useState(1);
 
-  const presenceKeyRef = useRef(`admin-${Math.random().toString(36).slice(2)}`);
+  const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
 
   async function loadGame() {
     const { data, error } = await supabase
@@ -215,6 +221,20 @@ export default function BoardPage() {
     }
 
     setPlayers((data as Player[]) || []);
+  }
+
+  async function loadGamePlayers() {
+    const { data, error } = await supabase
+      .from("game_players")
+      .select("id, game_id, player_id, team_side, is_starter")
+      .eq("game_id", gameId);
+
+    if (error) {
+      setMsg(`讀取 game_players 失敗：${error.message}`);
+      return;
+    }
+
+    setGamePlayers((data as GamePlayerRow[]) || []);
   }
 
   async function loadEvents() {
@@ -276,7 +296,13 @@ export default function BoardPage() {
     if (showLoading) setLoading(true);
     setMsg("");
 
-    await Promise.all([loadGame(), loadPlayers(), loadEvents(), loadClock()]);
+    await Promise.all([
+      loadGame(),
+      loadPlayers(),
+      loadGamePlayers(),
+      loadEvents(),
+      loadClock(),
+    ]);
 
     if (showLoading) setLoading(false);
   }
@@ -314,7 +340,7 @@ export default function BoardPage() {
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await presenceChannel.track({
-            role: "admin",
+            role: "viewer",
             page: "board",
             gameId,
             joinedAt: new Date().toISOString(),
@@ -367,6 +393,18 @@ export default function BoardPage() {
         {
           event: "*",
           schema: "public",
+          table: "game_players",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadGamePlayers();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
           table: CLOCK_TABLE,
           filter: `game_id=eq.${gameId}`,
         },
@@ -390,10 +428,46 @@ export default function BoardPage() {
     return events.filter((e) => !e.is_undone);
   }, [events]);
 
+  const teamAPlayerIds = useMemo(() => {
+    const ids = gamePlayers
+      .filter((gp) => gp.team_side === "A")
+      .map((gp) => gp.player_id);
+
+    if (ids.length > 0) return ids;
+    return players.map((p) => p.id);
+  }, [gamePlayers, players]);
+
+  const teamAPlayers = useMemo(() => {
+    return sortPlayers(players.filter((p) => teamAPlayerIds.includes(p.id)));
+  }, [players, teamAPlayerIds]);
+
+  const starterIds = useMemo(() => {
+    const ids = gamePlayers
+      .filter((gp) => gp.team_side === "A" && gp.is_starter)
+      .map((gp) => gp.player_id);
+
+    if (ids.length > 0) return ids;
+    return teamAPlayers.slice(0, 5).map((p) => p.id);
+  }, [gamePlayers, teamAPlayers]);
+
+  const currentOnCourtIds = useMemo(() => {
+    const lineup = new Set<string>(starterIds);
+
+    for (const e of validEvents) {
+      if (e.team_side !== "A") continue;
+      if (!e.player_id) continue;
+
+      if (e.event_type === "sub_in") lineup.add(e.player_id);
+      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+    }
+
+    return Array.from(lineup);
+  }, [starterIds, validEvents]);
+
   const statsMap = useMemo(() => {
     const map: Record<string, Stat> = {};
 
-    for (const p of players) {
+    for (const p of teamAPlayers) {
       map[p.id] = emptyStat();
     }
 
@@ -409,7 +483,7 @@ export default function BoardPage() {
     }
 
     return map;
-  }, [players, validEvents]);
+  }, [teamAPlayers, validEvents]);
 
   const totalScore = useMemo(() => {
     let home = 0;
@@ -445,9 +519,6 @@ export default function BoardPage() {
     return byQuarter;
   }, [validEvents, clock?.quarter]);
 
-  const starters = useMemo(() => players.slice(0, 5), [players]);
-  const benchPlayers = useMemo(() => players.slice(5), [players]);
-
   if (loading) {
     return (
       <main style={pageStyle}>
@@ -460,7 +531,12 @@ export default function BoardPage() {
     <main style={pageStyle}>
       <div style={containerStyle}>
         <div style={topBarStyle}>
-          <div style={{ fontSize: 14, color: "#9a9a9a" }}>比賽看板</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 14, color: "#9a9a9a" }}>比賽看板</div>
+            <Link href={`/games/${gameId}/box`} style={linkButtonStyle}>
+              Box Score
+            </Link>
+          </div>
           <LogoutButton />
         </div>
 
@@ -474,24 +550,19 @@ export default function BoardPage() {
             <div style={topInfoRowStyle}>
               <div style={quarterStyle}>{getQuarterLabel(clock?.quarter ?? 1)}</div>
               <div style={viewerStyle}>線上觀看：{viewerCount}</div>
+
               <div
                 style={{
                   ...statusBadgeStyle,
                   background:
-                    game?.status === "finished" || game?.is_live === false
-                      ? "#3a1111"
-                      : "#102814",
+                    game?.status === "finished" ? "#3a1111" : clock?.is_running ? "#102814" : "#3a3211",
                   color:
-                    game?.status === "finished" || game?.is_live === false
-                      ? "#ff9c9c"
-                      : "#9effae",
+                    game?.status === "finished" ? "#ff9c9c" : clock?.is_running ? "#9effae" : "#ffe08a",
                   borderColor:
-                    game?.status === "finished" || game?.is_live === false
-                      ? "#5a2020"
-                      : "#1f5a2c",
+                    game?.status === "finished" ? "#5a2020" : clock?.is_running ? "#1f5a2c" : "#5a4b20",
                 }}
               >
-                {game?.status === "finished" || game?.is_live === false
+                {game?.status === "finished"
                   ? "比賽已結束"
                   : clock?.is_running
                   ? "計時中"
@@ -519,36 +590,6 @@ export default function BoardPage() {
           </div>
         </section>
 
-        <section style={splitCardStyle}>
-          <div style={miniCardStyle}>
-            <div style={sectionTitleStyle}>先發五人</div>
-            <div style={playerGroupStyle}>
-              {starters.map((p) => (
-                <div key={p.id} style={playerChipStyle}>
-                  {p.number ? `#${p.number} ` : ""}
-                  {p.name}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={miniCardStyle}>
-            <div style={sectionTitleStyle}>板凳球員</div>
-            <div style={playerGroupStyle}>
-              {benchPlayers.length === 0 ? (
-                <div style={{ color: "#888" }}>目前沒有板凳球員</div>
-              ) : (
-                benchPlayers.map((p) => (
-                  <div key={p.id} style={playerChipStyle}>
-                    {p.number ? `#${p.number} ` : ""}
-                    {p.name}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </section>
-
         <section style={tableCardStyle}>
           <div style={sectionTitleStyle}>球員數據</div>
 
@@ -572,14 +613,30 @@ export default function BoardPage() {
               </thead>
 
               <tbody>
-                {players.map((p) => {
+                {teamAPlayers.map((p) => {
                   const s = statsMap[p.id] || emptyStat();
+                  const isOnCourt = currentOnCourtIds.includes(p.id);
 
                   return (
                     <tr key={p.id}>
                       <td style={tdNameStyle}>
-                        {p.number ? `#${p.number} ` : ""}
-                        {p.name}
+                        <div style={nameCellWrapStyle}>
+                          <span>
+                            {p.number ? `#${p.number} ` : ""}
+                            {p.name}
+                          </span>
+
+                          <span
+                            style={{
+                              ...statusPillStyle,
+                              background: isOnCourt ? "#10351d" : "#2b2b2b",
+                              color: isOnCourt ? "#8df0a8" : "#cfcfcf",
+                              borderColor: isOnCourt ? "#1d6a38" : "#444",
+                            }}
+                          >
+                            {isOnCourt ? "場上" : "未上場"}
+                          </span>
+                        </div>
                       </td>
                       <td style={tdStyle}>{s.pts}</td>
                       <td style={tdStyle}>
@@ -631,6 +688,16 @@ const topBarStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
+};
+
+const linkButtonStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 10,
+  background: "#4f46e5",
+  color: "#fff",
+  textDecoration: "none",
+  fontSize: 14,
+  fontWeight: 700,
 };
 
 const scoreCardStyle: React.CSSProperties = {
@@ -710,33 +777,6 @@ const quarterLineStyle: React.CSSProperties = {
   fontSize: 18,
 };
 
-const splitCardStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: 16,
-};
-
-const miniCardStyle: React.CSSProperties = {
-  background: "#0b0b0b",
-  border: "1px solid #222",
-  borderRadius: 24,
-  padding: 18,
-};
-
-const playerGroupStyle: React.CSSProperties = {
-  display: "flex",
-  gap: 10,
-  flexWrap: "wrap",
-};
-
-const playerChipStyle: React.CSSProperties = {
-  border: "1px solid #2b2b2b",
-  background: "#121212",
-  borderRadius: 999,
-  padding: "10px 14px",
-  fontSize: 16,
-};
-
 const tableCardStyle: React.CSSProperties = {
   background: "#0b0b0b",
   border: "1px solid #222",
@@ -788,6 +828,23 @@ const tdNameStyle: React.CSSProperties = {
   fontSize: 18,
   color: "#f5f5f5",
   whiteSpace: "nowrap",
+};
+
+const nameCellWrapStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+};
+
+const statusPillStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 999,
+  padding: "4px 10px",
+  fontSize: 12,
+  fontWeight: 800,
+  border: "1px solid #444",
 };
 
 const msgStyle: React.CSSProperties = {
