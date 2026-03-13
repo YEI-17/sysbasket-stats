@@ -1,237 +1,189 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
-
-type GameRow = {
-  id: string;
-  teamA: string | null;
-  teamB: string | null;
-  status: string | null;
-};
 
 export default function StaffHomePage() {
   const router = useRouter();
-
-  const [liveGames, setLiveGames] = useState<GameRow[]>([]);
-  const [recentGames, setRecentGames] = useState<GameRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState("");
-
-  useEffect(() => {
-    async function loadGames() {
-      setLoading(true);
-      setMsg("");
-
-      const { data, error } = await supabase
-        .from("games")
-        .select("id, teamA, teamB, status")
-        .order("created_at", { ascending: false })
-        .limit(10);
-
-      if (error) {
-        console.error(error);
-        setMsg("讀取比賽列表失敗");
-        setLoading(false);
-        return;
-      }
-
-      const rows = (data as GameRow[]) || [];
-      setRecentGames(rows);
-      setLiveGames(rows.filter((g) => g.status === "live"));
-      setLoading(false);
-    }
-
-    loadGames();
-  }, []);
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        background: "#000",
+        background:
+          "radial-gradient(circle at top, rgba(255,255,255,0.05) 0%, #000000 28%, #000000 100%)",
         color: "#fff",
         padding: 20,
       }}
     >
       <div
         style={{
-          maxWidth: 720,
+          maxWidth: 920,
           margin: "0 auto",
           display: "grid",
-          gap: 16,
+          gap: 20,
         }}
       >
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
+            background: "rgba(10, 10, 10, 0.96)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 28,
+            padding: 28,
+            boxShadow: "0 20px 50px rgba(0,0,0,0.38)",
           }}
         >
-          <div>
-            <h1 style={{ margin: 0, fontSize: 28 }}>工作人員後台</h1>
-            <p style={{ color: "#aaa", marginTop: 8 }}>
-              選擇你要進行的功能
-            </p>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "#d4d4d8",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: 1,
+                  marginBottom: 14,
+                }}
+              >
+                STAFF DASHBOARD
+              </div>
+
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: 34,
+                  fontWeight: 900,
+                  letterSpacing: -0.5,
+                  color: "#ffffff",
+                }}
+              >
+                工作人員後台
+              </h1>
+
+              <p
+                style={{
+                  color: "#a1a1aa",
+                  marginTop: 10,
+                  marginBottom: 0,
+                  fontSize: 15,
+                  lineHeight: 1.7,
+                  maxWidth: 620,
+                }}
+              >
+                從這裡快速進入建立比賽、比賽管理與完整數據頁面。
+              </p>
+            </div>
+
+            <LogoutButton />
           </div>
-          <LogoutButton />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
-          <button style={btnGreen} onClick={() => router.push("/games/new")}>
-            建立新比賽
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 16,
+          }}
+        >
+          <button
+            style={featureCardStyle}
+            onClick={() => router.push("/games/new")}
+          >
+            <div style={cardTagStyle}>CREATE</div>
+            <div style={cardTitleStyle}>建立新比賽</div>
+            <div style={cardDescStyle}>
+              建立新的賽事，設定對戰資訊並開始後續紀錄流程。
+            </div>
+            <div style={cardActionStyle}>點擊進入</div>
           </button>
 
-          <button style={btnGray} onClick={() => router.push("/games/list")}>
-            進入比賽列表
+          <button
+            style={featureCardStyle}
+            onClick={() => router.push("/games/list")}
+          >
+            <div style={cardTagStyle}>GAMES</div>
+            <div style={cardTitleStyle}>進入比賽列表</div>
+            <div style={cardDescStyle}>
+              查看目前所有比賽，進入即時記錄、觀眾頁與單場數據頁。
+            </div>
+            <div style={cardActionStyle}>點擊進入</div>
           </button>
 
-          <button style={btnGray} onClick={() => router.push("/games/box")}>
-            完整數據頁面
+          <button
+            style={featureCardStyle}
+            onClick={() => router.push("/games/box")}
+          >
+            <div style={cardTagStyle}>STATS</div>
+            <div style={cardTitleStyle}>完整數據頁面</div>
+            <div style={cardDescStyle}>
+              查看整體球隊資料、球員數據與後續延伸統計內容。
+            </div>
+            <div style={cardActionStyle}>點擊進入</div>
           </button>
         </div>
-
-        <section style={cardStyle}>
-          <h2 style={{ marginTop: 0 }}>目前直播中的比賽</h2>
-
-          {loading && <div style={{ color: "#888" }}>讀取中...</div>}
-
-          {!loading && liveGames.length === 0 && (
-            <div style={{ color: "#888" }}>目前沒有直播中的比賽</div>
-          )}
-
-          {!loading &&
-            liveGames.map((game) => {
-              const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
-
-              return (
-                <button
-                  key={game.id}
-                  style={gameBtn}
-                  onClick={() => router.push(`/games/${game.id}/live`)}
-                >
-                  <div style={{ fontWeight: 800 }}>{label}</div>
-                  <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
-                    點擊進入即時記錄
-                  </div>
-                </button>
-              );
-            })}
-        </section>
-
-        <section style={cardStyle}>
-          <h2 style={{ marginTop: 0 }}>最近比賽</h2>
-
-          {loading && <div style={{ color: "#888" }}>讀取中...</div>}
-
-          {!loading && recentGames.length === 0 && (
-            <div style={{ color: "#888" }}>目前沒有比賽資料</div>
-          )}
-
-          {!loading &&
-            recentGames.map((game) => {
-              const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
-
-              return (
-                <div
-                  key={game.id}
-                  style={{
-                    border: "1px solid #2a2a2a",
-                    borderRadius: 12,
-                    padding: 14,
-                    background: "#141414",
-                    display: "grid",
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ fontWeight: 800 }}>{label}</div>
-                  <div style={{ color: "#8f8f8f", fontSize: 13 }}>
-                    狀態：{game.status || "unknown"}
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      style={smallBtn}
-                      onClick={() => router.push(`/games/${game.id}/live`)}
-                    >
-                      即時記錄
-                    </button>
-
-                    <button
-                      style={smallBtn}
-                      onClick={() => router.push(`/games/${game.id}/board`)}
-                    >
-                      觀眾頁
-                    </button>
-
-                    <button
-                      style={smallBtn}
-                      onClick={() => router.push(`/games/${game.id}/box`)}
-                    >
-                      數據頁
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-        </section>
-
-        {msg && <p style={{ color: "#ddd" }}>{msg}</p>}
       </div>
     </main>
   );
 }
 
-const btnBase: React.CSSProperties = {
-  padding: "14px 16px",
-  borderRadius: 12,
-  border: "none",
+const featureCardStyle: React.CSSProperties = {
+  textAlign: "left",
+  width: "100%",
+  padding: 24,
+  borderRadius: 24,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background:
+    "linear-gradient(180deg, rgba(18,18,18,0.96) 0%, rgba(7,7,7,0.98) 100%)",
+  color: "white",
   cursor: "pointer",
-  fontSize: 16,
-  fontWeight: 800,
-};
-
-const btnGreen: React.CSSProperties = {
-  ...btnBase,
-  background: "#22c55e",
-  color: "#052e12",
-};
-
-const btnGray: React.CSSProperties = {
-  ...btnBase,
-  background: "#333",
-  color: "#fff",
-};
-
-const smallBtn: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid #333",
-  background: "#222",
-  color: "#fff",
-  cursor: "pointer",
-};
-
-const cardStyle: React.CSSProperties = {
-  background: "#0f0f0f",
-  border: "1px solid #222",
-  borderRadius: 18,
-  padding: 18,
+  boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
   display: "grid",
   gap: 12,
 };
 
-const gameBtn: React.CSSProperties = {
-  width: "100%",
-  textAlign: "left",
-  padding: "14px 16px",
-  borderRadius: 12,
-  color: "white",
-  cursor: "pointer",
-  border: "1px solid #333",
-  background: "#161616",
+const cardTagStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  width: "fit-content",
+  padding: "6px 10px",
+  borderRadius: 999,
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#d4d4d8",
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: 1,
+};
+
+const cardTitleStyle: React.CSSProperties = {
+  fontSize: 24,
+  fontWeight: 900,
+  color: "#ffffff",
+};
+
+const cardDescStyle: React.CSSProperties = {
+  color: "#a1a1aa",
+  fontSize: 14,
+  lineHeight: 1.7,
+  minHeight: 72,
+};
+
+const cardActionStyle: React.CSSProperties = {
+  color: "#ffffff",
+  fontSize: 14,
+  fontWeight: 800,
 };
