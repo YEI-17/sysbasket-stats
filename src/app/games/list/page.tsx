@@ -155,7 +155,7 @@ export default function GamesPage() {
               比賽列表
             </h1>
             <p className="mt-2 text-zinc-400 text-base md:text-lg">
-              管理所有比賽、直播、數據與觀眾頁面
+              管理所有比賽、直播、數據與編輯頁面
             </p>
           </div>
 
@@ -167,12 +167,12 @@ export default function GamesPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜尋隊伍名稱或比賽狀態"
-            className="w-full rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-white outline-none focus:border-green-500"
+            className="w-full rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-white outline-none focus:border-zinc-500"
           />
 
           <Link
             href="/games/new"
-            className="inline-flex items-center justify-center rounded-2xl bg-green-500 px-6 py-3 text-lg font-semibold text-black hover:bg-green-400 transition"
+            className="inline-flex items-center justify-center rounded-2xl bg-zinc-200 px-6 py-3 text-lg font-semibold text-black hover:bg-zinc-100 transition"
           >
             ＋ 建立新比賽
           </Link>
@@ -274,19 +274,12 @@ export default function GamesPage() {
           </div>
         </div>
 
-        <div className="grid gap-2 md:grid-cols-4">
+        <div className="grid gap-2 md:grid-cols-3">
           <Link
-            href={`/games/${game.id}`}
-            className="rounded-xl bg-green-500 px-4 py-3 text-center font-semibold text-black hover:bg-green-400 transition"
+            href={`/games/${game.id}/live`}
+            className="rounded-xl bg-zinc-700 px-4 py-3 text-center font-semibold text-white hover:bg-zinc-600 transition"
           >
             進入紀錄
-          </Link>
-
-          <Link
-            href={`/games/${game.id}/board`}
-            className="rounded-xl bg-blue-500 px-4 py-3 text-center font-semibold text-white hover:bg-blue-400 transition"
-          >
-            觀眾畫面
           </Link>
 
           <Link
@@ -298,7 +291,7 @@ export default function GamesPage() {
 
           <Link
             href={`/games/${game.id}/edit`}
-            className="rounded-xl bg-yellow-500 px-4 py-3 text-center font-semibold text-black hover:bg-yellow-400 transition"
+            className="rounded-xl bg-zinc-700 px-4 py-3 text-center font-semibold text-white hover:bg-zinc-600 transition"
           >
             編輯比賽
           </Link>
