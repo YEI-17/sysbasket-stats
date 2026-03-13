@@ -86,7 +86,7 @@ export default function StaffHomePage() {
             建立新比賽
           </button>
 
-          <button style={btnGray} onClick={() => router.push("/games/live")}>
+          <button style={btnGray} onClick={() => router.push("/games/list")}>
             進入比賽列表
           </button>
 
