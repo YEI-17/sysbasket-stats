@@ -29,7 +29,6 @@ type GameRow = {
   teamB: string | null;
   status?: string | null;
   game_date?: string | null;
-  date?: string | null;
   created_at?: string | null;
 };
 
@@ -83,7 +82,7 @@ function getStatusStyle(status: string): CSSProperties {
 function formatGameDate(game: GameRow | null) {
   if (!game) return "未提供日期";
 
-  const raw = game.game_date ?? game.date ?? game.created_at ?? null;
+  const raw = game.game_date ?? game.created_at ?? null;
   if (!raw) return "未提供日期";
 
   const d = new Date(raw);
@@ -163,7 +162,7 @@ export default function BoxPage() {
       try {
         const { data: gameData, error: gameError } = await supabase
           .from("games")
-          .select("id, teamA, teamB, status, game_date, date, created_at")
+          .select("id, teamA, teamB, status, game_date, created_at")
           .eq("id", gameId)
           .maybeSingle();
 
