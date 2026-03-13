@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties, useCallback } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  useCallback,
+} from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useParams } from "next/navigation";
 import { calcPlayerStats, calcTeamStats, pct, type EventRow } from "@/lib/stats";
@@ -9,11 +15,7 @@ type Player = {
   id: string;
   name: string;
   number: number | null;
-};
-
-type GamePlayerRow = {
-  player_id: string;
-  team_side: "A" | "B";
+  active?: boolean | null;
 };
 
 type EventDbRow = {
@@ -59,23 +61,23 @@ function getStatusStyle(status: string): CSSProperties {
   if (status === "已結束") {
     return {
       color: "#d1fae5",
-      background: "rgba(16, 185, 129, 0.18)",
-      border: "1px solid rgba(16, 185, 129, 0.35)",
+      background: "rgba(16, 185, 129, 0.14)",
+      border: "1px solid rgba(16, 185, 129, 0.28)",
     };
   }
 
   if (status === "進行中") {
     return {
       color: "#fde68a",
-      background: "rgba(245, 158, 11, 0.18)",
-      border: "1px solid rgba(245, 158, 11, 0.35)",
+      background: "rgba(245, 158, 11, 0.14)",
+      border: "1px solid rgba(245, 158, 11, 0.28)",
     };
   }
 
   return {
-    color: "#cbd5e1",
-    background: "rgba(148, 163, 184, 0.16)",
-    border: "1px solid rgba(148, 163, 184, 0.28)",
+    color: "#d4d4d8",
+    background: "rgba(161, 161, 170, 0.12)",
+    border: "1px solid rgba(161, 161, 170, 0.2)",
   };
 }
 
@@ -127,16 +129,16 @@ function SummaryCard({
     <div
       style={{
         padding: 16,
-        borderRadius: 18,
-        background: "rgba(15, 23, 42, 0.78)",
-        border: "1px solid rgba(148, 163, 184, 0.16)",
-        boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+        borderRadius: 20,
+        background: "rgba(12, 12, 12, 0.96)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        boxShadow: "0 14px 30px rgba(0,0,0,0.28)",
       }}
     >
-      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 8 }}>{label}</div>
-      <div style={{ color: "#f8fafc", fontSize: 24, fontWeight: 800 }}>{value}</div>
+      <div style={{ color: "#71717a", fontSize: 13, marginBottom: 8 }}>{label}</div>
+      <div style={{ color: "#fafafa", fontSize: 24, fontWeight: 900 }}>{value}</div>
       {sub ? (
-        <div style={{ color: "#cbd5e1", fontSize: 13, marginTop: 8 }}>{sub}</div>
+        <div style={{ color: "#d4d4d8", fontSize: 13, marginTop: 8 }}>{sub}</div>
       ) : null}
     </div>
   );
@@ -189,37 +191,11 @@ export default function BoxPage() {
 
       setEvents(normalizedEvents);
 
-      const { data: gp, error: gpError } = await supabase
-        .from("game_players")
-        .select("player_id, team_side")
-        .eq("game_id", gameId)
-        .eq("team_side", "A");
-
-      if (gpError) {
-        throw new Error(`讀取球員名單失敗：${gpError.message}`);
-      }
-
-      let playerIds = ((gp ?? []) as GamePlayerRow[]).map((row) => row.player_id);
-
-      if (playerIds.length === 0) {
-        playerIds = Array.from(
-          new Set(
-            normalizedEvents
-              .filter((e) => e.team_side === "A" && e.player_id)
-              .map((e) => e.player_id as string)
-          )
-        );
-      }
-
-      if (playerIds.length === 0) {
-        setPlayers([]);
-        return;
-      }
-
+      // 直接抓所有啟用中的球員，確保沒出場、沒數據的人也會顯示
       const { data: playerData, error: playerError } = await supabase
         .from("players")
-        .select("id, name, number")
-        .in("id", playerIds)
+        .select("id, name, number, active")
+        .eq("active", true)
         .order("number", { ascending: true });
 
       if (playerError) {
@@ -284,8 +260,8 @@ export default function BoxPage() {
         {
           event: "*",
           schema: "public",
-          table: "game_players",
-          filter: `game_id=eq.${gameId}`,
+          table: "games",
+          filter: `id=eq.${gameId}`,
         },
         () => {
           scheduleReload();
@@ -296,8 +272,7 @@ export default function BoxPage() {
         {
           event: "*",
           schema: "public",
-          table: "games",
-          filter: `id=eq.${gameId}`,
+          table: "players",
         },
         () => {
           scheduleReload();
@@ -312,7 +287,7 @@ export default function BoxPage() {
   }, [gameId, loadData]);
 
   const rows = useMemo<PlayerRow[]>(() => {
-    return players.map((player) => {
+    const mapped = players.map((player) => {
       const playerEvents = events.filter(
         (e) => e.team_side === "A" && e.player_id === player.id
       );
@@ -333,6 +308,11 @@ export default function BoxPage() {
 
       return { player, stat, hasPlayed };
     });
+
+    return mapped.sort((a, b) => {
+      if (a.hasPlayed !== b.hasPlayed) return a.hasPlayed ? -1 : 1;
+      return (a.player.number ?? 999) - (b.player.number ?? 999);
+    });
   }, [players, events]);
 
   const team = useMemo(() => calcTeamStats(events, "A"), [events]);
@@ -352,14 +332,14 @@ export default function BoxPage() {
       style={{
         minHeight: "100vh",
         background:
-          "linear-gradient(180deg, #0f172a 0%, #111827 45%, #0b1120 100%)",
-        color: "#e5e7eb",
+          "radial-gradient(circle at top, rgba(255,255,255,0.05) 0%, #000000 24%, #000000 100%)",
+        color: "#f5f5f5",
         padding: "24px 16px 40px",
       }}
     >
       <div style={{ maxWidth: 1400, margin: "0 auto" }}>
         <div style={{ marginBottom: 18 }}>
-          <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 8 }}>
+          <div style={{ color: "#71717a", fontSize: 13, marginBottom: 8 }}>
             單場數據頁
           </div>
           <h1
@@ -367,8 +347,9 @@ export default function BoxPage() {
               margin: 0,
               fontSize: 30,
               lineHeight: 1.2,
-              color: "#f8fafc",
-              fontWeight: 800,
+              color: "#ffffff",
+              fontWeight: 900,
+              letterSpacing: -0.4,
             }}
           >
             Box Score
@@ -379,10 +360,10 @@ export default function BoxPage() {
           style={{
             marginBottom: 18,
             padding: 20,
-            borderRadius: 20,
-            background: "rgba(15, 23, 42, 0.78)",
-            border: "1px solid rgba(148, 163, 184, 0.18)",
-            boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+            borderRadius: 24,
+            background: "rgba(10, 10, 10, 0.96)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
           }}
         >
           <div
@@ -398,21 +379,21 @@ export default function BoxPage() {
             <div>
               <div
                 style={{
-                  fontSize: 26,
-                  fontWeight: 800,
-                  color: "#f8fafc",
+                  fontSize: 28,
+                  fontWeight: 900,
+                  color: "#ffffff",
                   lineHeight: 1.3,
                   wordBreak: "break-word",
                 }}
               >
                 {gameTitleA}
-                <span style={{ color: "#64748b", margin: "0 8px" }}>VS</span>
+                <span style={{ color: "#52525b", margin: "0 8px" }}>VS</span>
                 {gameTitleB}
               </div>
               <div
                 style={{
                   marginTop: 10,
-                  color: "#94a3b8",
+                  color: "#a1a1aa",
                   fontSize: 14,
                 }}
               >
@@ -426,7 +407,7 @@ export default function BoxPage() {
                 padding: "7px 12px",
                 borderRadius: 999,
                 fontSize: 13,
-                fontWeight: 700,
+                fontWeight: 800,
                 whiteSpace: "nowrap",
               }}
             >
@@ -441,20 +422,20 @@ export default function BoxPage() {
               gap: 12,
               alignItems: "center",
               padding: "16px 18px",
-              borderRadius: 18,
-              background: "rgba(2, 6, 23, 0.45)",
-              border: "1px solid rgba(148, 163, 184, 0.12)",
+              borderRadius: 20,
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.06)",
             }}
           >
             <div style={{ minWidth: 0 }}>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6 }}>
+              <div style={{ color: "#71717a", fontSize: 12, marginBottom: 6 }}>
                 我方
               </div>
               <div
                 style={{
                   fontSize: 22,
                   fontWeight: 800,
-                  color: "#f8fafc",
+                  color: "#ffffff",
                   wordBreak: "break-word",
                 }}
               >
@@ -464,9 +445,9 @@ export default function BoxPage() {
 
             <div
               style={{
-                fontSize: 34,
+                fontSize: 36,
                 fontWeight: 900,
-                color: "#f8fafc",
+                color: "#ffffff",
                 letterSpacing: 1,
                 whiteSpace: "nowrap",
               }}
@@ -475,14 +456,14 @@ export default function BoxPage() {
             </div>
 
             <div style={{ minWidth: 0, textAlign: "right" }}>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6 }}>
+              <div style={{ color: "#71717a", fontSize: 12, marginBottom: 6 }}>
                 對手
               </div>
               <div
                 style={{
                   fontSize: 22,
                   fontWeight: 800,
-                  color: "#f8fafc",
+                  color: "#ffffff",
                   wordBreak: "break-word",
                 }}
               >
@@ -499,8 +480,8 @@ export default function BoxPage() {
             style={{
               borderRadius: 18,
               padding: 18,
-              background: "rgba(127, 29, 29, 0.22)",
-              border: "1px solid rgba(248, 113, 113, 0.3)",
+              background: "rgba(127, 29, 29, 0.2)",
+              border: "1px solid rgba(248, 113, 113, 0.24)",
               color: "#fecaca",
             }}
           >
@@ -600,10 +581,10 @@ export default function BoxPage() {
               <div
                 style={{
                   overflowX: "auto",
-                  border: "1px solid rgba(148, 163, 184, 0.16)",
-                  borderRadius: 18,
-                  background: "rgba(15, 23, 42, 0.82)",
-                  boxShadow: "0 12px 24px rgba(0,0,0,0.2)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 20,
+                  background: "rgba(10, 10, 10, 0.96)",
+                  boxShadow: "0 14px 30px rgba(0,0,0,0.28)",
                 }}
               >
                 <table
@@ -615,7 +596,7 @@ export default function BoxPage() {
                   }}
                 >
                   <thead>
-                    <tr style={{ background: "rgba(30, 41, 59, 0.92)" }}>
+                    <tr style={{ background: "rgba(255,255,255,0.04)" }}>
                       {[
                         "球員",
                         "PTS",
@@ -635,12 +616,12 @@ export default function BoxPage() {
                         <th
                           key={header}
                           style={{
-                            borderBottom: "1px solid rgba(148, 163, 184, 0.18)",
+                            borderBottom: "1px solid rgba(255,255,255,0.08)",
                             padding: 12,
                             textAlign: "left",
                             whiteSpace: "nowrap",
-                            color: "#cbd5e1",
-                            fontWeight: 700,
+                            color: "#d4d4d8",
+                            fontWeight: 800,
                           }}
                         >
                           {header}
@@ -656,16 +637,16 @@ export default function BoxPage() {
                         style={{
                           background: hasPlayed
                             ? "transparent"
-                            : "rgba(30, 41, 59, 0.35)",
+                            : "rgba(255,255,255,0.025)",
                         }}
                       >
                         <td
                           style={{
                             padding: 12,
-                            borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+                            borderBottom: "1px solid rgba(255,255,255,0.06)",
                             whiteSpace: "nowrap",
-                            color: "#f8fafc",
-                            fontWeight: 600,
+                            color: "#fafafa",
+                            fontWeight: 700,
                           }}
                         >
                           #{player.number ?? "-"} {player.name}
@@ -674,8 +655,8 @@ export default function BoxPage() {
                               style={{
                                 marginLeft: 8,
                                 fontSize: 12,
-                                color: "#94a3b8",
-                                fontWeight: 500,
+                                color: "#71717a",
+                                fontWeight: 600,
                               }}
                             >
                               DNP
@@ -699,14 +680,14 @@ export default function BoxPage() {
                       </tr>
                     ))}
 
-                    <tr style={{ background: "rgba(37, 99, 235, 0.14)" }}>
+                    <tr style={{ background: "rgba(255,255,255,0.05)" }}>
                       <td
                         style={{
                           padding: 12,
-                          fontWeight: 800,
+                          fontWeight: 900,
                           whiteSpace: "nowrap",
-                          color: "#dbeafe",
-                          borderTop: "1px solid rgba(59, 130, 246, 0.2)",
+                          color: "#ffffff",
+                          borderTop: "1px solid rgba(255,255,255,0.08)",
                         }}
                       >
                         TEAM
@@ -739,23 +720,23 @@ export default function BoxPage() {
 const infoCardStyle: CSSProperties = {
   borderRadius: 18,
   padding: 24,
-  background: "rgba(15, 23, 42, 0.72)",
-  border: "1px solid rgba(148, 163, 184, 0.16)",
-  color: "#e2e8f0",
+  background: "rgba(10, 10, 10, 0.96)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#e4e4e7",
 };
 
 const panelStyle: CSSProperties = {
   padding: 18,
-  borderRadius: 18,
-  background: "rgba(15, 23, 42, 0.78)",
-  border: "1px solid rgba(148, 163, 184, 0.16)",
-  boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+  borderRadius: 20,
+  background: "rgba(10, 10, 10, 0.96)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "0 12px 28px rgba(0,0,0,0.24)",
 };
 
 const panelTitleStyle: CSSProperties = {
-  color: "#f8fafc",
+  color: "#ffffff",
   fontSize: 18,
-  fontWeight: 800,
+  fontWeight: 900,
   marginBottom: 14,
 };
 
@@ -771,20 +752,20 @@ const miniStatStyle: CSSProperties = {
   gap: 6,
   padding: 12,
   borderRadius: 14,
-  background: "rgba(2, 6, 23, 0.4)",
-  border: "1px solid rgba(148, 163, 184, 0.1)",
-  color: "#cbd5e1",
+  background: "rgba(255,255,255,0.03)",
+  border: "1px solid rgba(255,255,255,0.05)",
+  color: "#d4d4d8",
 };
 
 const cellStyle: CSSProperties = {
   padding: 12,
-  borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
   color: "#e5e7eb",
 };
 
 const teamCellStyle: CSSProperties = {
   padding: 12,
-  fontWeight: 800,
-  color: "#dbeafe",
-  borderTop: "1px solid rgba(59, 130, 246, 0.2)",
+  fontWeight: 900,
+  color: "#ffffff",
+  borderTop: "1px solid rgba(255,255,255,0.08)",
 };
