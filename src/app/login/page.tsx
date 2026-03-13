@@ -87,38 +87,7 @@ export default function LoginPage() {
     router.push(`/games/${gameId}/board`);
   }
 
-  function renderViewerLiveGames() {
-    if (loadingGames) {
-      return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
-    }
-
-    if (liveGames.length === 0) {
-      return <div style={{ color: "#888" }}>目前沒有正在進行的比賽</div>;
-    }
-
-    return (
-      <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ color: "#bbb", fontWeight: 700 }}>目前正在進行的比賽</div>
-
-        {liveGames.map((game) => {
-          const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
-
-          return (
-            <button
-              key={game.id}
-              onClick={() => handleViewerGameClick(game.id)}
-              style={gameBtn}
-            >
-              <div style={{ fontWeight: 800, fontSize: 16 }}>{label}</div>
-              <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
-                點擊直接進入觀看
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    );
-  }
+  
 
   return (
     <main
@@ -199,7 +168,7 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            {renderViewerLiveGames()}
+            
 
             <button onClick={() => setMode("choose")} style={btnGray}>
               返回
