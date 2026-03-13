@@ -74,7 +74,7 @@ export default function LoginPage() {
     router.push("/staff");
   }
 
-  function handleViewerGameClick(gameId: string) {
+  function handleViewerEnter() {
     setMsg("");
 
     if (!viewerName.trim()) {
@@ -84,10 +84,8 @@ export default function LoginPage() {
 
     setViewerName(viewerName.trim());
     setRole("viewer");
-    router.push(`/games/${gameId}/board`);
+    router.push("/viewer");
   }
-
-  
 
   return (
     <main
@@ -168,7 +166,9 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            
+            <button onClick={handleViewerEnter} style={btnGreen}>
+              確認進入
+            </button>
 
             <button onClick={() => setMode("choose")} style={btnGray}>
               返回
@@ -210,15 +210,4 @@ const btnGray: React.CSSProperties = {
   ...btnBase,
   background: "#333",
   color: "white",
-};
-
-const gameBtn: React.CSSProperties = {
-  width: "100%",
-  textAlign: "left",
-  padding: "14px 16px",
-  borderRadius: 12,
-  color: "white",
-  cursor: "pointer",
-  border: "1px solid #333",
-  background: "#161616",
 };
