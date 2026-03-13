@@ -1,60 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
 import { clearRole, getViewerName } from "@/lib/roles";
-
-type GameRow = {
-  id: string;
-  teamA: string | null;
-  teamB: string | null;
-  status?: string | null;
-  game_date?: string | null;
-  created_at?: string | null;
-};
-
-function normalizeStatus(status?: string | null) {
-  const s = (status ?? "").trim().toLowerCase();
-
-  if (!s) return "未設定";
-  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
-    return "直播中";
-  }
-  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
-    return "已結束";
-  }
-  if (["scheduled", "upcoming", "pending"].includes(s)) {
-    return "未開始";
-  }
-
-  return status ?? "未設定";
-}
-
-function formatGameDate(game: GameRow) {
-  const raw = game.game_date ?? game.created_at ?? null;
-  if (!raw) return "未提供日期";
-
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return String(raw);
-
-  return d.toLocaleString("zh-TW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: raw.includes("T") ? "2-digit" : undefined,
-    minute: raw.includes("T") ? "2-digit" : undefined,
-    hour12: false,
-  });
-}
 
 export default function ViewerPage() {
   const router = useRouter();
-
   const [viewerName, setViewerName] = useState("");
-  const [games, setGames] = useState<GameRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState("");
 
   useEffect(() => {
     const name = getViewerName();
@@ -65,74 +17,45 @@ export default function ViewerPage() {
     }
 
     setViewerName(name);
-    fetchGames();
   }, [router]);
-
-  async function fetchGames() {
-    setLoading(true);
-    setMsg("");
-
-    const { data, error } = await supabase
-      .from("games")
-      .select("id, teamA, teamB, status, game_date, created_at")
-      .order("game_date", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error(error);
-      setMsg("讀取比賽資料失敗");
-      setLoading(false);
-      return;
-    }
-
-    setGames((data as GameRow[]) || []);
-    setLoading(false);
-  }
 
   function handleLogout() {
     clearRole();
     router.push("/");
   }
 
-  function handleOpenGame(gameId: string) {
-    router.push(`/games/${gameId}/board`);
+  function handleOpenGameList() {
+    router.push("/games/viewer");
   }
 
   function handleOpenStatsCenter() {
-    router.push("/games/stats");
+    router.push("/games/box");
   }
-
-  const liveGames = useMemo(() => {
-    return games.filter((game) => normalizeStatus(game.status) === "直播中");
-  }, [games]);
-
-  const historyGames = useMemo(() => {
-    return games.filter((game) => normalizeStatus(game.status) !== "直播中");
-  }, [games]);
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        background: "linear-gradient(180deg, #020617 0%, #0f172a 45%, #111827 100%)",
+        background:
+          "radial-gradient(circle at top, rgba(255,255,255,0.06) 0%, #000000 28%, #000000 100%)",
         color: "white",
         padding: 20,
       }}
     >
       <div
         style={{
-          maxWidth: 1080,
+          maxWidth: 1120,
           margin: "0 auto",
         }}
       >
         <div
           style={{
-            background: "rgba(15, 23, 42, 0.92)",
-            border: "1px solid rgba(148, 163, 184, 0.18)",
-            borderRadius: 24,
-            padding: 24,
-            boxShadow: "0 12px 28px rgba(0,0,0,0.25)",
-            marginBottom: 18,
+            background: "rgba(10, 10, 10, 0.95)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 28,
+            padding: 28,
+            boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+            marginBottom: 22,
           }}
         >
           <div
@@ -140,26 +63,54 @@ export default function ViewerPage() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
-              gap: 12,
+              gap: 16,
               flexWrap: "wrap",
             }}
           >
             <div>
-              <div style={{ fontSize: 14, color: "#94a3b8", marginBottom: 8 }}>
-                觀眾入口
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "#d4d4d8",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: 1,
+                  marginBottom: 14,
+                }}
+              >
+                VIEWER MODE
               </div>
-              <div style={{ fontSize: 30, fontWeight: 900, color: "#f8fafc" }}>
+
+              <div
+                style={{
+                  fontSize: 34,
+                  fontWeight: 900,
+                  color: "#ffffff",
+                  letterSpacing: -0.5,
+                }}
+              >
                 歡迎，{viewerName}
               </div>
-              <div style={{ marginTop: 8, color: "#cbd5e1" }}>
-                可以查看比賽列表、歷史賽事與數據內容
+
+              <div
+                style={{
+                  marginTop: 10,
+                  color: "#a1a1aa",
+                  fontSize: 15,
+                  lineHeight: 1.7,
+                  maxWidth: 620,
+                }}
+              >
+                從這裡快速進入比賽列表與數據中心，查看即時比賽、歷史賽事與統計內容。
               </div>
             </div>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button onClick={fetchGames} style={btnGray}>
-                重新整理
-              </button>
               <button onClick={handleLogout} style={btnRed}>
                 登出
               </button>
@@ -170,154 +121,51 @@ export default function ViewerPage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            gap: 16,
-            marginBottom: 22,
+            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+            gap: 18,
           }}
         >
-          <button
-            onClick={() => {}}
-            style={featureCardStyle}
-          >
-            <div style={featureTitleStyle}>比賽列表</div>
-            <div style={featureDescStyle}>
-              查看直播中的比賽、已結束比賽與歷史比賽資料
+          <button onClick={handleOpenGameList} style={featureCardStyle}>
+            <div style={featureTopRowStyle}>
+              <div style={featureTagStyle}>MATCHES</div>
             </div>
+
+            <div style={featureTitleStyle}>比賽列表</div>
+
+            <div style={featureDescStyle}>
+              進入直播中的比賽與歷史比賽頁面，快速查看目前可觀看的所有賽事。
+            </div>
+
+            <div style={featureActionStyle}>點擊進入</div>
           </button>
 
-          <button
-            onClick={handleOpenStatsCenter}
-            style={featureCardStyle}
-          >
-            <div style={featureTitleStyle}>數據中心</div>
-            <div style={featureDescStyle}>
-              查看球隊數據、球員數據、排行榜與更多統計內容
+          <button onClick={handleOpenStatsCenter} style={featureCardStyle}>
+            <div style={featureTopRowStyle}>
+              <div style={featureTagStyle}>STATS</div>
             </div>
+
+            <div style={featureTitleStyle}>數據中心</div>
+
+            <div style={featureDescStyle}>
+              查看球員數據、團隊統計、排行榜與之後延伸的更多分析內容。
+            </div>
+
+            <div style={featureActionStyle}>點擊進入</div>
           </button>
         </div>
-
-        {loading && (
-          <div style={infoCardStyle}>讀取中...</div>
-        )}
-
-        {!loading && msg && (
-          <div
-            style={{
-              ...infoCardStyle,
-              color: "#fecaca",
-              border: "1px solid rgba(248, 113, 113, 0.28)",
-              background: "rgba(127, 29, 29, 0.22)",
-            }}
-          >
-            {msg}
-          </div>
-        )}
-
-        {!loading && !msg && (
-          <>
-            <section style={{ marginBottom: 22 }}>
-              <div style={sectionTitleStyle}>直播中的比賽</div>
-
-              {liveGames.length === 0 ? (
-                <div style={infoCardStyle}>目前沒有進行中的比賽</div>
-              ) : (
-                <div style={gameListStyle}>
-                  {liveGames.map((game) => (
-                    <button
-                      key={game.id}
-                      onClick={() => handleOpenGame(game.id)}
-                      style={gameCardStyle}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          alignItems: "flex-start",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: 20, fontWeight: 800, color: "#f8fafc" }}>
-                            {game.teamA || "主隊"} vs {game.teamB || "客隊"}
-                          </div>
-                          <div style={{ marginTop: 8, color: "#94a3b8", fontSize: 14 }}>
-                            {formatGameDate(game)}
-                          </div>
-                        </div>
-
-                        <div style={liveBadgeStyle}>直播中</div>
-                      </div>
-
-                      <div style={{ marginTop: 12, color: "#cbd5e1" }}>
-                        點擊進入觀看
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section>
-              <div style={sectionTitleStyle}>歷史比賽</div>
-
-              {historyGames.length === 0 ? (
-                <div style={infoCardStyle}>目前還沒有歷史比賽資料</div>
-              ) : (
-                <div style={gameListStyle}>
-                  {historyGames.map((game) => (
-                    <button
-                      key={game.id}
-                      onClick={() => handleOpenGame(game.id)}
-                      style={gameCardStyle}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          alignItems: "flex-start",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: 18, fontWeight: 800, color: "#f8fafc" }}>
-                            {game.teamA || "主隊"} vs {game.teamB || "客隊"}
-                          </div>
-                          <div style={{ marginTop: 8, color: "#94a3b8", fontSize: 14 }}>
-                            {formatGameDate(game)}
-                          </div>
-                        </div>
-
-                        <div style={statusBadgeStyle(normalizeStatus(game.status))}>
-                          {normalizeStatus(game.status)}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
       </div>
     </main>
   );
 }
 
 const btnBase: React.CSSProperties = {
-  padding: "12px 14px",
-  borderRadius: 12,
-  border: "none",
+  padding: "12px 16px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.08)",
   cursor: "pointer",
-  fontSize: 15,
-  fontWeight: 700,
-};
-
-const btnGray: React.CSSProperties = {
-  ...btnBase,
-  background: "#334155",
-  color: "white",
+  fontSize: 14,
+  fontWeight: 800,
+  transition: "all 0.2s ease",
 };
 
 const btnRed: React.CSSProperties = {
@@ -329,106 +177,53 @@ const btnRed: React.CSSProperties = {
 const featureCardStyle: React.CSSProperties = {
   textAlign: "left",
   width: "100%",
-  padding: 20,
-  borderRadius: 20,
-  border: "1px solid rgba(148, 163, 184, 0.18)",
-  background: "rgba(15, 23, 42, 0.88)",
+  padding: 24,
+  borderRadius: 24,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background:
+    "linear-gradient(180deg, rgba(18,18,18,0.96) 0%, rgba(7,7,7,0.98) 100%)",
   color: "white",
   cursor: "pointer",
-  boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+  boxShadow: "0 18px 40px rgba(0,0,0,0.38)",
+};
+
+const featureTopRowStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 16,
+};
+
+const featureTagStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "6px 10px",
+  borderRadius: 999,
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#d4d4d8",
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: 1,
 };
 
 const featureTitleStyle: React.CSSProperties = {
-  fontSize: 22,
+  fontSize: 26,
   fontWeight: 900,
-  color: "#f8fafc",
+  color: "#ffffff",
   marginBottom: 10,
 };
 
 const featureDescStyle: React.CSSProperties = {
-  color: "#cbd5e1",
-  lineHeight: 1.6,
+  color: "#a1a1aa",
+  lineHeight: 1.7,
+  fontSize: 14,
+  minHeight: 52,
+};
+
+const featureActionStyle: React.CSSProperties = {
+  marginTop: 18,
+  color: "#ffffff",
+  fontWeight: 800,
   fontSize: 14,
 };
-
-const sectionTitleStyle: React.CSSProperties = {
-  fontSize: 22,
-  fontWeight: 900,
-  color: "#f8fafc",
-  marginBottom: 14,
-};
-
-const gameListStyle: React.CSSProperties = {
-  display: "grid",
-  gap: 12,
-};
-
-const gameCardStyle: React.CSSProperties = {
-  width: "100%",
-  textAlign: "left",
-  padding: "18px 20px",
-  borderRadius: 18,
-  color: "white",
-  cursor: "pointer",
-  border: "1px solid rgba(148, 163, 184, 0.16)",
-  background: "rgba(15, 23, 42, 0.82)",
-  boxShadow: "0 10px 24px rgba(0,0,0,0.16)",
-};
-
-const infoCardStyle: React.CSSProperties = {
-  padding: 18,
-  borderRadius: 16,
-  background: "rgba(15, 23, 42, 0.78)",
-  border: "1px solid rgba(148, 163, 184, 0.16)",
-  color: "#cbd5e1",
-};
-
-const liveBadgeStyle: React.CSSProperties = {
-  padding: "7px 12px",
-  borderRadius: 999,
-  background: "rgba(239, 68, 68, 0.18)",
-  border: "1px solid rgba(239, 68, 68, 0.32)",
-  color: "#fecaca",
-  fontWeight: 800,
-  fontSize: 13,
-  whiteSpace: "nowrap",
-};
-
-function statusBadgeStyle(status: string): React.CSSProperties {
-  if (status === "已結束") {
-    return {
-      padding: "7px 12px",
-      borderRadius: 999,
-      background: "rgba(34, 197, 94, 0.18)",
-      border: "1px solid rgba(34, 197, 94, 0.32)",
-      color: "#dcfce7",
-      fontWeight: 800,
-      fontSize: 13,
-      whiteSpace: "nowrap",
-    };
-  }
-
-  if (status === "未開始") {
-    return {
-      padding: "7px 12px",
-      borderRadius: 999,
-      background: "rgba(148, 163, 184, 0.16)",
-      border: "1px solid rgba(148, 163, 184, 0.28)",
-      color: "#e2e8f0",
-      fontWeight: 800,
-      fontSize: 13,
-      whiteSpace: "nowrap",
-    };
-  }
-
-  return {
-    padding: "7px 12px",
-    borderRadius: 999,
-    background: "rgba(245, 158, 11, 0.18)",
-    border: "1px solid rgba(245, 158, 11, 0.28)",
-    color: "#fde68a",
-    fontWeight: 800,
-    fontSize: 13,
-    whiteSpace: "nowrap",
-  };
-}
