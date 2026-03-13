@@ -287,15 +287,7 @@ export default function BoxDashboardPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link
-              href="/games/list"
-              className="rounded-2xl border border-zinc-700 bg-zinc-900/80 px-4 py-2 text-sm font-medium text-zinc-100 transition hover:bg-zinc-800"
-            >
-              回比賽列表
-            </Link>
-            <LogoutButton />
-          </div>
+          
         </div>
 
         {msg ? (
