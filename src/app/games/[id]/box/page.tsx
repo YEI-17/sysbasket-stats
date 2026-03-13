@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useParams } from "next/navigation";
 import { calcPlayerStats, calcTeamStats, pct, type EventRow } from "@/lib/stats";
@@ -152,96 +152,164 @@ export default function BoxPage() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function loadData() {
-      if (!gameId) return;
+  const loadData = useCallback(async () => {
+    if (!gameId) return;
 
-      setLoading(true);
-      setMsg("");
+    setMsg("");
 
-      try {
-        const { data: gameData, error: gameError } = await supabase
-          .from("games")
-          .select("id, teamA, teamB, status, game_date, created_at")
-          .eq("id", gameId)
-          .maybeSingle();
+    try {
+      const { data: gameData, error: gameError } = await supabase
+        .from("games")
+        .select("id, teamA, teamB, status, game_date, created_at")
+        .eq("id", gameId)
+        .maybeSingle();
 
-        if (gameError) {
-          throw new Error(`讀取比賽資料失敗：${gameError.message}`);
-        }
-
-        setGame((gameData as GameRow | null) ?? null);
-
-        const { data: ev, error: evError } = await supabase
-          .from("events")
-          .select("player_id, event_type, team_side, is_undone")
-          .eq("game_id", gameId)
-          .order("created_at", { ascending: true });
-
-        if (evError) {
-          throw new Error(`讀取事件失敗：${evError.message}`);
-        }
-
-        const normalizedEvents: EventRow[] = ((ev ?? []) as EventDbRow[]).map((e) => ({
-          player_id: e.player_id,
-          event_type: e.event_type,
-          team_side: e.team_side ?? null,
-          is_undone: e.is_undone ?? false,
-        }));
-
-        setEvents(normalizedEvents);
-
-        const { data: gp, error: gpError } = await supabase
-          .from("game_players")
-          .select("player_id, team_side")
-          .eq("game_id", gameId)
-          .eq("team_side", "A");
-
-        if (gpError) {
-          throw new Error(`讀取球員名單失敗：${gpError.message}`);
-        }
-
-        let playerIds = ((gp ?? []) as GamePlayerRow[]).map((row) => row.player_id);
-
-        if (playerIds.length === 0) {
-          playerIds = Array.from(
-            new Set(
-              normalizedEvents
-                .filter((e) => e.team_side === "A" && e.player_id)
-                .map((e) => e.player_id as string)
-            )
-          );
-        }
-
-        if (playerIds.length === 0) {
-          setPlayers([]);
-          return;
-        }
-
-        const { data: playerData, error: playerError } = await supabase
-          .from("players")
-          .select("id, name, number")
-          .in("id", playerIds)
-          .order("number", { ascending: true });
-
-        if (playerError) {
-          throw new Error(`讀取球員詳細資料失敗：${playerError.message}`);
-        }
-
-        setPlayers((playerData ?? []) as Player[]);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "讀取資料失敗";
-        setMsg(message);
-        setGame(null);
-        setPlayers([]);
-        setEvents([]);
-      } finally {
-        setLoading(false);
+      if (gameError) {
+        throw new Error(`讀取比賽資料失敗：${gameError.message}`);
       }
+
+      setGame((gameData as GameRow | null) ?? null);
+
+      const { data: ev, error: evError } = await supabase
+        .from("events")
+        .select("player_id, event_type, team_side, is_undone")
+        .eq("game_id", gameId)
+        .order("created_at", { ascending: true });
+
+      if (evError) {
+        throw new Error(`讀取事件失敗：${evError.message}`);
+      }
+
+      const normalizedEvents: EventRow[] = ((ev ?? []) as EventDbRow[]).map((e) => ({
+        player_id: e.player_id,
+        event_type: e.event_type,
+        team_side: e.team_side ?? null,
+        is_undone: e.is_undone ?? false,
+      }));
+
+      setEvents(normalizedEvents);
+
+      const { data: gp, error: gpError } = await supabase
+        .from("game_players")
+        .select("player_id, team_side")
+        .eq("game_id", gameId)
+        .eq("team_side", "A");
+
+      if (gpError) {
+        throw new Error(`讀取球員名單失敗：${gpError.message}`);
+      }
+
+      let playerIds = ((gp ?? []) as GamePlayerRow[]).map((row) => row.player_id);
+
+      if (playerIds.length === 0) {
+        playerIds = Array.from(
+          new Set(
+            normalizedEvents
+              .filter((e) => e.team_side === "A" && e.player_id)
+              .map((e) => e.player_id as string)
+          )
+        );
+      }
+
+      if (playerIds.length === 0) {
+        setPlayers([]);
+        return;
+      }
+
+      const { data: playerData, error: playerError } = await supabase
+        .from("players")
+        .select("id, name, number")
+        .in("id", playerIds)
+        .order("number", { ascending: true });
+
+      if (playerError) {
+        throw new Error(`讀取球員詳細資料失敗：${playerError.message}`);
+      }
+
+      setPlayers((playerData ?? []) as Player[]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "讀取資料失敗";
+      setMsg(message);
+      setGame(null);
+      setPlayers([]);
+      setEvents([]);
+    }
+  }, [gameId]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function init() {
+      if (!gameId) return;
+      setLoading(true);
+      await loadData();
+      if (mounted) setLoading(false);
     }
 
-    loadData();
-  }, [gameId]);
+    init();
+
+    return () => {
+      mounted = false;
+    };
+  }, [gameId, loadData]);
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleReload = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        loadData();
+      }, 150);
+    };
+
+    const channel = supabase
+      .channel(`box-realtime-${gameId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "events",
+          filter: `game_id=eq.${gameId}`,
+        },
+        () => {
+          scheduleReload();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "game_players",
+          filter: `game_id=eq.${gameId}`,
+        },
+        () => {
+          scheduleReload();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "games",
+          filter: `id=eq.${gameId}`,
+        },
+        () => {
+          scheduleReload();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      supabase.removeChannel(channel);
+    };
+  }, [gameId, loadData]);
 
   const rows = useMemo<PlayerRow[]>(() => {
     return players.map((player) => {
@@ -424,11 +492,7 @@ export default function BoxPage() {
           </div>
         </div>
 
-        {loading && (
-          <div style={infoCardStyle}>
-            讀取中...
-          </div>
-        )}
+        {loading && <div style={infoCardStyle}>讀取中...</div>}
 
         {!loading && msg && (
           <div
