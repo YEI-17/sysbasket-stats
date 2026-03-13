@@ -18,7 +18,6 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [viewerName, setViewerNameState] = useState("");
-  const [selectedGameId, setSelectedGameId] = useState("");
   const [liveGames, setLiveGames] = useState<LiveGame[]>([]);
   const [loadingGames, setLoadingGames] = useState(false);
   const [msg, setMsg] = useState("");
@@ -72,12 +71,7 @@ export default function LoginPage() {
     }
 
     setRole("staff");
-
-    if (selectedGameId) {
-      router.push(`/games/${selectedGameId}/live`);
-    } else {
-      router.push("/games/new");
-    }
+    router.push("/staff");
   }
 
   function handleViewerGameClick(gameId: string) {
@@ -93,51 +87,13 @@ export default function LoginPage() {
     router.push(`/games/${gameId}/board`);
   }
 
-  function renderStaffLiveGames() {
-    if (loadingGames) {
-      return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
-    }
-
-    if (liveGames.length === 0) {
-      return null;
-    }
-
-    return (
-      <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ color: "#bbb", fontWeight: 700 }}>目前正在進行的比賽</div>
-
-        {liveGames.map((game) => {
-          const active = selectedGameId === game.id;
-          const label = `${game.teamA || "未命名主隊"} vs ${game.teamB || "未命名客隊"}`;
-
-          return (
-            <button
-              key={game.id}
-              onClick={() => setSelectedGameId(game.id)}
-              style={{
-                ...gameBtn,
-                border: active ? "2px solid #22c55e" : "1px solid #333",
-                background: active ? "#11361f" : "#161616",
-              }}
-            >
-              <div style={{ fontWeight: 800, fontSize: 16 }}>{label}</div>
-              <div style={{ color: "#8f8f8f", fontSize: 12, marginTop: 4 }}>
-                {active ? "已選擇這場比賽" : "點擊選擇這場比賽"}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    );
-  }
-
   function renderViewerLiveGames() {
     if (loadingGames) {
       return <div style={{ color: "#888" }}>正在讀取目前比賽...</div>;
     }
 
     if (liveGames.length === 0) {
-      return null;
+      return <div style={{ color: "#888" }}>目前沒有正在進行的比賽</div>;
     }
 
     return (
@@ -222,10 +178,8 @@ export default function LoginPage() {
               style={inputStyle}
             />
 
-            {renderStaffLiveGames()}
-
             <button onClick={handleStaffLogin} style={btnGreen}>
-              {selectedGameId ? "登入並進入比賽" : "登入並建立新比賽"}
+              登入
             </button>
 
             <button onClick={() => setMode("choose")} style={btnGray}>

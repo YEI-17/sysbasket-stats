@@ -23,11 +23,82 @@ type EventDbRow = {
   is_undone?: boolean | null;
 };
 
+type GameRow = {
+  id: string;
+  teamA: string | null;
+  teamB: string | null;
+  status?: string | null;
+  game_date?: string | null;
+  date?: string | null;
+  created_at?: string | null;
+};
+
+function normalizeStatus(status?: string | null) {
+  const s = (status ?? "").trim().toLowerCase();
+
+  if (!s) return "未設定";
+  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
+    return "已結束";
+  }
+  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
+    return "進行中";
+  }
+  if (["scheduled", "upcoming", "pending"].includes(s)) {
+    return "未開始";
+  }
+
+  return status ?? "未設定";
+}
+
+function getStatusStyle(status: string) {
+  if (status === "已結束") {
+    return {
+      color: "#d1fae5",
+      background: "rgba(16, 185, 129, 0.18)",
+      border: "1px solid rgba(16, 185, 129, 0.35)",
+    };
+  }
+
+  if (status === "進行中") {
+    return {
+      color: "#fde68a",
+      background: "rgba(245, 158, 11, 0.18)",
+      border: "1px solid rgba(245, 158, 11, 0.35)",
+    };
+  }
+
+  return {
+    color: "#cbd5e1",
+    background: "rgba(148, 163, 184, 0.16)",
+    border: "1px solid rgba(148, 163, 184, 0.28)",
+  };
+}
+
+function formatGameDate(game: GameRow | null) {
+  if (!game) return "未提供日期";
+
+  const raw = game.game_date ?? game.date ?? game.created_at ?? null;
+  if (!raw) return "未提供日期";
+
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return String(raw);
+
+  return d.toLocaleString("zh-TW", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: raw.includes("T") ? "2-digit" : undefined,
+    minute: raw.includes("T") ? "2-digit" : undefined,
+    hour12: false,
+  });
+}
+
 export default function BoxPage() {
   const params = useParams<{ id: string }>();
   const gameId = params.id;
   const router = useRouter();
 
+  const [game, setGame] = useState<GameRow | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [msg, setMsg] = useState("");
@@ -41,6 +112,18 @@ export default function BoxPage() {
       setMsg("");
 
       try {
+        const { data: gameData, error: gameError } = await supabase
+          .from("games")
+          .select("id, teamA, teamB, status, game_date, date, created_at")
+          .eq("id", gameId)
+          .maybeSingle();
+
+        if (gameError) {
+          throw new Error(`讀取比賽資料失敗：${gameError.message}`);
+        }
+
+        setGame((gameData as GameRow | null) ?? null);
+
         const { data: ev, error: evError } = await supabase
           .from("events")
           .select("player_id, event_type, team_side, is_undone")
@@ -84,7 +167,6 @@ export default function BoxPage() {
 
         if (playerIds.length === 0) {
           setPlayers([]);
-          setLoading(false);
           return;
         }
 
@@ -100,9 +182,9 @@ export default function BoxPage() {
 
         setPlayers((playerData ?? []) as Player[]);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "讀取資料失敗";
+        const message = error instanceof Error ? error.message : "讀取資料失敗";
         setMsg(message);
+        setGame(null);
         setPlayers([]);
         setEvents([]);
       } finally {
@@ -119,7 +201,19 @@ export default function BoxPage() {
         (e) => e.team_side === "A" && e.player_id === player.id
       );
       const stat = calcPlayerStats(playerEvents);
-      return { player, stat };
+      const hasPlayed =
+        stat.pts > 0 ||
+        stat.fg2a > 0 ||
+        stat.fg3a > 0 ||
+        stat.fta > 0 ||
+        stat.reb > 0 ||
+        stat.ast > 0 ||
+        stat.stl > 0 ||
+        stat.blk > 0 ||
+        stat.tov > 0 ||
+        stat.pf > 0;
+
+      return { player, stat, hasPlayed };
     });
   }, [players, events]);
 
@@ -127,201 +221,394 @@ export default function BoxPage() {
     return calcTeamStats(events, "A");
   }, [events]);
 
+  const opponent = useMemo(() => {
+    return calcTeamStats(events, "B");
+  }, [events]);
+
+  const gameTitleA = game?.teamA?.trim() || "我方";
+  const gameTitleB = game?.teamB?.trim() || "對手";
+  const statusText = normalizeStatus(game?.status);
+  const statusStyle = getStatusStyle(statusText);
+
   return (
-    <main style={{ padding: 12, maxWidth: 1400, margin: "0 auto" }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          marginBottom: 12,
-        }}
-      >
-        <h2 style={{ margin: 0 }}>Box Score</h2>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            onClick={() => router.push(`/games/${gameId}/live`)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              background: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            回記錄頁
-          </button>
-
-          <button
-            onClick={() => router.push(`/games/${gameId}/view`)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              background: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            觀眾頁
-          </button>
-        </div>
-      </div>
-
-      {loading && <p>讀取中...</p>}
-      {!loading && msg && <p style={{ color: "crimson" }}>{msg}</p>}
-
-      {!loading && !msg && rows.length === 0 && (
-        <p>目前這場比賽還沒有球員資料。</p>
-      )}
-
-      {!loading && !msg && rows.length > 0 && (
+    <main
+      style={{
+        minHeight: "100vh",
+        background:
+          "linear-gradient(180deg, #0f172a 0%, #111827 45%, #0b1120 100%)",
+        color: "#e5e7eb",
+        padding: "24px 16px 40px",
+      }}
+    >
+      <div style={{ maxWidth: 1400, margin: "0 auto" }}>
         <div
           style={{
-            overflowX: "auto",
-            marginTop: 10,
-            border: "1px solid #e5e7eb",
-            borderRadius: 12,
-            background: "#fff",
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            marginBottom: 16,
           }}
         >
-          <table
+          <div>
+            <div
+              style={{
+                color: "#94a3b8",
+                fontSize: 13,
+                marginBottom: 8,
+              }}
+            >
+              單場數據頁
+            </div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: 30,
+                lineHeight: 1.2,
+                color: "#f8fafc",
+                fontWeight: 800,
+              }}
+            >
+              Box Score
+            </h1>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={() => router.push(`/games/${gameId}/view`)}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(148, 163, 184, 0.24)",
+                background: "rgba(30, 41, 59, 0.92)",
+                color: "#e5e7eb",
+                cursor: "pointer",
+                fontWeight: 700,
+              }}
+            >
+              觀眾頁
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginBottom: 18,
+            padding: 20,
+            borderRadius: 20,
+            background: "rgba(15, 23, 42, 0.78)",
+            border: "1px solid rgba(148, 163, 184, 0.18)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+          }}
+        >
+          <div
             style={{
-              borderCollapse: "collapse",
-              width: "100%",
-              minWidth: 980,
-              fontSize: 14,
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 14,
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+              marginBottom: 18,
             }}
           >
-            <thead>
-              <tr style={{ background: "#f8fafc" }}>
-                {[
-                  "球員",
-                  "PTS",
-                  "2FG",
-                  "3FG",
-                  "FT",
-                  "REB",
-                  "AST",
-                  "STL",
-                  "BLK",
-                  "TOV",
-                  "PF",
-                  "2%",
-                  "3%",
-                  "FT%",
-                ].map((header) => (
-                  <th
-                    key={header}
+            <div>
+              <div
+                style={{
+                  fontSize: 26,
+                  fontWeight: 800,
+                  color: "#f8fafc",
+                  lineHeight: 1.3,
+                  wordBreak: "break-word",
+                }}
+              >
+                {gameTitleA}
+                <span style={{ color: "#64748b", margin: "0 8px" }}>VS</span>
+                {gameTitleB}
+              </div>
+              <div
+                style={{
+                  marginTop: 10,
+                  color: "#94a3b8",
+                  fontSize: 14,
+                }}
+              >
+                比賽日期：{formatGameDate(game)}
+              </div>
+            </div>
+
+            <span
+              style={{
+                ...statusStyle,
+                padding: "7px 12px",
+                borderRadius: 999,
+                fontSize: 13,
+                fontWeight: 700,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {statusText}
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto 1fr",
+              gap: 12,
+              alignItems: "center",
+              padding: "16px 18px",
+              borderRadius: 18,
+              background: "rgba(2, 6, 23, 0.45)",
+              border: "1px solid rgba(148, 163, 184, 0.12)",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6 }}>
+                我方
+              </div>
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 800,
+                  color: "#f8fafc",
+                  wordBreak: "break-word",
+                }}
+              >
+                {gameTitleA}
+              </div>
+            </div>
+
+            <div
+              style={{
+                fontSize: 34,
+                fontWeight: 900,
+                color: "#f8fafc",
+                letterSpacing: 1,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {team.pts} : {opponent.pts}
+            </div>
+
+            <div style={{ minWidth: 0, textAlign: "right" }}>
+              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6 }}>
+                對手
+              </div>
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 800,
+                  color: "#f8fafc",
+                  wordBreak: "break-word",
+                }}
+              >
+                {gameTitleB}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {loading && (
+          <div
+            style={{
+              borderRadius: 18,
+              padding: 24,
+              background: "rgba(15, 23, 42, 0.72)",
+              border: "1px solid rgba(148, 163, 184, 0.16)",
+              color: "#e2e8f0",
+            }}
+          >
+            讀取中...
+          </div>
+        )}
+
+        {!loading && msg && (
+          <div
+            style={{
+              borderRadius: 18,
+              padding: 18,
+              background: "rgba(127, 29, 29, 0.22)",
+              border: "1px solid rgba(248, 113, 113, 0.3)",
+              color: "#fecaca",
+            }}
+          >
+            {msg}
+          </div>
+        )}
+
+        {!loading && !msg && rows.length === 0 && (
+          <div
+            style={{
+              borderRadius: 18,
+              padding: 24,
+              background: "rgba(15, 23, 42, 0.72)",
+              border: "1px solid rgba(148, 163, 184, 0.16)",
+              color: "#cbd5e1",
+            }}
+          >
+            目前這場比賽還沒有球員資料。
+          </div>
+        )}
+
+        {!loading && !msg && rows.length > 0 && (
+          <div
+            style={{
+              overflowX: "auto",
+              marginTop: 10,
+              border: "1px solid rgba(148, 163, 184, 0.16)",
+              borderRadius: 18,
+              background: "rgba(15, 23, 42, 0.82)",
+              boxShadow: "0 12px 24px rgba(0,0,0,0.2)",
+            }}
+          >
+            <table
+              style={{
+                borderCollapse: "collapse",
+                width: "100%",
+                minWidth: 980,
+                fontSize: 14,
+              }}
+            >
+              <thead>
+                <tr style={{ background: "rgba(30, 41, 59, 0.92)" }}>
+                  {[
+                    "球員",
+                    "PTS",
+                    "2FG",
+                    "3FG",
+                    "FT",
+                    "REB",
+                    "AST",
+                    "STL",
+                    "BLK",
+                    "TOV",
+                    "PF",
+                    "2%",
+                    "3%",
+                    "FT%",
+                  ].map((header) => (
+                    <th
+                      key={header}
+                      style={{
+                        borderBottom: "1px solid rgba(148, 163, 184, 0.18)",
+                        padding: 12,
+                        textAlign: "left",
+                        whiteSpace: "nowrap",
+                        color: "#cbd5e1",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+
+              <tbody>
+                {rows.map(({ player, stat, hasPlayed }) => (
+                  <tr
+                    key={player.id}
                     style={{
-                      borderBottom: "1px solid #e5e7eb",
-                      padding: 10,
-                      textAlign: "left",
-                      whiteSpace: "nowrap",
+                      background: hasPlayed ? "transparent" : "rgba(30, 41, 59, 0.35)",
                     }}
                   >
-                    {header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+                    <td
+                      style={{
+                        padding: 12,
+                        borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+                        whiteSpace: "nowrap",
+                        color: "#f8fafc",
+                        fontWeight: 600,
+                      }}
+                    >
+                      #{player.number ?? "-"} {player.name}
+                      {!hasPlayed && (
+                        <span
+                          style={{
+                            marginLeft: 8,
+                            fontSize: 12,
+                            color: "#94a3b8",
+                            fontWeight: 500,
+                          }}
+                        >
+                          DNP
+                        </span>
+                      )}
+                    </td>
 
-            <tbody>
-              {rows.map(({ player, stat }) => (
-                <tr key={player.id}>
+                    <td style={cellStyle}>{stat.pts}</td>
+                    <td style={cellStyle}>
+                      {stat.fg2m}/{stat.fg2a}
+                    </td>
+                    <td style={cellStyle}>
+                      {stat.fg3m}/{stat.fg3a}
+                    </td>
+                    <td style={cellStyle}>
+                      {stat.ftm}/{stat.fta}
+                    </td>
+                    <td style={cellStyle}>{stat.reb}</td>
+                    <td style={cellStyle}>{stat.ast}</td>
+                    <td style={cellStyle}>{stat.stl}</td>
+                    <td style={cellStyle}>{stat.blk}</td>
+                    <td style={cellStyle}>{stat.tov}</td>
+                    <td style={cellStyle}>{stat.pf}</td>
+                    <td style={cellStyle}>{pct(stat.fg2m, stat.fg2a)}</td>
+                    <td style={cellStyle}>{pct(stat.fg3m, stat.fg3a)}</td>
+                    <td style={cellStyle}>{pct(stat.ftm, stat.fta)}</td>
+                  </tr>
+                ))}
+
+                <tr style={{ background: "rgba(37, 99, 235, 0.14)" }}>
                   <td
                     style={{
-                      padding: 10,
-                      borderBottom: "1px solid #f1f5f9",
+                      padding: 12,
+                      fontWeight: 800,
                       whiteSpace: "nowrap",
+                      color: "#dbeafe",
+                      borderTop: "1px solid rgba(59, 130, 246, 0.2)",
                     }}
                   >
-                    #{player.number ?? "-"} {player.name}
+                    TEAM
                   </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.pts}
+                  <td style={teamCellStyle}>{team.pts}</td>
+                  <td style={teamCellStyle}>
+                    {team.fg2m}/{team.fg2a}
                   </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.fg2m}/{stat.fg2a}
+                  <td style={teamCellStyle}>
+                    {team.fg3m}/{team.fg3a}
                   </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.fg3m}/{stat.fg3a}
+                  <td style={teamCellStyle}>
+                    {team.ftm}/{team.fta}
                   </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.ftm}/{stat.fta}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.reb}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.ast}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.stl}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.blk}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.tov}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {stat.pf}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {pct(stat.fg2m, stat.fg2a)}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {pct(stat.fg3m, stat.fg3a)}
-                  </td>
-                  <td style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
-                    {pct(stat.ftm, stat.fta)}
-                  </td>
+                  <td style={teamCellStyle}>{team.reb}</td>
+                  <td style={teamCellStyle}>{team.ast}</td>
+                  <td style={teamCellStyle}>{team.stl}</td>
+                  <td style={teamCellStyle}>{team.blk}</td>
+                  <td style={teamCellStyle}>{team.tov}</td>
+                  <td style={teamCellStyle}>{team.pf}</td>
+                  <td style={teamCellStyle}>{pct(team.fg2m, team.fg2a)}</td>
+                  <td style={teamCellStyle}>{pct(team.fg3m, team.fg3a)}</td>
+                  <td style={teamCellStyle}>{pct(team.ftm, team.fta)}</td>
                 </tr>
-              ))}
-
-              <tr style={{ background: "#f8fafc" }}>
-                <td
-                  style={{
-                    padding: 10,
-                    fontWeight: 700,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  TEAM
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.pts}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {team.fg2m}/{team.fg2a}
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {team.fg3m}/{team.fg3a}
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {team.ftm}/{team.fta}
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.reb}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.ast}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.stl}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.blk}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.tov}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>{team.pf}</td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {pct(team.fg2m, team.fg2a)}
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {pct(team.fg3m, team.fg3a)}
-                </td>
-                <td style={{ padding: 10, fontWeight: 700 }}>
-                  {pct(team.ftm, team.fta)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </main>
   );
 }
+
+const cellStyle: React.CSSProperties = {
+  padding: 12,
+  borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+  color: "#e5e7eb",
+};
+
+const teamCellStyle: React.CSSProperties = {
+  padding: 12,
+  fontWeight: 800,
+  color: "#dbeafe",
+  borderTop: "1px solid rgba(59, 130, 246, 0.2)",
+};
