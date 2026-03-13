@@ -1,0 +1,451 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import LogoutButton from "@/components/LogoutButton";
+import {
+  calcPlayerStats,
+  groupPlayerStats,
+  pct,
+  type EventRow,
+  type Stat,
+} from "@/lib/stats";
+
+type Player = {
+  id: string;
+  name: string;
+  number: number | null;
+  active?: boolean;
+};
+
+type GameRow = {
+  id: string;
+  teamA: string | null;
+  teamB: string | null;
+  status?: string | null;
+  is_live?: boolean | null;
+  game_date?: string | null;
+  created_at?: string | null;
+};
+
+type EventDbRow = {
+  player_id: string | null;
+  event_type: EventRow["event_type"];
+  team_side?: "A" | "B" | null;
+  is_undone?: boolean | null;
+};
+
+function madeAttempt(made: number, attempt: number) {
+  return `${made}/${attempt}`;
+}
+
+function formatDateTime(dateStr?: string | null) {
+  if (!dateStr) return "未設定日期";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+
+  return d.toLocaleString("zh-TW", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getGameStatus(game: GameRow) {
+  if (game.is_live || game.status === "live") return "直播中";
+  if (game.status === "finished") return "已結束";
+  if (game.status === "scheduled") return "尚未開始";
+  return "未分類";
+}
+
+function getGameStatusStyle(game: GameRow) {
+  if (game.is_live || game.status === "live") {
+    return "bg-red-500/15 text-red-300 border border-red-500/30";
+  }
+  if (game.status === "finished") {
+    return "bg-zinc-800 text-zinc-300 border border-zinc-700";
+  }
+  if (game.status === "scheduled") {
+    return "bg-yellow-500/15 text-yellow-300 border border-yellow-500/30";
+  }
+  return "bg-zinc-800 text-zinc-300 border border-zinc-700";
+}
+
+function eff(stat: Stat) {
+  return (
+    stat.pts +
+    stat.reb +
+    stat.ast +
+    stat.stl +
+    stat.blk -
+    stat.tov -
+    (stat.fg2a - stat.fg2m) -
+    (stat.fg3a - stat.fg3m) -
+    (stat.fta - stat.ftm)
+  );
+}
+
+export default function BoxDashboardPage() {
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [games, setGames] = useState<GameRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+
+  async function loadAll() {
+    setLoading(true);
+    setMsg("");
+
+    const { data: playerData, error: playerError } = await supabase
+      .from("players")
+      .select("id, name, number, active")
+      .eq("active", true)
+      .order("number", { ascending: true });
+
+    if (playerError) {
+      setMsg(`讀取球員失敗：${playerError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    const { data: eventData, error: eventError } = await supabase
+      .from("events")
+      .select("player_id, event_type, team_side, is_undone")
+      .order("created_at", { ascending: true });
+
+    if (eventError) {
+      setMsg(`讀取事件失敗：${eventError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    const { data: gameData, error: gameError } = await supabase
+      .from("games")
+      .select("id, teamA, teamB, status, is_live, game_date, created_at")
+      .order("game_date", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false });
+
+    if (gameError) {
+      setMsg(`讀取比賽失敗：${gameError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setPlayers((playerData || []) as Player[]);
+    setGames((gameData || []) as GameRow[]);
+    setEvents(
+      ((eventData || []) as EventDbRow[]).map((e) => ({
+        player_id: e.player_id,
+        event_type: e.event_type,
+        team_side: e.team_side ?? null,
+        is_undone: !!e.is_undone,
+      }))
+    );
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadAll();
+
+    const channel = supabase
+      .channel("box-dashboard-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "events" },
+        () => loadAll()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "games" },
+        () => loadAll()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "players" },
+        () => loadAll()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const totalTeamStat = useMemo(() => calcPlayerStats(events), [events]);
+
+  const playerStatMap = useMemo(() => groupPlayerStats(events), [events]);
+
+  const playerRows = useMemo(() => {
+    return players.map((player) => {
+      const stat: Stat =
+        playerStatMap[player.id] ||
+        calcPlayerStats([]);
+
+      return {
+        ...player,
+        stat,
+        eff: eff(stat),
+      };
+    });
+  }, [players, playerStatMap]);
+
+  const sortedPlayerRows = useMemo(() => {
+    return [...playerRows].sort((a, b) => {
+      if (b.stat.pts !== a.stat.pts) return b.stat.pts - a.stat.pts;
+      if (b.eff !== a.eff) return b.eff - a.eff;
+      return (a.number ?? 999) - (b.number ?? 999);
+    });
+  }, [playerRows]);
+
+  const recentGames = useMemo(() => games.slice(0, 8), [games]);
+
+  return (
+    <main className="min-h-screen bg-black text-white px-4 py-6 md:px-8">
+      <div className="mx-auto max-w-7xl">
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl md:text-5xl font-bold tracking-tight">
+              數據中心
+            </h1>
+            <p className="mt-2 text-zinc-400 text-base md:text-lg">
+              團隊總覽、球員個人數據、最近比賽
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Link
+              href="/games/list"
+              className="rounded-2xl border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-900"
+            >
+              回比賽列表
+            </Link>
+            <LogoutButton />
+          </div>
+        </div>
+
+        {msg ? (
+          <div className="mb-6 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-300">
+            {msg}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-400">
+            載入中...
+          </div>
+        ) : (
+          <>
+            <section className="mb-6">
+              <h2 className="mb-4 text-2xl font-bold">團隊總覽</h2>
+
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+                <StatCard label="總得分" value={totalTeamStat.pts} />
+                <StatCard label="總籃板" value={totalTeamStat.reb} />
+                <StatCard label="總助攻" value={totalTeamStat.ast} />
+                <StatCard label="總抄截" value={totalTeamStat.stl} />
+                <StatCard label="總失誤" value={totalTeamStat.tov} />
+                <StatCard label="總犯規" value={totalTeamStat.pf} />
+              </div>
+            </section>
+
+            <section className="mb-6">
+              <h2 className="mb-4 text-2xl font-bold">團隊命中率</h2>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <RateCard
+                  label="2分球"
+                  made={totalTeamStat.fg2m}
+                  attempt={totalTeamStat.fg2a}
+                />
+                <RateCard
+                  label="3分球"
+                  made={totalTeamStat.fg3m}
+                  attempt={totalTeamStat.fg3a}
+                />
+                <RateCard
+                  label="罰球"
+                  made={totalTeamStat.ftm}
+                  attempt={totalTeamStat.fta}
+                />
+              </div>
+            </section>
+
+            <section className="mb-6 rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <h2 className="text-2xl font-bold">球員個人數據</h2>
+                <div className="text-sm text-zinc-400">依得分排序</div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-[1200px] w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800 text-zinc-400">
+                      <th className="px-3 py-3 text-left">球員</th>
+                      <th className="px-3 py-3 text-center">PTS</th>
+                      <th className="px-3 py-3 text-center">REB</th>
+                      <th className="px-3 py-3 text-center">AST</th>
+                      <th className="px-3 py-3 text-center">STL</th>
+                      <th className="px-3 py-3 text-center">BLK</th>
+                      <th className="px-3 py-3 text-center">TOV</th>
+                      <th className="px-3 py-3 text-center">PF</th>
+                      <th className="px-3 py-3 text-center">2PT</th>
+                      <th className="px-3 py-3 text-center">2PT%</th>
+                      <th className="px-3 py-3 text-center">3PT</th>
+                      <th className="px-3 py-3 text-center">3PT%</th>
+                      <th className="px-3 py-3 text-center">FT</th>
+                      <th className="px-3 py-3 text-center">FT%</th>
+                      <th className="px-3 py-3 text-center">EFF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedPlayerRows.map((row) => (
+                      <tr
+                        key={row.id}
+                        className="border-b border-zinc-900 hover:bg-zinc-900/60"
+                      >
+                        <td className="px-3 py-3">
+                          <div className="font-medium text-white">
+                            #{row.number ?? "-"} {row.name}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-center">{row.stat.pts}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.reb}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.ast}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.stl}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.blk}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.tov}</td>
+                        <td className="px-3 py-3 text-center">{row.stat.pf}</td>
+                        <td className="px-3 py-3 text-center">
+                          {madeAttempt(row.stat.fg2m, row.stat.fg2a)}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {pct(row.stat.fg2m, row.stat.fg2a)}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {madeAttempt(row.stat.fg3m, row.stat.fg3a)}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {pct(row.stat.fg3m, row.stat.fg3a)}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {madeAttempt(row.stat.ftm, row.stat.fta)}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {pct(row.stat.ftm, row.stat.fta)}
+                        </td>
+                        <td className="px-3 py-3 text-center font-semibold">
+                          {row.eff}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <h2 className="text-2xl font-bold">最近比賽</h2>
+                <Link
+                  href="/games/list"
+                  className="text-sm text-green-400 hover:text-green-300"
+                >
+                  查看全部
+                </Link>
+              </div>
+
+              {recentGames.length === 0 ? (
+                <p className="text-zinc-500">目前沒有比賽資料</p>
+              ) : (
+                <div className="grid gap-4">
+                  {recentGames.map((game) => (
+                    <div
+                      key={game.id}
+                      className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
+                    >
+                      <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-lg md:text-xl font-semibold">
+                            {game.teamA || "隊伍A"} vs {game.teamB || "隊伍B"}
+                          </div>
+                          <div className="mt-1 text-sm text-zinc-400">
+                            {formatDateTime(game.game_date || game.created_at)}
+                          </div>
+                        </div>
+
+                        <div
+                          className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-medium ${getGameStatusStyle(
+                            game
+                          )}`}
+                        >
+                          {getGameStatus(game)}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <Link
+                          href={`/games/${game.id}`}
+                          className="rounded-xl bg-green-500 px-4 py-3 text-center font-semibold text-black hover:bg-green-400 transition"
+                        >
+                          進入紀錄
+                        </Link>
+                        <Link
+                          href={`/games/${game.id}/board`}
+                          className="rounded-xl bg-blue-500 px-4 py-3 text-center font-semibold text-white hover:bg-blue-400 transition"
+                        >
+                          觀眾畫面
+                        </Link>
+                        <Link
+                          href={`/games/${game.id}/box`}
+                          className="rounded-xl bg-zinc-700 px-4 py-3 text-center font-semibold text-white hover:bg-zinc-600 transition"
+                        >
+                          單場數據
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | string;
+}) {
+  return (
+    <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
+      <div className="text-sm text-zinc-400">{label}</div>
+      <div className="mt-2 text-3xl font-bold">{value}</div>
+    </div>
+  );
+}
+
+function RateCard({
+  label,
+  made,
+  attempt,
+}: {
+  label: string;
+  made: number;
+  attempt: number;
+}) {
+  return (
+    <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
+      <div className="text-sm text-zinc-400">{label}</div>
+      <div className="mt-2 text-2xl font-bold">{pct(made, attempt)}</div>
+      <div className="mt-2 text-zinc-300">{madeAttempt(made, attempt)}</div>
+    </div>
+  );
+}
