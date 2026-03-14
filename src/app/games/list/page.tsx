@@ -200,23 +200,6 @@ export default function GamesPage() {
           )}
         </section>
 
-        <section className="mb-6 rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
-          <h2 className="mb-4 text-2xl font-bold">今日比賽</h2>
-
-          {loading ? (
-            <p className="text-zinc-400">載入中...</p>
-          ) : todayGames.length === 0 ? (
-            <p className="text-zinc-500">今天沒有尚未直播的比賽</p>
-          ) : (
-            <div className="grid gap-4">
-              {todayGames.map((game) => (
-                <GameCard key={game.id} game={game} />
-              ))}
-            </div>
-          )}
-        </section>
-
-
         <section className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
           <h2 className="mb-4 text-2xl font-bold">全部比賽</h2>
 
