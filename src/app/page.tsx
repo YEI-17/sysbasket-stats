@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { setRole, setViewerName } from "@/lib/roles";
+import { supabase } from "@/lib/supabaseClient";
 
 const STAFF_NAME = "YEI";
 const STAFF_PASSWORD = "!we are the best!";
@@ -15,6 +16,17 @@ export default function Page() {
   const [password, setPassword] = useState("");
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
+
+  async function saveLoginLog(loginName: string, role: "staff" | "viewer") {
+    const { error } = await supabase.from("login_logs").insert({
+      name: loginName,
+      role,
+    });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
 
   async function handleLogin() {
     setMsg("");
@@ -39,6 +51,7 @@ export default function Page() {
         trimmedName === STAFF_NAME &&
         trimmedPassword === STAFF_PASSWORD
       ) {
+        await saveLoginLog(trimmedName, "staff");
         setRole("staff");
         setViewerName("");
         router.push("/staff");
@@ -46,6 +59,7 @@ export default function Page() {
       }
 
       if (trimmedPassword === VIEWER_PASSWORD) {
+        await saveLoginLog(trimmedName, "viewer");
         setViewerName(trimmedName);
         setRole("viewer");
         router.push("/viewer");
@@ -53,6 +67,10 @@ export default function Page() {
       }
 
       setMsg("名稱或密碼錯誤");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "未知錯誤";
+      setMsg(`登入失敗：${message}`);
     } finally {
       setLoading(false);
     }
