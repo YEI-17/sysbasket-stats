@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ＣourStats",
+  title: "CourStats",
   description: "系籃比賽紀錄與數據系統",
 };
 
