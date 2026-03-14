@@ -193,6 +193,73 @@ function getQuarterPlayedSeconds(
   return REGULAR_SECONDS - currentDisplaySeconds;
 }
 
+function getEstimatedQuarterStartMs(
+  clock: ClockRow | null,
+  currentQuarter: number,
+  currentDisplaySeconds: number
+) {
+  if (!clock?.updated_at) return null;
+
+  const updatedAtMs = new Date(clock.updated_at).getTime();
+  if (Number.isNaN(updatedAtMs)) return null;
+
+  const playedSecondsNow = getQuarterPlayedSeconds(
+    currentQuarter,
+    currentQuarter,
+    currentDisplaySeconds
+  );
+
+  return updatedAtMs - playedSecondsNow * 1000;
+}
+
+function getEventElapsedSeconds(
+  event: EventRow,
+  quarterEvents: EventRow[],
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number,
+  clock: ClockRow | null
+) {
+  const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+    quarter,
+    currentQuarter,
+    currentDisplaySeconds
+  );
+
+  if (quarter < currentQuarter) {
+    const subEvents = quarterEvents.filter(
+      (e) => e.event_type === "sub_in" || e.event_type === "sub_out"
+    );
+
+    if (subEvents.length === 0) return playedSecondsThisQuarter;
+
+    const index = subEvents.findIndex((e) => e.id === event.id);
+    if (index === -1) return playedSecondsThisQuarter;
+
+    return Math.floor(((index + 1) / (subEvents.length + 1)) * REGULAR_SECONDS);
+  }
+
+  const estimatedQuarterStartMs = getEstimatedQuarterStartMs(
+    clock,
+    currentQuarter,
+    currentDisplaySeconds
+  );
+
+  if (estimatedQuarterStartMs == null) {
+    return playedSecondsThisQuarter;
+  }
+
+  const eventMs = new Date(event.created_at).getTime();
+  if (Number.isNaN(eventMs)) {
+    return playedSecondsThisQuarter;
+  }
+
+  return Math.max(
+    0,
+    Math.min(playedSecondsThisQuarter, Math.floor((eventMs - estimatedQuarterStartMs) / 1000))
+  );
+}
+
 function getGameStatusText(game: GameRow | null, clock: ClockRow | null) {
   if (game?.status === "finished") return "比賽已結束";
   if (clock?.is_running) return "計時中";
@@ -539,88 +606,93 @@ export default function BoardPage() {
   }, [teamAPlayers, validEvents]);
 
   const minutesMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    const currentQuarter = clock?.quarter ?? 1;
+  const map: Record<string, number> = {};
+  const currentQuarter = clock?.quarter ?? 1;
 
-    for (const p of teamAPlayers) {
-      map[p.id] = 0;
+  for (const p of teamAPlayers) {
+    map[p.id] = 0;
+  }
+
+  for (let q = 1; q <= currentQuarter; q += 1) {
+    const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+      q,
+      currentQuarter,
+      displaySeconds
+    );
+
+    const lineup = new Set<string>();
+
+    if (q === 1) {
+      starterIds.forEach((id) => lineup.add(id));
+    } else {
+      starterIds.forEach((id) => lineup.add(id));
+
+      for (const e of validEvents) {
+        if (e.team_side !== "A") continue;
+        if (!e.player_id) continue;
+        if (e.quarter >= q) break;
+
+        if (e.event_type === "sub_in") lineup.add(e.player_id);
+        if (e.event_type === "sub_out") lineup.delete(e.player_id);
+      }
     }
 
-    for (let q = 1; q <= currentQuarter; q += 1) {
-      const playedSecondsThisQuarter = getQuarterPlayedSeconds(
-        q,
-        currentQuarter,
-        displaySeconds
+    const activeStartMap: Record<string, number | null> = {};
+    for (const p of teamAPlayers) {
+      activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
+    }
+
+    const quarterSubEvents = validEvents
+      .filter(
+        (e) =>
+          e.team_side === "A" &&
+          e.quarter === q &&
+          !!e.player_id &&
+          (e.event_type === "sub_in" || e.event_type === "sub_out")
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
 
-      const lineup = new Set<string>();
+    for (const e of quarterSubEvents) {
+      const playerId = e.player_id!;
+      const eventElapsed = getEventElapsedSeconds(
+        e,
+        quarterSubEvents,
+        q,
+        currentQuarter,
+        displaySeconds,
+        clock
+      );
 
-      if (q === 1) {
-        starterIds.forEach((id) => lineup.add(id));
-      } else {
-        starterIds.forEach((id) => lineup.add(id));
-
-        for (const e of validEvents) {
-          if (e.team_side !== "A") continue;
-          if (!e.player_id) continue;
-          if (e.quarter >= q) break;
-
-          if (e.event_type === "sub_in") lineup.add(e.player_id);
-          if (e.event_type === "sub_out") lineup.delete(e.player_id);
+      if (e.event_type === "sub_in") {
+        if (activeStartMap[playerId] == null) {
+          activeStartMap[playerId] = eventElapsed;
         }
       }
 
-      const activeStartMap: Record<string, number | null> = {};
-      for (const p of teamAPlayers) {
-        activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
-      }
-
-      const quarterEvents = validEvents
-        .filter(
-          (e) =>
-            e.team_side === "A" &&
-            e.quarter === q &&
-            !!e.player_id &&
-            (e.event_type === "sub_in" || e.event_type === "sub_out")
-        )
-        .sort(
-          (a, b) =>
-            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-
-      const totalSubEvents = quarterEvents.length;
-
-      quarterEvents.forEach((e, idx) => {
-        const playerId = e.player_id!;
-        const eventElapsed = totalSubEvents
-          ? Math.floor(((idx + 1) / (totalSubEvents + 1)) * playedSecondsThisQuarter)
-          : playedSecondsThisQuarter;
-
-        if (e.event_type === "sub_in") {
-          if (activeStartMap[playerId] == null) {
-            activeStartMap[playerId] = eventElapsed;
-          }
-        }
-
-        if (e.event_type === "sub_out") {
-          const startedAt = activeStartMap[playerId];
-          if (startedAt != null) {
-            map[playerId] = (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
-            activeStartMap[playerId] = null;
-          }
-        }
-      });
-
-      for (const p of teamAPlayers) {
-        const startedAt = activeStartMap[p.id];
+      if (e.event_type === "sub_out") {
+        const startedAt = activeStartMap[playerId];
         if (startedAt != null) {
-          map[p.id] = (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
+          map[playerId] =
+            (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
+          activeStartMap[playerId] = null;
         }
       }
     }
 
-    return map;
-  }, [teamAPlayers, validEvents, starterIds, clock?.quarter, displaySeconds]);
+    for (const p of teamAPlayers) {
+      const startedAt = activeStartMap[p.id];
+      if (startedAt != null) {
+        map[p.id] =
+          (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
+      }
+    }
+  }
+
+  return map;
+}, [teamAPlayers, validEvents, starterIds, clock, displaySeconds]);
 
   const totalScore = useMemo(() => {
     let home = 0;
