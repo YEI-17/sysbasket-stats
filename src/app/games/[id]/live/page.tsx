@@ -109,8 +109,33 @@ export default function LiveGamePage() {
   const [subInPlayerIds, setSubInPlayerIds] = useState<string[]>([]);
   const [submittingSub, setSubmittingSub] = useState(false);
 
-  const tickerRef = useRef<NodeJS.Timeout | null>(null);
+  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
+
+  const cooldownRef = useRef<Record<string, number>>({});
+  const eventsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clockReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gamePlayersReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function inCooldown(key: string, ms: number) {
+    const now = Date.now();
+    const last = cooldownRef.current[key] ?? 0;
+    if (now - last < ms) return true;
+    cooldownRef.current[key] = now;
+    return false;
+  }
+
+  function scheduleReload(
+    ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>,
+    fn: () => Promise<void>,
+    delay = 80
+  ) {
+    if (ref.current) clearTimeout(ref.current);
+    ref.current = setTimeout(() => {
+      void fn();
+    }, delay);
+  }
 
   async function loadCurrentGame() {
     if (!gameId) return null;
@@ -240,7 +265,7 @@ export default function LiveGamePage() {
 
   useEffect(() => {
     if (!gameId) return;
-    init();
+    void init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameId]);
 
@@ -268,7 +293,7 @@ export default function LiveGamePage() {
           filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadEvents(gameId);
+          scheduleReload(eventsReloadTimerRef, () => loadEvents(gameId), 80);
         }
       )
       .on(
@@ -280,7 +305,7 @@ export default function LiveGamePage() {
           filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadClock(gameId);
+          scheduleReload(clockReloadTimerRef, () => loadClock(gameId), 80);
         }
       )
       .on(
@@ -292,7 +317,9 @@ export default function LiveGamePage() {
           filter: `id=eq.${gameId}`,
         },
         async () => {
-          await loadCurrentGame();
+          scheduleReload(gameReloadTimerRef, async () => {
+  await loadCurrentGame();
+}, 80);
         }
       )
       .on(
@@ -304,7 +331,7 @@ export default function LiveGamePage() {
           filter: `game_id=eq.${gameId}`,
         },
         async () => {
-          await loadGamePlayers(gameId);
+          scheduleReload(gamePlayersReloadTimerRef, () => loadGamePlayers(gameId), 80);
         }
       )
       .subscribe(async (status) => {
@@ -318,6 +345,10 @@ export default function LiveGamePage() {
       });
 
     return () => {
+      if (eventsReloadTimerRef.current) clearTimeout(eventsReloadTimerRef.current);
+      if (clockReloadTimerRef.current) clearTimeout(clockReloadTimerRef.current);
+      if (gameReloadTimerRef.current) clearTimeout(gameReloadTimerRef.current);
+      if (gamePlayersReloadTimerRef.current) clearTimeout(gamePlayersReloadTimerRef.current);
       supabase.removeChannel(channel);
     };
   }, [gameId]);
@@ -369,6 +400,8 @@ export default function LiveGamePage() {
 
   async function startClock() {
     if (!clock || game?.status === "finished") return;
+    if (inCooldown("clock:start", 120)) return;
+
     const next = { ...clock, is_running: true };
     setClock(next);
     await persistClock(next);
@@ -376,6 +409,8 @@ export default function LiveGamePage() {
 
   async function pauseClock() {
     if (!clock) return;
+    if (inCooldown("clock:pause", 120)) return;
+
     const next = { ...clock, is_running: false };
     setClock(next);
     await persistClock(next);
@@ -383,6 +418,8 @@ export default function LiveGamePage() {
 
   async function resetClock() {
     if (!clock) return;
+    if (inCooldown("clock:reset", 150)) return;
+
     const nextSeconds = getQuarterSeconds(clock.quarter);
     const next = { ...clock, seconds_left: nextSeconds, is_running: false };
     setClock(next);
@@ -391,6 +428,8 @@ export default function LiveGamePage() {
 
   async function adjustClock(delta: number) {
     if (!clock) return;
+    if (inCooldown(`clock:adjust:${delta}`, 80)) return;
+
     const maxSeconds = getQuarterSeconds(clock.quarter);
     const next = {
       ...clock,
@@ -402,6 +441,7 @@ export default function LiveGamePage() {
 
   async function nextQuarter() {
     if (!clock || !game) return;
+    if (inCooldown("clock:nextQuarter", 180)) return;
 
     const nextQuarterNum = clock.quarter + 1;
     const next: ClockRow = {
@@ -417,6 +457,7 @@ export default function LiveGamePage() {
 
   async function endGame() {
     if (!game || endingGame) return;
+    if (inCooldown("game:end", 300)) return;
 
     setEndingGame(true);
     setError("");
@@ -446,6 +487,7 @@ export default function LiveGamePage() {
 
   async function saveTeamAName() {
     if (!game) return;
+    if (inCooldown("teamA:save", 250)) return;
 
     const trimmed = editingTeamA.trim();
     if (!trimmed) {
@@ -473,6 +515,7 @@ export default function LiveGamePage() {
 
   async function addEvent(eventType: string, teamSide: "A" | "B" = "A") {
     if (!game || !clock) return;
+    if (inCooldown(`event:${eventType}:${teamSide}`, 120)) return;
 
     if (game.status === "finished") {
       setError("比賽已結束，不能再新增紀錄");
@@ -502,31 +545,47 @@ export default function LiveGamePage() {
       payload.player_id = null;
     }
 
-    const { error } = await supabase.from("events").insert(payload);
+    setError("");
+
+    const { data, error } = await supabase
+      .from("events")
+      .insert(payload)
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+      )
+      .single();
 
     if (error) {
       setError(`新增事件失敗：${error.message}`);
       return;
     }
 
-    await loadEvents(game.id);
+    if (data) {
+      setEvents((prev) => {
+        if (prev.some((e) => e.id === data.id)) return prev;
+        return [...prev, data];
+      });
+    }
   }
 
   async function undoLastEvent() {
     if (!game) return;
+    if (inCooldown("undo", 180)) return;
 
-    const validEvents = [...events]
+    const validEventsDesc = [...events]
       .filter((e) => !e.is_undone)
       .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
 
-    const last = validEvents[0];
+    const last = validEventsDesc[0];
     if (!last) return;
+
+    const undoneAt = new Date().toISOString();
 
     const { error } = await supabase
       .from("events")
       .update({
         is_undone: true,
-        undone_at: new Date().toISOString(),
+        undone_at: undoneAt,
       })
       .eq("id", last.id);
 
@@ -535,7 +594,17 @@ export default function LiveGamePage() {
       return;
     }
 
-    await loadEvents(game.id);
+    setEvents((prev) =>
+      prev.map((e) =>
+        e.id === last.id
+          ? {
+              ...e,
+              is_undone: true,
+              undone_at: undoneAt,
+            }
+          : e
+      )
+    );
   }
 
   const validEvents = useMemo(() => {
@@ -625,7 +694,6 @@ export default function LiveGamePage() {
       const next = exists ? prev.filter((id) => id !== playerId) : [...prev, playerId];
 
       setSubInPlayerIds((prevIn) => prevIn.slice(0, next.length));
-
       return next;
     });
   }
@@ -658,6 +726,7 @@ export default function LiveGamePage() {
 
   async function makeSubstitution() {
     if (!game || !clock) return;
+    if (inCooldown("substitution", 180)) return;
 
     if (game.status === "finished") {
       setError("比賽已結束，不能換人");
@@ -700,7 +769,12 @@ export default function LiveGamePage() {
       })),
     ];
 
-    const { error } = await supabase.from("events").insert(payload);
+    const { data, error } = await supabase
+      .from("events")
+      .insert(payload)
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+      );
 
     setSubmittingSub(false);
 
@@ -714,7 +788,14 @@ export default function LiveGamePage() {
     }
 
     clearSubSelection();
-    await loadEvents(game.id);
+
+    if (data?.length) {
+      setEvents((prev) => {
+        const existingIds = new Set(prev.map((e) => e.id));
+        const nextItems = data.filter((e) => !existingIds.has(e.id));
+        return [...prev, ...nextItems];
+      });
+    }
   }
 
   const teamScore = useMemo(() => {
@@ -761,7 +842,6 @@ export default function LiveGamePage() {
   return (
     <div className="min-h-screen bg-neutral-950 p-2 text-white md:p-4">
       <div className="mx-auto max-w-7xl space-y-3">
-        {/* 原本的目前比賽，改到右邊欄位下方 */}
         <div className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-3">
             <div className="rounded-3xl border border-white/10 bg-white/5 p-3">
@@ -944,7 +1024,9 @@ export default function LiveGamePage() {
               <div className="mb-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
                 <div className="text-[11px] text-white/50">目前事件會記到</div>
                 <div className="mt-1 text-lg font-extrabold text-emerald-200">
-                  {selectedPlayer ? `#${selectedPlayer.number ?? "-"} ${selectedPlayer.name}` : "未選球員"}
+                  {selectedPlayer
+                    ? `#${selectedPlayer.number ?? "-"} ${selectedPlayer.name}`
+                    : "未選球員"}
                 </div>
               </div>
 
@@ -1088,206 +1170,206 @@ export default function LiveGamePage() {
           </div>
 
           <div className="space-y-3">
-  <div className="overflow-hidden rounded-[32px] border border-white/10 bg-gradient-to-b from-white/8 to-white/[0.03] shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
-    <div className="border-b border-white/10 px-4 py-4 md:px-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] text-white/45">比賽控制台</div>
-          <div className="mt-1 truncate text-2xl font-extrabold md:text-3xl">
-            {game?.teamA || "我方"} vs {game?.teamB || "對手"}
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <Link
-            href={`/games/${gameId}/box`}
-            className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-bold transition hover:bg-indigo-500"
-          >
-            數據頁
-          </Link>
-          <LogoutButton />
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        <div
-          className={`rounded-full px-3 py-1.5 text-[11px] font-bold ${
-            game?.status === "finished"
-              ? "bg-red-500/15 text-red-300"
-              : clock?.is_running
-              ? "bg-emerald-500/15 text-emerald-300"
-              : "bg-yellow-500/15 text-yellow-300"
-          }`}
-        >
-          {game?.status === "finished"
-            ? "比賽已結束"
-            : clock?.is_running
-            ? "計時中"
-            : "暫停中"}
-        </div>
-
-        <div className="rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/80">
-          {getQuarterLabel(clock?.quarter ?? 1)}
-        </div>
-
-        <div className="rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/80">
-          觀看 {viewerCount}
-        </div>
-      </div>
-    </div>
-
-    <div className="px-4 py-4 md:px-5">
-      <div className="rounded-[28px] border border-white/10 bg-black/35 p-4">
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-          <div className="min-w-0 text-left">
-            <div className="text-[11px] text-white/45">主隊</div>
-            <div className="mt-1 truncate text-xl font-bold md:text-2xl">
-              {game?.teamA || "我方"}
-            </div>
-            <div className="mt-2 text-6xl font-black leading-none md:text-7xl">
-              {teamScore.scoreA}
-            </div>
-          </div>
-
-          <div className="text-center">
-            <div className="text-base font-bold text-white/75 md:text-lg">
-              {getQuarterLabel(clock?.quarter ?? 1)}
-            </div>
-            <div className="mt-1 text-5xl font-black tracking-wider md:text-6xl">
-              {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
-            </div>
-
-            <div className="mt-3 flex flex-wrap justify-center gap-2">
-              {Object.keys(quarterScores)
-                .map(Number)
-                .sort((a, b) => a - b)
-                .map((q) => (
-                  <div
-                    key={q}
-                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/75"
-                  >
-                    {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
+            <div className="overflow-hidden rounded-[32px] border border-white/10 bg-gradient-to-b from-white/8 to-white/[0.03] shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
+              <div className="border-b border-white/10 px-4 py-4 md:px-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-white/45">比賽控制台</div>
+                    <div className="mt-1 truncate text-2xl font-extrabold md:text-3xl">
+                      {game?.teamA || "我方"} vs {game?.teamB || "對手"}
+                    </div>
                   </div>
-                ))}
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Link
+                      href={`/games/${gameId}/box`}
+                      className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-bold transition hover:bg-indigo-500"
+                    >
+                      數據頁
+                    </Link>
+                    <LogoutButton />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <div
+                    className={`rounded-full px-3 py-1.5 text-[11px] font-bold ${
+                      game?.status === "finished"
+                        ? "bg-red-500/15 text-red-300"
+                        : clock?.is_running
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : "bg-yellow-500/15 text-yellow-300"
+                    }`}
+                  >
+                    {game?.status === "finished"
+                      ? "比賽已結束"
+                      : clock?.is_running
+                      ? "計時中"
+                      : "暫停中"}
+                  </div>
+
+                  <div className="rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/80">
+                    {getQuarterLabel(clock?.quarter ?? 1)}
+                  </div>
+
+                  <div className="rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white/80">
+                    觀看 {viewerCount}
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-4 py-4 md:px-5">
+                <div className="rounded-[28px] border border-white/10 bg-black/35 p-4">
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                    <div className="min-w-0 text-left">
+                      <div className="text-[11px] text-white/45">主隊</div>
+                      <div className="mt-1 truncate text-xl font-bold md:text-2xl">
+                        {game?.teamA || "我方"}
+                      </div>
+                      <div className="mt-2 text-6xl font-black leading-none md:text-7xl">
+                        {teamScore.scoreA}
+                      </div>
+                    </div>
+
+                    <div className="text-center">
+                      <div className="text-base font-bold text-white/75 md:text-lg">
+                        {getQuarterLabel(clock?.quarter ?? 1)}
+                      </div>
+                      <div className="mt-1 text-5xl font-black tracking-wider md:text-6xl">
+                        {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap justify-center gap-2">
+                        {Object.keys(quarterScores)
+                          .map(Number)
+                          .sort((a, b) => a - b)
+                          .map((q) => (
+                            <div
+                              key={q}
+                              className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/75"
+                            >
+                              {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+
+                    <div className="min-w-0 text-right">
+                      <div className="text-[11px] text-white/45">客隊</div>
+                      <div className="mt-1 truncate text-xl font-bold md:text-2xl">
+                        {game?.teamB || "對手"}
+                      </div>
+                      <div className="mt-2 text-6xl font-black leading-none md:text-7xl">
+                        {teamScore.scoreB}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    value={editingTeamA}
+                    onChange={(e) => setEditingTeamA(e.target.value)}
+                    placeholder="輸入我方隊名"
+                    className="flex-1 rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 text-sm outline-none transition focus:border-blue-400/50"
+                  />
+                  <button
+                    onClick={saveTeamAName}
+                    disabled={savingTeamA}
+                    className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold transition hover:bg-blue-500 disabled:opacity-60"
+                  >
+                    {savingTeamA ? "儲存中..." : "更新我方隊名"}
+                  </button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={startClock}
+                    disabled={game?.status === "finished"}
+                    className="rounded-2xl bg-emerald-600 px-4 py-4 text-sm font-extrabold transition hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    開始
+                  </button>
+                  <button
+                    onClick={pauseClock}
+                    className="rounded-2xl bg-amber-500 px-4 py-4 text-sm font-extrabold text-white transition hover:bg-amber-400"
+                  >
+                    暫停
+                  </button>
+                  <button
+                    onClick={resetClock}
+                    className="rounded-2xl bg-red-600 px-4 py-4 text-sm font-extrabold transition hover:bg-red-500"
+                  >
+                    重設本節
+                  </button>
+                  <button
+                    onClick={nextQuarter}
+                    disabled={game?.status === "finished"}
+                    className="rounded-2xl bg-blue-600 px-4 py-4 text-sm font-extrabold transition hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    下一節
+                  </button>
+                </div>
+
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => adjustClock(-60)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    -1分
+                  </button>
+                  <button
+                    onClick={() => adjustClock(-10)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    -10秒
+                  </button>
+                  <button
+                    onClick={() => adjustClock(-1)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    -1秒
+                  </button>
+                  <button
+                    onClick={() => adjustClock(1)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    +1秒
+                  </button>
+                  <button
+                    onClick={() => adjustClock(10)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    +10秒
+                  </button>
+                  <button
+                    onClick={() => adjustClock(60)}
+                    className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
+                  >
+                    +1分
+                  </button>
+                </div>
+              </div>
             </div>
+
+            {error && (
+              <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                {error}
+              </div>
+            )}
+
+            <button
+              onClick={endGame}
+              disabled={endingGame || game?.status === "finished"}
+              className="w-full rounded-3xl bg-rose-700 px-4 py-5 text-base font-extrabold transition hover:bg-rose-600 disabled:opacity-50"
+            >
+              {game?.status === "finished"
+                ? "比賽已結束"
+                : endingGame
+                ? "結束中..."
+                : "結束該場比賽"}
+            </button>
           </div>
-
-          <div className="min-w-0 text-right">
-            <div className="text-[11px] text-white/45">客隊</div>
-            <div className="mt-1 truncate text-xl font-bold md:text-2xl">
-              {game?.teamB || "對手"}
-            </div>
-            <div className="mt-2 text-6xl font-black leading-none md:text-7xl">
-              {teamScore.scoreB}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-        <input
-          value={editingTeamA}
-          onChange={(e) => setEditingTeamA(e.target.value)}
-          placeholder="輸入我方隊名"
-          className="flex-1 rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 text-sm outline-none transition focus:border-blue-400/50"
-        />
-        <button
-          onClick={saveTeamAName}
-          disabled={savingTeamA}
-          className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold transition hover:bg-blue-500 disabled:opacity-60"
-        >
-          {savingTeamA ? "儲存中..." : "更新我方隊名"}
-        </button>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <button
-          onClick={startClock}
-          disabled={game?.status === "finished"}
-          className="rounded-2xl bg-emerald-600 px-4 py-4 text-sm font-extrabold transition hover:bg-emerald-500 disabled:opacity-50"
-        >
-          開始
-        </button>
-        <button
-          onClick={pauseClock}
-          className="rounded-2xl bg-amber-500 px-4 py-4 text-sm font-extrabold text-white transition hover:bg-amber-400"
-        >
-          暫停
-        </button>
-        <button
-          onClick={resetClock}
-          className="rounded-2xl bg-red-600 px-4 py-4 text-sm font-extrabold transition hover:bg-red-500"
-        >
-          重設本節
-        </button>
-        <button
-          onClick={nextQuarter}
-          disabled={game?.status === "finished"}
-          className="rounded-2xl bg-blue-600 px-4 py-4 text-sm font-extrabold transition hover:bg-blue-500 disabled:opacity-50"
-        >
-          下一節
-        </button>
-      </div>
-
-      <div className="mt-2 grid grid-cols-3 gap-2">
-        <button
-          onClick={() => adjustClock(-60)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          -1分
-        </button>
-        <button
-          onClick={() => adjustClock(-10)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          -10秒
-        </button>
-        <button
-          onClick={() => adjustClock(-1)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          -1秒
-        </button>
-        <button
-          onClick={() => adjustClock(1)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          +1秒
-        </button>
-        <button
-          onClick={() => adjustClock(10)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          +10秒
-        </button>
-        <button
-          onClick={() => adjustClock(60)}
-          className="rounded-2xl bg-white/10 px-3 py-3 text-sm font-bold transition hover:bg-white/15"
-        >
-          +1分
-        </button>
-      </div>
-    </div>
-  </div>
-
-  {error && (
-    <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-      {error}
-    </div>
-  )}
-
-  <button
-    onClick={endGame}
-    disabled={endingGame || game?.status === "finished"}
-    className="w-full rounded-3xl bg-rose-700 px-4 py-5 text-base font-extrabold transition hover:bg-rose-600 disabled:opacity-50"
-  >
-    {game?.status === "finished"
-      ? "比賽已結束"
-      : endingGame
-      ? "結束中..."
-      : "結束該場比賽"}
-  </button>
-</div>
         </div>
       </div>
     </div>
