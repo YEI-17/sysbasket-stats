@@ -26,7 +26,7 @@ export default function LogoutButton({ label = "登出" }: Props) {
         await supabase.auth.signOut();
       }
 
-      router.replace("/app/page.tsx");
+      router.replace("/app");
       router.refresh();
     } finally {
       setLoading(false);
