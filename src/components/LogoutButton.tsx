@@ -9,7 +9,7 @@ type Props = {
   label?: string;
 };
 
-export default function LogoutButton({ label = "登出" }: Props) {
+export default function LogoutButton({ label = "LOGOUT" }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
