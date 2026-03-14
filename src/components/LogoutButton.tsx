@@ -26,7 +26,7 @@ export default function LogoutButton({ label = "LOGOUT" }: Props) {
         await supabase.auth.signOut();
       }
 
-      router.replace("/app");
+      router.replace("/");
       router.refresh();
     } finally {
       setLoading(false);
