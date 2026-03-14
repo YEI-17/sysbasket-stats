@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { getViewerName } from "@/lib/roles";
@@ -50,26 +50,27 @@ function formatGameDate(game: GameRow) {
   });
 }
 
+function statusBadgeClass(status: string) {
+  if (status === "已結束") return "status-finished";
+  if (status === "未開始") return "status-upcoming";
+  return "status-other";
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
   const [games, setGames] = useState<GameRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState("");
 
-  useEffect(() => {
-    const name = getViewerName();
-
-    if (!name) {
-      router.push("/");
-      return;
+  const fetchGames = useCallback(async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
     }
 
-    fetchGames();
-  }, [router]);
-
-  async function fetchGames() {
-    setLoading(true);
     setMsg("");
 
     const { data, error } = await supabase
@@ -81,13 +82,97 @@ export default function ViewerGamesPage() {
     if (error) {
       console.error(error);
       setMsg("讀取比賽資料失敗");
-      setLoading(false);
+
+      if (showLoading) {
+        setLoading(false);
+      } else {
+        setRefreshing(false);
+      }
       return;
     }
 
     setGames((data as GameRow[]) || []);
-    setLoading(false);
-  }
+
+    if (showLoading) {
+      setLoading(false);
+    } else {
+      setRefreshing(false);
+    }
+  }, []);
+
+  const updateSessionHeartbeat = useCallback(async () => {
+    if (typeof window === "undefined") return;
+
+    const sessionId = localStorage.getItem("session_id");
+    if (!sessionId) return;
+
+    await supabase
+      .from("user_sessions")
+      .update({
+        last_seen_at: new Date().toISOString(),
+        is_online: true,
+      })
+      .eq("id", sessionId);
+  }, []);
+
+  const markSessionOffline = useCallback(async () => {
+    if (typeof window === "undefined") return;
+
+    const sessionId = localStorage.getItem("session_id");
+    if (!sessionId) return;
+
+    const now = new Date().toISOString();
+
+    await supabase
+      .from("user_sessions")
+      .update({
+        last_seen_at: now,
+        is_online: false,
+      })
+      .eq("id", sessionId);
+  }, []);
+
+  useEffect(() => {
+    const name = getViewerName();
+
+    if (!name) {
+      router.push("/");
+      return;
+    }
+
+    void fetchGames(true);
+    void updateSessionHeartbeat();
+  }, [router, fetchGames, updateSessionHeartbeat]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void updateSessionHeartbeat();
+    }, 20000);
+
+    return () => clearInterval(timer);
+  }, [updateSessionHeartbeat]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      void markSessionOffline();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        void markSessionOffline();
+      } else if (document.visibilityState === "visible") {
+        void updateSessionHeartbeat();
+      }
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [markSessionOffline, updateSessionHeartbeat]);
 
   function handleBack() {
     router.push("/viewer");
@@ -95,6 +180,11 @@ export default function ViewerGamesPage() {
 
   function handleOpenGame(gameId: string) {
     router.push(`/games/${gameId}/board`);
+  }
+
+  async function handleRefresh() {
+    await updateSessionHeartbeat();
+    await fetchGames(false);
   }
 
   const liveGames = useMemo(() => {
@@ -124,8 +214,12 @@ export default function ViewerGamesPage() {
             </div>
 
             <div className="action-group">
-              <button onClick={fetchGames} className="refresh-btn">
-                REFRESH
+              <button
+                onClick={() => void handleRefresh()}
+                className="refresh-btn"
+                disabled={refreshing}
+              >
+                {refreshing ? "REFRESHING..." : "REFRESH"}
               </button>
               <button onClick={handleBack} className="back-btn">
                 BACK
@@ -470,9 +564,14 @@ export default function ViewerGamesPage() {
           box-shadow: 0 14px 28px rgba(0,0,0,0.24);
         }
 
-        .refresh-btn:hover,
+        .refresh-btn:hover:not(:disabled),
         .back-btn:hover {
           transform: translateY(-2px);
+        }
+
+        .refresh-btn:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
         }
 
         .hero-strip {
@@ -632,7 +731,6 @@ export default function ViewerGamesPage() {
         }
 
         .live-badge,
-        .status-badge,
         .status-finished,
         .status-upcoming,
         .status-other {
@@ -762,10 +860,4 @@ export default function ViewerGamesPage() {
       `}</style>
     </main>
   );
-}
-
-function statusBadgeClass(status: string) {
-  if (status === "已結束") return "status-finished";
-  if (status === "未開始") return "status-upcoming";
-  return "status-other";
 }

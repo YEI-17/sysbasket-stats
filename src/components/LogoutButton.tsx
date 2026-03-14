@@ -13,6 +13,30 @@ export default function LogoutButton({ label = "LOGOUT" }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
+  async function markSessionLogout() {
+    if (typeof window === "undefined") return;
+
+    const sessionId = localStorage.getItem("session_id");
+    if (!sessionId) return;
+
+    const now = new Date().toISOString();
+
+    const { error } = await supabase
+      .from("user_sessions")
+      .update({
+        logout_at: now,
+        last_seen_at: now,
+        is_online: false,
+      })
+      .eq("id", sessionId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    localStorage.removeItem("session_id");
+  }
+
   async function handleLogout() {
     if (loading) return;
     setLoading(true);
@@ -20,11 +44,21 @@ export default function LogoutButton({ label = "LOGOUT" }: Props) {
     try {
       const role = getRole();
 
+      await markSessionLogout();
+
       clearRole();
 
       if (role === "staff") {
         await supabase.auth.signOut();
       }
+
+      router.replace("/");
+      router.refresh();
+    } catch (error) {
+      console.error("登出失敗:", error);
+
+      clearRole();
+      localStorage.removeItem("session_id");
 
       router.replace("/");
       router.refresh();
@@ -35,7 +69,7 @@ export default function LogoutButton({ label = "LOGOUT" }: Props) {
 
   return (
     <button
-      onClick={handleLogout}
+      onClick={() => void handleLogout()}
       disabled={loading}
       style={{
         padding: "10px 14px",

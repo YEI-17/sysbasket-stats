@@ -9,6 +9,10 @@ const STAFF_NAME = "YEI";
 const STAFF_PASSWORD = "!we are the best!";
 const VIEWER_PASSWORD = "CSE12345";
 
+type SessionInsertResult = {
+  id: string;
+};
+
 export default function Page() {
   const router = useRouter();
 
@@ -17,15 +21,40 @@ export default function Page() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function saveLoginLog(loginName: string, role: "staff" | "viewer") {
-    const { error } = await supabase.from("login_logs").insert({
-      name: loginName,
-      role,
-    });
+  function saveSessionId(sessionId: string) {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("session_id", sessionId);
+  }
+
+  function clearOldSessionId() {
+    if (typeof window === "undefined") return;
+    localStorage.removeItem("session_id");
+  }
+
+  async function createUserSession(
+    loginName: string,
+    role: "staff" | "viewer"
+  ) {
+    const { data, error } = await supabase
+      .from("user_sessions")
+      .insert({
+        viewer_name: loginName,
+        role,
+        is_online: true,
+        last_seen_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single<SessionInsertResult>();
 
     if (error) {
       throw new Error(error.message);
     }
+
+    if (!data?.id) {
+      throw new Error("建立登入 session 失敗");
+    }
+
+    return data.id;
   }
 
   async function handleLogin() {
@@ -47,11 +76,15 @@ export default function Page() {
     setLoading(true);
 
     try {
+      clearOldSessionId();
+
       if (
         trimmedName === STAFF_NAME &&
         trimmedPassword === STAFF_PASSWORD
       ) {
-        await saveLoginLog(trimmedName, "staff");
+        const sessionId = await createUserSession(trimmedName, "staff");
+
+        saveSessionId(sessionId);
         setRole("staff");
         setViewerName("");
         router.push("/staff");
@@ -59,7 +92,9 @@ export default function Page() {
       }
 
       if (trimmedPassword === VIEWER_PASSWORD) {
-        await saveLoginLog(trimmedName, "viewer");
+        const sessionId = await createUserSession(trimmedName, "viewer");
+
+        saveSessionId(sessionId);
         setViewerName(trimmedName);
         setRole("viewer");
         router.push("/viewer");
@@ -78,7 +113,7 @@ export default function Page() {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
-      handleLogin();
+      void handleLogin();
     }
   }
 
@@ -140,7 +175,7 @@ export default function Page() {
 
             <button
               className="login-btn"
-              onClick={handleLogin}
+              onClick={() => void handleLogin()}
               disabled={loading}
             >
               {loading ? "登入中..." : "登入"}
