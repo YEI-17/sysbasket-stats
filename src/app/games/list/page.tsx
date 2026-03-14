@@ -154,9 +154,6 @@ export default function GamesPage() {
             <h1 className="text-3xl md:text-5xl font-bold tracking-tight">
               比賽列表
             </h1>
-            <p className="mt-2 text-zinc-400 text-base md:text-lg">
-              管理所有比賽、直播、數據與編輯頁面
-            </p>
           </div>
 
           <LogoutButton />
@@ -257,12 +254,7 @@ export default function GamesPage() {
             完整數據
           </Link>
 
-          <Link
-            href={`/games/${game.id}/edit`}
-            className="rounded-xl bg-zinc-700 px-4 py-3 text-center font-semibold text-white hover:bg-zinc-600 transition"
-          >
-            編輯比賽
-          </Link>
+          
         </div>
       </div>
     );
