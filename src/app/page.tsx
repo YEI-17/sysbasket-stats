@@ -23,12 +23,12 @@ export default function Page() {
     const trimmedPassword = password.trim();
 
     if (!trimmedName) {
-      setMsg("請輸入 USER");
+      setMsg("請輸入名稱");
       return;
     }
 
     if (!trimmedPassword) {
-      setMsg("請輸入 PASSWORD");
+      setMsg("請輸入密碼");
       return;
     }
 
@@ -52,7 +52,7 @@ export default function Page() {
         return;
       }
 
-      setMsg("USER 或 PASSWORD 錯誤");
+      setMsg("名稱或密碼錯誤");
     } finally {
       setLoading(false);
     }
@@ -66,52 +66,58 @@ export default function Page() {
 
   return (
     <main className="page">
-      <div className="bg-overlay" />
-      <div className="court-lines" />
-      <div className="glow glow-left" />
-      <div className="glow glow-right" />
-      <div className="basketball basketball-1" />
-      <div className="basketball basketball-2" />
+      <div className="background" />
+      <div className="court">
+        <div className="center-line" />
+        <div className="center-circle" />
+
+        <div className="left-half">
+          <div className="paint" />
+          <div className="free-throw-circle" />
+          <div className="three-point-arc" />
+          <div className="rim" />
+          <div className="backboard" />
+        </div>
+
+        <div className="right-half">
+          <div className="paint" />
+          <div className="free-throw-circle" />
+          <div className="three-point-arc" />
+          <div className="rim" />
+          <div className="backboard" />
+        </div>
+      </div>
 
       <section className="login-shell">
         <div className="login-card">
-          <div className="top-row">
-            <div className="brand-badge">CSE BASKETBALL SYSTEM</div>
-            <div className="score-tag">SEASON ACCESS</div>
-          </div>
-
-          <div className="hero">
-            <div className="mini-line" />
-            <h1>LOGIN</h1>
-            <p>Enter the court. Access the game record system.</p>
-          </div>
+          <div className="brand">CSE Basketball</div>
+          <h1>Login</h1>
+          <p className="subtitle">系籃紀錄系統</p>
 
           <div className="form-area">
             <div className="field">
               <label>USER</label>
-              <div className="input-wrap">
-                <input
-                  className="input"
-                  placeholder="ENTER USER"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                />
-              </div>
+              <input
+                className="input"
+                placeholder="輸入名稱"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                autoComplete="username"
+              />
             </div>
 
             <div className="field">
               <label>PASSWORD</label>
-              <div className="input-wrap">
-                <input
-                  className="input"
-                  type="password"
-                  placeholder="ENTER PASSWORD"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                />
-              </div>
+              <input
+                className="input"
+                type="password"
+                placeholder="輸入密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={handleKeyDown}
+                autoComplete="current-password"
+              />
             </div>
 
             <button
@@ -119,15 +125,10 @@ export default function Page() {
               onClick={handleLogin}
               disabled={loading}
             >
-              <span>{loading ? "LOADING..." : "LOGIN"}</span>
+              {loading ? "登入中..." : "登入"}
             </button>
-          </div>
 
-          {msg ? <div className="error-box">{msg}</div> : null}
-
-          <div className="bottom-strip">
-            <div className="strip-dot" />
-            <span>COURTSIDE ACCESS PANEL</span>
+            {msg ? <div className="error-box">{msg}</div> : null}
           </div>
         </div>
       </section>
@@ -141,379 +142,283 @@ export default function Page() {
           align-items: center;
           justify-content: center;
           padding: 24px;
-          background:
-            radial-gradient(circle at 50% 0%, rgba(255, 140, 0, 0.18), transparent 30%),
-            radial-gradient(circle at 0% 100%, rgba(255, 98, 0, 0.12), transparent 30%),
-            radial-gradient(circle at 100% 100%, rgba(255, 180, 80, 0.08), transparent 28%),
-            linear-gradient(180deg, #0b0b0d 0%, #101014 55%, #060606 100%);
-          color: #fff;
+          background: #0a0a0c;
+          color: #ffffff;
         }
 
-        .bg-overlay {
+        .background {
           position: absolute;
           inset: 0;
           background:
-            linear-gradient(to bottom, rgba(255,255,255,0.03), transparent 20%),
-            radial-gradient(circle at center, transparent 45%, rgba(0,0,0,0.28) 100%);
+            radial-gradient(circle at top, rgba(255, 140, 0, 0.14), transparent 32%),
+            radial-gradient(circle at bottom, rgba(255, 140, 0, 0.08), transparent 28%),
+            linear-gradient(180deg, #111214 0%, #0b0b0d 45%, #060607 100%);
           pointer-events: none;
         }
 
-        .court-lines {
+        .court {
           position: absolute;
           inset: 0;
-          opacity: 0.18;
           pointer-events: none;
+          opacity: 0.14;
         }
 
-        .court-lines::before,
-        .court-lines::after {
-          content: "";
+        .center-line {
           position: absolute;
-          left: 50%;
-          transform: translateX(-50%);
-          border: 2px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .court-lines::before {
-          top: 8%;
-          width: 72vw;
-          max-width: 980px;
-          height: 72vw;
-          max-height: 980px;
-          border-radius: 999px;
-        }
-
-        .court-lines::after {
           top: 0;
           bottom: 0;
-          width: 0;
-          border-left: 2px solid rgba(255,255,255,0.08);
-          border-top: none;
-          border-right: none;
-          border-bottom: none;
+          left: 50%;
+          width: 1.5px;
+          transform: translateX(-50%);
+          background: rgba(255, 255, 255, 0.24);
         }
 
-        .glow {
+        .center-circle {
           position: absolute;
+          left: 50%;
+          top: 50%;
+          width: min(30vw, 280px);
+          height: min(30vw, 280px);
+          transform: translate(-50%, -50%);
+          border: 2px solid rgba(255, 255, 255, 0.24);
           border-radius: 999px;
-          filter: blur(90px);
-          pointer-events: none;
         }
 
-        .glow-left {
-          width: 320px;
-          height: 320px;
-          left: -60px;
-          top: 120px;
-          background: rgba(255, 119, 0, 0.22);
-        }
-
-        .glow-right {
-          width: 320px;
-          height: 320px;
-          right: -60px;
-          bottom: 60px;
-          background: rgba(255, 170, 60, 0.16);
-        }
-
-        .basketball {
+        .left-half,
+        .right-half {
           position: absolute;
-          border-radius: 50%;
-          background:
-            radial-gradient(circle at 30% 30%, #ffb347 0%, #f48c06 38%, #d96a00 70%, #9a4d00 100%);
-          box-shadow:
-            inset -18px -18px 40px rgba(0, 0, 0, 0.25),
-            inset 10px 10px 20px rgba(255,255,255,0.08),
-            0 20px 50px rgba(0,0,0,0.35);
-          opacity: 0.14;
-          pointer-events: none;
+          top: 50%;
+          width: 50%;
+          height: 100%;
+          transform: translateY(-50%);
         }
 
-        .basketball::before,
-        .basketball::after {
-          content: "";
+        .left-half {
+          left: 0;
+        }
+
+        .right-half {
+          right: 0;
+        }
+
+        .paint {
           position: absolute;
-          inset: 0;
-          border-radius: 50%;
+          top: 50%;
+          width: 18%;
+          height: 28%;
+          transform: translateY(-50%);
+          border: 2px solid rgba(255, 255, 255, 0.22);
         }
 
-        .basketball::before {
-          border-left: 3px solid rgba(35, 20, 5, 0.65);
-          border-right: 3px solid rgba(35, 20, 5, 0.65);
-          left: 28%;
-          right: 28%;
+        .left-half .paint {
+          left: 0;
+          border-left: none;
         }
 
-        .basketball::after {
-          border-top: 3px solid rgba(35, 20, 5, 0.65);
-          border-bottom: 3px solid rgba(35, 20, 5, 0.65);
-          top: 28%;
-          bottom: 28%;
+        .right-half .paint {
+          right: 0;
+          border-right: none;
         }
 
-        .basketball-1 {
-          width: 220px;
-          height: 220px;
-          top: 80px;
-          right: 80px;
-          transform: rotate(-18deg);
+        .free-throw-circle {
+          position: absolute;
+          top: 50%;
+          width: min(12vw, 140px);
+          height: min(12vw, 140px);
+          transform: translateY(-50%);
+          border: 2px solid rgba(255, 255, 255, 0.22);
+          border-radius: 999px;
         }
 
-        .basketball-2 {
-          width: 170px;
-          height: 170px;
-          bottom: 90px;
-          left: 70px;
-          transform: rotate(20deg);
+        .left-half .free-throw-circle {
+          left: calc(18% - min(6vw, 70px));
+        }
+
+        .right-half .free-throw-circle {
+          right: calc(18% - min(6vw, 70px));
+        }
+
+        .three-point-arc {
+          position: absolute;
+          top: 50%;
+          width: min(42vw, 520px);
+          height: min(42vw, 520px);
+          transform: translateY(-50%);
+          border: 2px solid rgba(255, 255, 255, 0.2);
+          border-radius: 999px;
+        }
+
+        .left-half .three-point-arc {
+          left: -28%;
+          clip-path: inset(0 0 0 50%);
+        }
+
+        .right-half .three-point-arc {
+          right: -28%;
+          clip-path: inset(0 50% 0 0);
+        }
+
+        .rim {
+          position: absolute;
+          top: 50%;
+          width: 14px;
+          height: 14px;
+          transform: translateY(-50%);
+          border: 2px solid rgba(255, 255, 255, 0.26);
+          border-radius: 999px;
+        }
+
+        .left-half .rim {
+          left: 6%;
+        }
+
+        .right-half .rim {
+          right: 6%;
+        }
+
+        .backboard {
+          position: absolute;
+          top: 50%;
+          width: 2px;
+          height: 70px;
+          transform: translateY(-50%);
+          background: rgba(255, 255, 255, 0.24);
+        }
+
+        .left-half .backboard {
+          left: 3%;
+        }
+
+        .right-half .backboard {
+          right: 3%;
         }
 
         .login-shell {
           position: relative;
           z-index: 2;
           width: 100%;
-          max-width: 560px;
+          max-width: 420px;
         }
 
         .login-card {
           position: relative;
-          overflow: hidden;
-          border-radius: 32px;
-          padding: 34px;
-          background:
-            linear-gradient(180deg, rgba(24, 24, 28, 0.96) 0%, rgba(10, 10, 12, 0.98) 100%);
+          padding: 32px 28px 28px;
+          border-radius: 28px;
+          background: rgba(16, 16, 18, 0.82);
           border: 1px solid rgba(255, 255, 255, 0.08);
           box-shadow:
-            0 30px 80px rgba(0, 0, 0, 0.5),
-            0 0 0 1px rgba(255, 140, 0, 0.08);
-          backdrop-filter: blur(18px);
-          -webkit-backdrop-filter: blur(18px);
+            0 24px 60px rgba(0, 0, 0, 0.45),
+            0 0 0 1px rgba(255, 140, 0, 0.06);
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
         }
 
-        .login-card::before {
-          content: "";
-          position: absolute;
-          inset: 0;
-          background:
-            linear-gradient(135deg, rgba(255,140,0,0.12), transparent 28%, transparent 70%, rgba(255,140,0,0.08)),
-            linear-gradient(180deg, rgba(255,255,255,0.04), transparent 18%);
-          pointer-events: none;
-        }
-
-        .top-row {
-          position: relative;
-          z-index: 1;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          margin-bottom: 28px;
-          flex-wrap: wrap;
-        }
-
-        .brand-badge,
-        .score-tag {
+        .brand {
           display: inline-flex;
           align-items: center;
+          min-height: 32px;
+          padding: 0 12px;
           border-radius: 999px;
-          padding: 8px 14px;
-          font-size: 11px;
-          font-weight: 900;
-          letter-spacing: 0.14em;
-        }
-
-        .brand-badge {
-          color: #fff7ed;
           background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255,255,255,0.08);
-        }
-
-        .score-tag {
-          color: #1a0c00;
-          background: linear-gradient(135deg, #ffb347 0%, #f48c06 100%);
-          box-shadow: 0 10px 24px rgba(244, 140, 6, 0.25);
-        }
-
-        .hero {
-          position: relative;
-          z-index: 1;
-          margin-bottom: 28px;
-        }
-
-        .mini-line {
-          width: 72px;
-          height: 6px;
-          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          color: rgba(255, 245, 235, 0.92);
+          font-size: 12px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
           margin-bottom: 18px;
-          background: linear-gradient(90deg, #ffb347 0%, #f48c06 100%);
-          box-shadow: 0 0 18px rgba(244, 140, 6, 0.45);
         }
 
-        .hero h1 {
+        h1 {
           margin: 0;
-          font-size: clamp(46px, 8vw, 72px);
-          line-height: 0.95;
-          font-weight: 1000;
-          letter-spacing: -0.05em;
-          color: #ffffff;
-          text-transform: uppercase;
-          text-shadow:
-            0 0 20px rgba(255, 140, 0, 0.14),
-            0 10px 30px rgba(0,0,0,0.28);
+          font-size: 42px;
+          line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
         }
 
-        .hero p {
-          margin: 14px 0 0;
-          color: rgba(255, 245, 235, 0.72);
+        .subtitle {
+          margin: 10px 0 0;
+          color: rgba(255, 255, 255, 0.62);
           font-size: 14px;
-          line-height: 1.7;
-          letter-spacing: 0.03em;
+          line-height: 1.5;
         }
 
         .form-area {
-          position: relative;
-          z-index: 1;
+          margin-top: 26px;
           display: grid;
-          gap: 18px;
+          gap: 16px;
+        }
+
+        .field {
+          display: grid;
+          gap: 8px;
         }
 
         .field label {
-          display: block;
-          margin-bottom: 10px;
-          color: #ffedd5;
+          color: rgba(255, 237, 213, 0.9);
           font-size: 12px;
-          font-weight: 900;
-          letter-spacing: 0.16em;
-        }
-
-        .input-wrap {
-          position: relative;
-          border-radius: 18px;
-          padding: 1px;
-          background: linear-gradient(
-            135deg,
-            rgba(255, 170, 80, 0.35),
-            rgba(255,255,255,0.06)
-          );
+          font-weight: 800;
+          letter-spacing: 0.12em;
         }
 
         .input {
           width: 100%;
-          height: 58px;
-          border: none;
+          height: 54px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
           outline: none;
-          border-radius: 17px;
-          padding: 0 18px;
+          border-radius: 16px;
+          padding: 0 16px;
           box-sizing: border-box;
-          background:
-            linear-gradient(180deg, rgba(20,20,22,0.96) 0%, rgba(12,12,14,0.96) 100%);
+          background: rgba(255, 255, 255, 0.04);
           color: #ffffff;
           font-size: 15px;
-          font-weight: 700;
-          letter-spacing: 0.03em;
-          transition: all 0.2s ease;
+          font-weight: 600;
+          transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
         }
 
         .input::placeholder {
-          color: rgba(255, 220, 180, 0.38);
-          letter-spacing: 0.08em;
+          color: rgba(255, 220, 180, 0.34);
         }
 
         .input:focus {
-          box-shadow:
-            0 0 0 1px rgba(255, 166, 0, 0.35),
-            0 0 0 6px rgba(255, 140, 0, 0.1);
+          border-color: rgba(255, 166, 0, 0.42);
+          box-shadow: 0 0 0 4px rgba(255, 140, 0, 0.1);
           transform: translateY(-1px);
         }
 
         .login-btn {
-          position: relative;
-          overflow: hidden;
+          height: 56px;
           margin-top: 4px;
-          height: 60px;
           border: none;
-          border-radius: 18px;
+          border-radius: 16px;
           cursor: pointer;
-          background: linear-gradient(135deg, #ffb347 0%, #f48c06 55%, #d96a00 100%);
-          color: white;
+          background: linear-gradient(135deg, #ffb347 0%, #f48c06 60%, #d96a00 100%);
+          color: #ffffff;
           font-size: 15px;
-          font-weight: 1000;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          box-shadow:
-            0 18px 34px rgba(244, 140, 6, 0.28),
-            inset 0 1px 0 rgba(255,255,255,0.24);
-          transition: all 0.22s ease;
-        }
-
-        .login-btn::before {
-          content: "";
-          position: absolute;
-          inset: 0;
-          background: linear-gradient(
-            120deg,
-            transparent 0%,
-            rgba(255,255,255,0.26) 28%,
-            transparent 56%
-          );
-          transform: translateX(-140%);
-          transition: transform 0.8s ease;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          box-shadow: 0 16px 30px rgba(244, 140, 6, 0.26);
+          transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
         }
 
         .login-btn:hover:not(:disabled) {
-          transform: translateY(-2px) scale(1.01);
-          box-shadow:
-            0 24px 44px rgba(244, 140, 6, 0.32),
-            0 0 26px rgba(255, 140, 0, 0.18);
-        }
-
-        .login-btn:hover:not(:disabled)::before {
-          transform: translateX(140%);
+          transform: translateY(-2px);
+          box-shadow: 0 20px 36px rgba(244, 140, 6, 0.32);
         }
 
         .login-btn:disabled {
-          opacity: 0.72;
+          opacity: 0.7;
           cursor: not-allowed;
         }
 
-        .login-btn span {
-          position: relative;
-          z-index: 1;
-        }
-
         .error-box {
-          position: relative;
-          z-index: 1;
-          margin-top: 18px;
-          border-radius: 18px;
-          padding: 14px 16px;
+          border-radius: 14px;
+          padding: 12px 14px;
           background: rgba(127, 29, 29, 0.2);
           border: 1px solid rgba(248, 113, 113, 0.2);
           color: #fecaca;
           font-size: 14px;
-          line-height: 1.6;
-        }
-
-        .bottom-strip {
-          position: relative;
-          z-index: 1;
-          margin-top: 22px;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          color: rgba(255, 230, 205, 0.52);
-          font-size: 12px;
-          font-weight: 800;
-          letter-spacing: 0.14em;
-          border-top: 1px solid rgba(255,255,255,0.08);
-          padding-top: 18px;
-        }
-
-        .strip-dot {
-          width: 10px;
-          height: 10px;
-          border-radius: 999px;
-          background: linear-gradient(135deg, #ffb347 0%, #f48c06 100%);
-          box-shadow: 0 0 16px rgba(244, 140, 6, 0.4);
+          line-height: 1.5;
         }
 
         @media (max-width: 640px) {
@@ -521,31 +426,45 @@ export default function Page() {
             padding: 16px;
           }
 
-          .basketball-1 {
-            width: 150px;
-            height: 150px;
-            top: 70px;
-            right: -20px;
-          }
-
-          .basketball-2 {
-            width: 120px;
-            height: 120px;
-            bottom: 70px;
-            left: -10px;
+          .login-shell {
+            max-width: 100%;
           }
 
           .login-card {
-            padding: 24px;
-            border-radius: 24px;
+            padding: 24px 20px 20px;
+            border-radius: 22px;
           }
 
-          .input {
-            height: 54px;
+          h1 {
+            font-size: 34px;
           }
 
-          .login-btn {
+          .subtitle {
+            font-size: 13px;
+          }
+
+          .center-circle {
+            width: 180px;
+            height: 180px;
+          }
+
+          .free-throw-circle {
+            width: 84px;
+            height: 84px;
+          }
+
+          .three-point-arc {
+            width: 320px;
+            height: 320px;
+          }
+
+          .backboard {
             height: 56px;
+          }
+
+          .rim {
+            width: 12px;
+            height: 12px;
           }
         }
       `}</style>
