@@ -949,271 +949,175 @@ export default function LiveGamePage() {
             </div>
           </div>
 
-          {/* 主內容 */}
-          {/* 主內容 */}
-<div className="grid flex-1 gap-2 md:gap-3 lg:grid-cols-[1.08fr_0.92fr]">
+
+                    {/* 主內容 */}
+          <div className="grid flex-1 gap-2 md:gap-3 lg:grid-cols-[1.08fr_0.92fr]">
             {/* 左：快速紀錄 + 比賽控制 */}
-<div className="flex flex-col gap-2 md:gap-3">
-  <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-    <div className="mb-2 flex items-center justify-between gap-2">
-      <div className="min-w-0">
-        <div className="text-sm font-black">快速紀錄</div>
-        <div className="text-[11px] text-white/45">
-          精簡常用事件，顏色統一
-        </div>
-      </div>
-
-      <button
-        onClick={undoLastEvent}
-        className="rounded-xl bg-red-500/20 px-3 py-2 text-xs font-bold text-red-300"
-      >
-        復原上一筆
-      </button>
-    </div>
-
-    <div className="mb-3 rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5">
-      <div className="text-[11px] text-white/45">目前紀錄球員</div>
-      <div className="mt-1 text-base font-black text-emerald-200 md:text-lg">
-        {selectedPlayer
-          ? `#${selectedPlayer.number ?? "-"} ${selectedPlayer.name}`
-          : "未選球員"}
-      </div>
-    </div>
-
-    <div className="grid grid-cols-3 gap-2 md:grid-cols-3">
-      <button
-        onClick={() => addEvent("fg2_made", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("score")}
-      >
-        2分進
-      </button>
-      <button
-        onClick={() => addEvent("fg2_miss", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("miss")}
-      >
-        2分鐵
-      </button>
-      <button
-        onClick={() => addEvent("fg3_made", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("score")}
-      >
-        3分進
-      </button>
-
-      <button
-        onClick={() => addEvent("fg3_miss", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("miss")}
-      >
-        3分鐵
-      </button>
-      <button
-        onClick={() => addEvent("ft_made", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("score")}
-      >
-        罰進
-      </button>
-      <button
-        onClick={() => addEvent("ft_miss", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("miss")}
-      >
-        罰鐵
-      </button>
-
-      <button
-        onClick={() => addEvent("stl", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("def")}
-      >
-        抄截
-      </button>
-      <button
-        onClick={() => addEvent("blk", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("def")}
-      >
-        阻攻
-      </button>
-      <button
-        onClick={() => addEvent("tov", "A")}
-        disabled={game?.status === "finished"}
-        className={actionBtnClass("warn")}
-      >
-        失誤
-      </button>
-    </div>
-
-    <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr]">
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
-          對手快速加分
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          <button
-            onClick={() => addEvent("ft_made", "B")}
-            disabled={game?.status === "finished"}
-            className={actionBtnClass("ghost")}
-          >
-            對手 +1
-          </button>
-          <button
-            onClick={() => addEvent("fg2_made", "B")}
-            disabled={game?.status === "finished"}
-            className={actionBtnClass("ghost")}
-          >
-            對手 +2
-          </button>
-          <button
-            onClick={() => addEvent("fg3_made", "B")}
-            disabled={game?.status === "finished"}
-            className={actionBtnClass("ghost")}
-          >
-            對手 +3
-          </button>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
-          本場各節比分
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {Object.keys(quarterScores)
-            .map(Number)
-            .sort((a, b) => a - b)
-            .map((q) => (
-              <div
-                key={q}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-white/75"
-              >
-                {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
-              </div>
-            ))}
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-            {/* 右：球員 / 換人 / 控制 */}
             <div className="flex flex-col gap-2 md:gap-3">
               <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-                <div className="mb-2 text-sm font-black">場上五人</div>
-
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {onCourtPlayers.map((p) => {
-                    const selected = selectedPlayerId === p.id;
-                    const selectedOut = subOutPlayerIds.includes(p.id);
-
-                    return (
-                      <div
-                        key={p.id}
-                        className={`rounded-2xl border p-2 transition ${
-                          selectedOut
-                            ? "border-orange-400 bg-orange-500/15"
-                            : selected
-                            ? "border-emerald-300 bg-emerald-500/15 shadow-[0_0_18px_rgba(52,211,153,0.14)]"
-                            : "border-white/10 bg-white/[0.04]"
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setSelectedPlayerId(p.id)}
-                          className="w-full text-left"
-                        >
-                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
-                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-                          <div className="mt-1 text-[10px] font-bold text-white/45">
-                            {selectedOut ? "已選下場" : selected ? "目前紀錄" : shortName(p.name)}
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => toggleSubOut(p.id)}
-                          className={`mt-2 w-full rounded-xl px-2 py-1.5 text-xs font-black ${
-                            selectedOut
-                              ? "bg-orange-500 text-white"
-                              : "bg-white/10 text-white/80"
-                          }`}
-                        >
-                          {selectedOut ? "取消下場" : "選下場"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-sm font-black">換人區</div>
-                  <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
-                    還需 {needSubInCount} 人
+                  <div className="min-w-0">
+                    <div className="text-sm font-black">快速紀錄</div>
+                    <div className="text-[11px] text-white/45">
+                      常用事件集中在主區
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={undoLastEvent}
+                    className="rounded-xl bg-red-500/20 px-3 py-2 text-xs font-bold text-red-300"
+                  >
+                    復原上一筆
+                  </button>
+                </div>
+
+                <div className="mb-3 rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5">
+                  <div className="text-[11px] text-white/45">目前紀錄球員</div>
+                  <div className="mt-1 text-base font-black text-emerald-200 md:text-lg">
+                    {selectedPlayer
+                      ? `#${selectedPlayer.number ?? "-"} ${selectedPlayer.name}`
+                      : "未選球員"}
                   </div>
                 </div>
 
-                {benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
-                    沒有場下球員
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {benchPlayers.map((p) => {
-                      const selectedIn = subInPlayerIds.includes(p.id);
-                      const selectable =
-                        subOutPlayerIds.length > 0 &&
-                        (selectedIn || subInPlayerIds.length < subOutPlayerIds.length);
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => addEvent("fg2_made", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("score")}
+                  >
+                    2分進
+                  </button>
+                  <button
+                    onClick={() => addEvent("fg2_miss", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("miss")}
+                  >
+                    2分鐵
+                  </button>
+                  <button
+                    onClick={() => addEvent("reb", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("ghost")}
+                  >
+                    籃板
+                  </button>
 
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => toggleSubIn(p.id)}
-                          disabled={!selectable}
-                          className={`rounded-2xl border p-2 text-left transition ${
-                            selectedIn
-                              ? "border-sky-300 bg-sky-500/18 shadow-[0_0_18px_rgba(56,189,248,0.14)]"
-                              : selectable
-                              ? "border-white/10 bg-white/[0.04]"
-                              : "border-white/10 bg-white/[0.04] opacity-45"
-                          }`}
-                        >
-                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
-                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-                          <div className="mt-1 text-[10px] font-bold text-white/45">
-                            {selectedIn ? "已選上場" : selectable ? "可上場" : "待命"}
+                  <button
+                    onClick={() => addEvent("fg3_made", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("score")}
+                  >
+                    3分進
+                  </button>
+                  <button
+                    onClick={() => addEvent("fg3_miss", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("miss")}
+                  >
+                    3分鐵
+                  </button>
+                  <button
+                    onClick={() => addEvent("ast", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("def")}
+                  >
+                    助攻
+                  </button>
+
+                  <button
+                    onClick={() => addEvent("ft_made", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("score")}
+                  >
+                    罰進
+                  </button>
+                  <button
+                    onClick={() => addEvent("ft_miss", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("miss")}
+                  >
+                    罰鐵
+                  </button>
+                  <button
+                    onClick={() => addEvent("pf", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("warn")}
+                  >
+                    犯規
+                  </button>
+
+                  <button
+                    onClick={() => addEvent("stl", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("def")}
+                  >
+                    抄截
+                  </button>
+                  <button
+                    onClick={() => addEvent("blk", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("def")}
+                  >
+                    阻攻
+                  </button>
+                  <button
+                    onClick={() => addEvent("tov", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("warn")}
+                  >
+                    失誤
+                  </button>
+                </div>
+
+                <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr]">
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                    <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
+                      對手快速加分
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        onClick={() => addEvent("ft_made", "B")}
+                        disabled={game?.status === "finished"}
+                        className={actionBtnClass("ghost")}
+                      >
+                        對手 +1
+                      </button>
+                      <button
+                        onClick={() => addEvent("fg2_made", "B")}
+                        disabled={game?.status === "finished"}
+                        className={actionBtnClass("ghost")}
+                      >
+                        對手 +2
+                      </button>
+                      <button
+                        onClick={() => addEvent("fg3_made", "B")}
+                        disabled={game?.status === "finished"}
+                        className={actionBtnClass("ghost")}
+                      >
+                        對手 +3
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                    <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
+                      本場各節比分
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.keys(quarterScores)
+                        .map(Number)
+                        .sort((a, b) => a - b)
+                        .map((q) => (
+                          <div
+                            key={q}
+                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-white/75"
+                          >
+                            {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
                           </div>
-                        </button>
-                      );
-                    })}
+                        ))}
+                    </div>
                   </div>
-                )}
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    onClick={clearSubSelection}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
-                  >
-                    清除換人
-                  </button>
-                  <button
-                    onClick={makeSubstitution}
-                    disabled={
-                      submittingSub ||
-                      game?.status === "finished" ||
-                      subOutPlayerIds.length === 0 ||
-                      subOutPlayerIds.length !== subInPlayerIds.length
-                    }
-                    className="rounded-2xl bg-sky-600 px-3 py-2.5 text-sm font-black hover:bg-sky-500 disabled:opacity-50"
-                  >
-                    {submittingSub ? "換人中..." : "確認換人"}
-                  </button>
                 </div>
               </div>
 
@@ -1299,6 +1203,122 @@ export default function LiveGamePage() {
                     className="rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-black hover:bg-blue-500 disabled:opacity-60"
                   >
                     {savingTeamA ? "儲存中..." : "更新隊名"}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 右：球員 / 換人 */}
+            <div className="flex flex-col gap-2 md:gap-3">
+              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
+                <div className="mb-2 text-sm font-black">場上五人</div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {onCourtPlayers.map((p) => {
+                    const selected = selectedPlayerId === p.id;
+                    const selectedOut = subOutPlayerIds.includes(p.id);
+
+                    return (
+                      <div
+                        key={p.id}
+                        className={`rounded-2xl border p-2 transition ${
+                          selectedOut
+                            ? "border-orange-400 bg-orange-500/15"
+                            : selected
+                            ? "border-emerald-300 bg-emerald-500/15 shadow-[0_0_18px_rgba(52,211,153,0.14)]"
+                            : "border-white/10 bg-white/[0.04]"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPlayerId(p.id)}
+                          className="w-full text-left"
+                        >
+                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
+                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
+                          <div className="mt-1 text-[10px] font-bold text-white/45">
+                            {selectedOut ? "已選下場" : selected ? "目前紀錄" : shortName(p.name)}
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => toggleSubOut(p.id)}
+                          className={`mt-2 w-full rounded-xl px-2 py-1.5 text-xs font-black ${
+                            selectedOut ? "bg-orange-500 text-white" : "bg-white/10 text-white/80"
+                          }`}
+                        >
+                          {selectedOut ? "取消下場" : "選下場"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-sm font-black">換人區</div>
+                  <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
+                    還需 {needSubInCount} 人
+                  </div>
+                </div>
+
+                {benchPlayers.length === 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
+                    沒有場下球員
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {benchPlayers.map((p) => {
+                      const selectedIn = subInPlayerIds.includes(p.id);
+                      const selectable =
+                        subOutPlayerIds.length > 0 &&
+                        (selectedIn || subInPlayerIds.length < subOutPlayerIds.length);
+
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => toggleSubIn(p.id)}
+                          disabled={!selectable}
+                          className={`rounded-2xl border p-2 text-left transition ${
+                            selectedIn
+                              ? "border-sky-300 bg-sky-500/18 shadow-[0_0_18px_rgba(56,189,248,0.14)]"
+                              : selectable
+                              ? "border-white/10 bg-white/[0.04]"
+                              : "border-white/10 bg-white/[0.04] opacity-45"
+                          }`}
+                        >
+                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
+                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
+                          <div className="mt-1 text-[10px] font-bold text-white/45">
+                            {selectedIn ? "已選上場" : selectable ? "可上場" : "待命"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={clearSubSelection}
+                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
+                  >
+                    清除換人
+                  </button>
+                  <button
+                    onClick={makeSubstitution}
+                    disabled={
+                      submittingSub ||
+                      game?.status === "finished" ||
+                      subOutPlayerIds.length === 0 ||
+                      subOutPlayerIds.length !== subInPlayerIds.length
+                    }
+                    className="rounded-2xl bg-sky-600 px-3 py-2.5 text-sm font-black hover:bg-sky-500 disabled:opacity-50"
+                  >
+                    {submittingSub ? "換人中..." : "確認換人"}
                   </button>
                 </div>
               </div>
