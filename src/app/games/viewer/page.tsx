@@ -195,10 +195,13 @@ export default function ViewerGamesPage() {
     return games.filter((game) => normalizeStatus(game.status) !== "直播中");
   }, [games]);
 
+  const totalGames = games.length;
+
   return (
     <main className="page">
       <div className="bg-overlay" />
       <div className="court-lines" />
+      <div className="mesh-layer" />
       <div className="glow glow-left" />
       <div className="glow glow-right" />
       <div className="basketball basketball-1" />
@@ -206,11 +209,32 @@ export default function ViewerGamesPage() {
 
       <div className="shell">
         <section className="hero-card">
+          <div className="hero-panel">
+            <div className="hero-panel-label">MATCH CENTER</div>
+            <div className="hero-panel-main">COURTSIDE</div>
+            <div className="hero-panel-sub">LIVE / HISTORY / ENTRY</div>
+          </div>
+
           <div className="hero-top">
-            <div>
+            <div className="hero-copy">
               <div className="badge">MATCH LIST</div>
               <h1>比賽列表</h1>
-              <p>觀看直播中的比賽，或查看歷史比賽資料。</p>
+              <p>觀看直播中的比賽，或查看歷史比賽資料與賽事入口。</p>
+
+              <div className="hero-stats">
+                <div className="hero-stat">
+                  <span className="hero-stat-label">LIVE</span>
+                  <strong>{liveGames.length}</strong>
+                </div>
+                <div className="hero-stat">
+                  <span className="hero-stat-label">HISTORY</span>
+                  <strong>{historyGames.length}</strong>
+                </div>
+                <div className="hero-stat">
+                  <span className="hero-stat-label">TOTAL</span>
+                  <strong>{totalGames}</strong>
+                </div>
+              </div>
             </div>
 
             <div className="action-group">
@@ -241,8 +265,11 @@ export default function ViewerGamesPage() {
           <>
             <section className="section-block">
               <div className="section-header">
-                <h2>直播中的比賽</h2>
-                <div className="section-count">{liveGames.length}</div>
+                <div className="section-title-wrap">
+                  <h2>直播中的比賽</h2>
+                  <p>正在進行的賽事可直接進入觀看</p>
+                </div>
+                <div className="section-count live">{liveGames.length}</div>
               </div>
 
               {liveGames.length === 0 ? (
@@ -256,6 +283,9 @@ export default function ViewerGamesPage() {
                       className="game-card live-card"
                     >
                       <div className="card-glow" />
+                      <div className="card-shine" />
+                      <div className="live-pulse" />
+
                       <div className="game-top">
                         <div className="team-wrap">
                           <div className="game-index">
@@ -265,6 +295,12 @@ export default function ViewerGamesPage() {
                             {game.teamA || "主隊"} <span>vs</span> {game.teamB || "客隊"}
                           </div>
                           <div className="game-date">{formatGameDate(game)}</div>
+
+                          <div className="mini-tags">
+                            <span>LIVE VIEW</span>
+                            <span>MATCH ENTRY</span>
+                            <span>COURTSIDE</span>
+                          </div>
                         </div>
 
                         <div className="live-badge">直播中</div>
@@ -282,7 +318,10 @@ export default function ViewerGamesPage() {
 
             <section className="section-block">
               <div className="section-header">
-                <h2>歷史比賽</h2>
+                <div className="section-title-wrap">
+                  <h2>歷史比賽</h2>
+                  <p>查看已結束或尚未開始的賽事資料</p>
+                </div>
                 <div className="section-count">{historyGames.length}</div>
               </div>
 
@@ -294,9 +333,11 @@ export default function ViewerGamesPage() {
                     <button
                       key={game.id}
                       onClick={() => handleOpenGame(game.id)}
-                      className="game-card"
+                      className="game-card history-card"
                     >
-                      <div className="card-glow" />
+                      <div className="card-glow history-glow" />
+                      <div className="card-shine" />
+
                       <div className="game-top">
                         <div className="team-wrap">
                           <div className="game-index">
@@ -306,6 +347,12 @@ export default function ViewerGamesPage() {
                             {game.teamA || "主隊"} <span>vs</span> {game.teamB || "客隊"}
                           </div>
                           <div className="game-date">{formatGameDate(game)}</div>
+
+                          <div className="mini-tags">
+                            <span>OPEN MATCH</span>
+                            <span>ARCHIVE</span>
+                            <span>DETAILS</span>
+                          </div>
                         </div>
 
                         <div className={statusBadgeClass(normalizeStatus(game.status))}>
@@ -335,7 +382,7 @@ export default function ViewerGamesPage() {
           background:
             radial-gradient(circle at 50% 0%, rgba(255, 140, 0, 0.18), transparent 30%),
             radial-gradient(circle at 0% 100%, rgba(255, 98, 0, 0.12), transparent 30%),
-            radial-gradient(circle at 100% 100%, rgba(255, 180, 80, 0.08), transparent 28%),
+            radial-gradient(circle at 100% 100%, rgba(96, 165, 250, 0.08), transparent 28%),
             linear-gradient(180deg, #0b0b0d 0%, #101014 55%, #060606 100%);
           color: #fff;
         }
@@ -346,6 +393,18 @@ export default function ViewerGamesPage() {
           background:
             linear-gradient(to bottom, rgba(255,255,255,0.03), transparent 20%),
             radial-gradient(circle at center, transparent 45%, rgba(0,0,0,0.28) 100%);
+          pointer-events: none;
+        }
+
+        .mesh-layer {
+          position: absolute;
+          inset: 0;
+          background-image:
+            linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+          background-size: 28px 28px;
+          mask-image: radial-gradient(circle at center, black 30%, transparent 85%);
+          opacity: 0.24;
           pointer-events: none;
         }
 
@@ -387,24 +446,24 @@ export default function ViewerGamesPage() {
         .glow {
           position: absolute;
           border-radius: 999px;
-          filter: blur(90px);
+          filter: blur(100px);
           pointer-events: none;
         }
 
         .glow-left {
-          width: 320px;
-          height: 320px;
+          width: 340px;
+          height: 340px;
           left: -60px;
           top: 120px;
           background: rgba(255, 119, 0, 0.22);
         }
 
         .glow-right {
-          width: 320px;
-          height: 320px;
+          width: 340px;
+          height: 340px;
           right: -60px;
           bottom: 60px;
-          background: rgba(255, 170, 60, 0.16);
+          background: rgba(96, 165, 250, 0.12);
         }
 
         .basketball {
@@ -448,6 +507,7 @@ export default function ViewerGamesPage() {
           top: 90px;
           right: 70px;
           transform: rotate(-16deg);
+          animation: floatBall1 8s ease-in-out infinite;
         }
 
         .basketball-2 {
@@ -456,12 +516,13 @@ export default function ViewerGamesPage() {
           bottom: 90px;
           left: 60px;
           transform: rotate(18deg);
+          animation: floatBall2 10s ease-in-out infinite;
         }
 
         .shell {
           position: relative;
           z-index: 2;
-          max-width: 1100px;
+          max-width: 1140px;
           margin: 0 auto;
         }
 
@@ -491,6 +552,56 @@ export default function ViewerGamesPage() {
           pointer-events: none;
         }
 
+        .hero-card::after {
+          content: "MATCHES";
+          position: absolute;
+          right: 28px;
+          bottom: -10px;
+          font-size: clamp(54px, 10vw, 120px);
+          font-weight: 1000;
+          letter-spacing: -0.06em;
+          color: rgba(255,255,255,0.04);
+          pointer-events: none;
+          user-select: none;
+        }
+
+        .hero-panel {
+          position: absolute;
+          top: 24px;
+          right: 24px;
+          z-index: 1;
+          padding: 14px 16px;
+          border-radius: 20px;
+          background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+          border: 1px solid rgba(255,255,255,0.08);
+          box-shadow:
+            0 16px 34px rgba(0,0,0,0.26),
+            inset 0 1px 0 rgba(255,255,255,0.08);
+          text-align: right;
+        }
+
+        .hero-panel-label {
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.16em;
+          color: rgba(255, 210, 160, 0.64);
+        }
+
+        .hero-panel-main {
+          margin-top: 4px;
+          font-size: 20px;
+          font-weight: 1000;
+          letter-spacing: 0.08em;
+          color: #fff;
+        }
+
+        .hero-panel-sub {
+          margin-top: 4px;
+          font-size: 11px;
+          color: rgba(255,255,255,0.52);
+          letter-spacing: 0.12em;
+        }
+
         .hero-top {
           position: relative;
           z-index: 1;
@@ -499,6 +610,10 @@ export default function ViewerGamesPage() {
           align-items: flex-start;
           gap: 20px;
           flex-wrap: wrap;
+        }
+
+        .hero-copy {
+          max-width: 720px;
         }
 
         .badge {
@@ -531,10 +646,44 @@ export default function ViewerGamesPage() {
           line-height: 1.8;
         }
 
+        .hero-stats {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin-top: 20px;
+        }
+
+        .hero-stat {
+          min-width: 120px;
+          padding: 12px 14px;
+          border-radius: 18px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.08);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+        }
+
+        .hero-stat-label {
+          display: block;
+          font-size: 10px;
+          font-weight: 900;
+          letter-spacing: 0.14em;
+          color: rgba(255, 214, 170, 0.62);
+          margin-bottom: 6px;
+        }
+
+        .hero-stat strong {
+          font-size: 18px;
+          font-weight: 1000;
+          color: white;
+          letter-spacing: 0.04em;
+        }
+
         .action-group {
           display: flex;
           gap: 10px;
           flex-wrap: wrap;
+          position: relative;
+          z-index: 1;
         }
 
         .refresh-btn,
@@ -603,18 +752,25 @@ export default function ViewerGamesPage() {
 
         .section-header {
           display: flex;
-          align-items: center;
+          align-items: flex-end;
           justify-content: space-between;
           gap: 12px;
           margin-bottom: 14px;
         }
 
-        .section-header h2 {
+        .section-title-wrap h2 {
           margin: 0;
           font-size: 24px;
           font-weight: 1000;
           color: #fff;
           letter-spacing: -0.03em;
+        }
+
+        .section-title-wrap p {
+          margin: 6px 0 0;
+          color: rgba(255,255,255,0.5);
+          font-size: 13px;
+          line-height: 1.6;
         }
 
         .section-count {
@@ -630,6 +786,12 @@ export default function ViewerGamesPage() {
           color: #ffddb4;
           font-size: 14px;
           font-weight: 900;
+        }
+
+        .section-count.live {
+          color: #fecaca;
+          border-color: rgba(239, 68, 68, 0.2);
+          background: rgba(239, 68, 68, 0.12);
         }
 
         .game-list {
@@ -665,12 +827,25 @@ export default function ViewerGamesPage() {
             0 0 28px rgba(239, 68, 68, 0.08);
         }
 
+        .history-card {
+          box-shadow:
+            0 16px 34px rgba(0,0,0,0.34),
+            0 0 0 1px rgba(96,165,250,0.04);
+        }
+
         .game-card:hover {
           transform: translateY(-4px);
           border-color: rgba(255, 166, 0, 0.18);
           box-shadow:
             0 24px 46px rgba(0,0,0,0.42),
             0 0 26px rgba(244, 140, 6, 0.12);
+        }
+
+        .history-card:hover {
+          border-color: rgba(96, 165, 250, 0.2);
+          box-shadow:
+            0 24px 46px rgba(0,0,0,0.42),
+            0 0 26px rgba(96,165,250,0.12);
         }
 
         .card-glow {
@@ -681,6 +856,44 @@ export default function ViewerGamesPage() {
           top: -50px;
           border-radius: 999px;
           background: radial-gradient(circle, rgba(244,140,6,0.2) 0%, transparent 70%);
+          pointer-events: none;
+        }
+
+        .history-glow {
+          background: radial-gradient(circle, rgba(96,165,250,0.2) 0%, transparent 70%);
+        }
+
+        .card-shine {
+          position: absolute;
+          top: -120%;
+          left: -35%;
+          width: 38%;
+          height: 260%;
+          transform: rotate(18deg);
+          background: linear-gradient(
+            180deg,
+            transparent 0%,
+            rgba(255,255,255,0.07) 45%,
+            transparent 100%
+          );
+          pointer-events: none;
+          transition: transform 0.5s ease;
+        }
+
+        .game-card:hover .card-shine {
+          transform: translateX(230%) rotate(18deg);
+        }
+
+        .live-pulse {
+          position: absolute;
+          top: 18px;
+          right: 18px;
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: #ef4444;
+          box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+          animation: pulse 1.8s infinite;
           pointer-events: none;
         }
 
@@ -728,6 +941,24 @@ export default function ViewerGamesPage() {
           color: #b9b9c0;
           font-size: 14px;
           line-height: 1.6;
+        }
+
+        .mini-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 14px;
+        }
+
+        .mini-tags span {
+          padding: 7px 10px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.07);
+          color: rgba(255,255,255,0.72);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
         }
 
         .live-badge,
@@ -781,7 +1012,7 @@ export default function ViewerGamesPage() {
         }
 
         .game-bottom.history {
-          color: #ffd6a4;
+          color: #93c5fd;
         }
 
         .arrow {
@@ -813,6 +1044,36 @@ export default function ViewerGamesPage() {
           color: #fecaca;
         }
 
+        @keyframes pulse {
+          0% {
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+          }
+          70% {
+            box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+          }
+        }
+
+        @keyframes floatBall1 {
+          0%, 100% {
+            transform: translateY(0px) rotate(-16deg);
+          }
+          50% {
+            transform: translateY(-16px) rotate(-10deg);
+          }
+        }
+
+        @keyframes floatBall2 {
+          0%, 100% {
+            transform: translateY(0px) rotate(18deg);
+          }
+          50% {
+            transform: translateY(14px) rotate(24deg);
+          }
+        }
+
         @media (max-width: 768px) {
           .page {
             padding: 16px;
@@ -829,6 +1090,18 @@ export default function ViewerGamesPage() {
 
           .game-card {
             padding: 20px;
+          }
+
+          .hero-card::after {
+            font-size: 64px;
+            right: 18px;
+            bottom: 6px;
+          }
+
+          .hero-panel {
+            position: static;
+            margin-bottom: 18px;
+            text-align: left;
           }
 
           .basketball-1 {
@@ -853,8 +1126,57 @@ export default function ViewerGamesPage() {
             font-size: 18px;
           }
 
-          .section-header h2 {
+          .section-title-wrap h2 {
             font-size: 22px;
+          }
+
+          .hero-stats {
+            gap: 10px;
+          }
+
+          .hero-stat {
+            min-width: calc(50% - 8px);
+          }
+        }
+
+        @media (max-width: 520px) {
+          .page {
+            padding: 14px;
+          }
+
+          .hero-card {
+            padding: 20px;
+          }
+
+          .game-card {
+            padding: 18px;
+          }
+
+          .hero-top h1 {
+            font-size: 32px;
+          }
+
+          .hero-top p {
+            font-size: 14px;
+            line-height: 1.7;
+          }
+
+          .hero-stat {
+            min-width: 100%;
+          }
+
+          .action-group {
+            width: 100%;
+          }
+
+          .refresh-btn,
+          .back-btn {
+            flex: 1;
+          }
+
+          .live-pulse {
+            top: 16px;
+            right: 16px;
           }
         }
       `}</style>
