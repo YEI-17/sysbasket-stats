@@ -1007,26 +1007,6 @@ export default function LiveGamePage() {
         </div>
       </div>
     </div>
-
-    
-
-    {error && (
-      <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-        {error}
-      </div>
-    )}
-
-    <button
-      onClick={endGame}
-      disabled={endingGame || game?.status === "finished"}
-      className="w-full rounded-3xl bg-rose-700 px-4 py-5 text-base font-extrabold transition hover:bg-rose-600 disabled:opacity-50"
-    >
-      {game?.status === "finished"
-        ? "比賽已結束"
-        : endingGame
-        ? "結束中..."
-        : "結束該場比賽"}
-    </button>
   </div>
 
   {/* 右邊：我方快速紀錄 + 對手快速加分 */}
