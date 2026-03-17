@@ -961,7 +961,7 @@ export default function LiveGamePage() {
 
               <div className="flex items-center gap-2">
                 <Link
-                  href={`/games/${gameId}/box`}
+                  href={`/games/${gameId}/board`}
                   className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-black transition hover:bg-indigo-500"
                 >
                   數據頁
