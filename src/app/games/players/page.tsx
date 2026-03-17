@@ -235,6 +235,11 @@ export default function PlayerProfilePage() {
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
 
+  useEffect(() => {
+    console.log("params =", params);
+    console.log("playerId =", playerId);
+  }, [params, playerId]);
+
   const load = useCallback(async () => {
     if (!playerId) {
       setError("抓不到 playerId，請確認路由是否為 /games/players/[id]");
