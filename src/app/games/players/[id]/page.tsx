@@ -235,11 +235,6 @@ export default function PlayerProfilePage() {
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
 
-  useEffect(() => {
-    console.log("params =", params);
-    console.log("playerId =", playerId);
-  }, [params, playerId]);
-
   const load = useCallback(async () => {
     if (!playerId) {
       setError("抓不到 playerId，請確認路由是否為 /games/players/[id]");
@@ -329,14 +324,9 @@ export default function PlayerProfilePage() {
 
       if (!bucket.has(ev.game_id)) {
         const gp = gpMap.get(ev.game_id);
-
-        const teamSide =
-          (gp?.team_side || ev.team_side || "teamA") as "teamA" | "teamB";
-
+        const teamSide = (gp?.team_side || ev.team_side || "teamA") as "teamA" | "teamB";
         const opponent =
-          teamSide === "teamA"
-            ? game.teamB || "對手未設定"
-            : game.teamA || "對手未設定";
+          teamSide === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
 
         bucket.set(ev.game_id, {
           gameId: ev.game_id,
@@ -355,7 +345,6 @@ export default function PlayerProfilePage() {
 
       const item = bucket.get(ev.game_id);
       if (!item) continue;
-
       applyEventToStat(item.stat, ev.event_type);
     }
 
