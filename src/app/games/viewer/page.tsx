@@ -14,14 +14,6 @@ type GameRow = {
   created_at?: string | null;
 };
 
-type PlayerRow = {
-  id: string;
-  name: string;
-  number: number | null;
-  position?: string | null;
-  active?: boolean | null;
-};
-
 function normalizeStatus(status?: string | null) {
   const s = (status ?? "").trim().toLowerCase();
 
@@ -41,16 +33,38 @@ function normalizeStatus(status?: string | null) {
   return status ?? "未設定";
 }
 
+function formatGameDate(game: GameRow) {
+  const raw = game.game_date ?? game.created_at ?? null;
+  if (!raw) return "未提供日期";
+
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return String(raw);
+
+  return d.toLocaleString("zh-TW", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: raw.includes("T") ? "2-digit" : undefined,
+    minute: raw.includes("T") ? "2-digit" : undefined,
+    hour12: false,
+  });
+}
+
+function statusBadgeClass(status: string) {
+  if (status === "已結束") return "status-finished";
+  if (status === "未開始") return "status-upcoming";
+  return "status-other";
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
   const [games, setGames] = useState<GameRow[]>([]);
-  const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState("");
 
-  const fetchAll = useCallback(async (showLoading = true) => {
+  const fetchGames = useCallback(async (showLoading = true) => {
     if (showLoading) {
       setLoading(true);
     } else {
@@ -59,38 +73,25 @@ export default function ViewerGamesPage() {
 
     setMsg("");
 
-    const [gamesRes, playersRes] = await Promise.all([
-      supabase
-        .from("games")
-        .select("id, teamA, teamB, status, game_date, created_at")
-        .order("game_date", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false }),
+    const { data, error } = await supabase
+      .from("games")
+      .select("id, teamA, teamB, status, game_date, created_at")
+      .order("game_date", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false });
 
-      supabase
-        .from("players")
-        .select("id, name, number, position, active")
-        .eq("active", true)
-        .order("number", { ascending: true }),
-    ]);
-
-    if (gamesRes.error) {
-      console.error(gamesRes.error);
+    if (error) {
+      console.error(error);
       setMsg("讀取比賽資料失敗");
-      if (showLoading) setLoading(false);
-      else setRefreshing(false);
+
+      if (showLoading) {
+        setLoading(false);
+      } else {
+        setRefreshing(false);
+      }
       return;
     }
 
-    if (playersRes.error) {
-      console.error(playersRes.error);
-      setMsg("讀取球員資料失敗");
-      if (showLoading) setLoading(false);
-      else setRefreshing(false);
-      return;
-    }
-
-    setGames((gamesRes.data as GameRow[]) || []);
-    setPlayers((playersRes.data as PlayerRow[]) || []);
+    setGames((data as GameRow[]) || []);
 
     if (showLoading) {
       setLoading(false);
@@ -139,9 +140,9 @@ export default function ViewerGamesPage() {
       return;
     }
 
-    void fetchAll(true);
+    void fetchGames(true);
     void updateSessionHeartbeat();
-  }, [router, fetchAll, updateSessionHeartbeat]);
+  }, [router, fetchGames, updateSessionHeartbeat]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -173,42 +174,28 @@ export default function ViewerGamesPage() {
     };
   }, [markSessionOffline, updateSessionHeartbeat]);
 
-  async function handleRefresh() {
-    await updateSessionHeartbeat();
-    await fetchAll(false);
-  }
-
   function handleBack() {
     router.push("/viewer");
   }
 
-  function handleOpenMatches() {
-    router.push("/games");
+  function handleOpenGame(gameId: string) {
+    router.push(`/games/${gameId}/board`);
   }
 
-  function handleOpenTeamStats() {
-    router.push("/games/box");
+  async function handleRefresh() {
+    await updateSessionHeartbeat();
+    await fetchGames(false);
   }
 
-  function handleOpenPlayers() {
-    router.push("/games/players");
-  }
+  const liveGames = useMemo(() => {
+    return games.filter((game) => normalizeStatus(game.status) === "直播中");
+  }, [games]);
 
-  function handleOpenRankings() {
-    router.push("/games/rank");
-  }
+  const historyGames = useMemo(() => {
+    return games.filter((game) => normalizeStatus(game.status) !== "直播中");
+  }, [games]);
 
-  const viewerName = useMemo(() => getViewerName() || "VIEWER", []);
-  const liveGamesCount = useMemo(
-    () => games.filter((game) => normalizeStatus(game.status) === "直播中").length,
-    [games]
-  );
-  const historyGamesCount = useMemo(
-    () => games.filter((game) => normalizeStatus(game.status) !== "直播中").length,
-    [games]
-  );
   const totalGames = games.length;
-  const totalPlayers = players.length;
 
   return (
     <main className="page">
@@ -223,34 +210,29 @@ export default function ViewerGamesPage() {
       <div className="shell">
         <section className="hero-card">
           <div className="hero-panel">
-            <div className="hero-panel-label">VIEWER MODE</div>
+            <div className="hero-panel-label">MATCH CENTER</div>
             <div className="hero-panel-main">COURTSIDE</div>
-            <div className="hero-panel-sub">MATCH / TEAM / PLAYER / RANK</div>
+            <div className="hero-panel-sub">LIVE / HISTORY / ENTRY</div>
           </div>
 
           <div className="hero-top">
             <div className="hero-copy">
-              <div className="badge">VIEWER DASHBOARD</div>
-              <h1>
-                歡迎回來，<span>{viewerName}</span>
-              </h1>
+              <div className="badge">MATCH LIST</div>
+              <h1>比賽列表</h1>
+              <p>觀看直播中的比賽，或查看歷史比賽資料與賽事入口。</p>
 
               <div className="hero-stats">
                 <div className="hero-stat">
-                  <span className="hero-stat-label">LIVE GAMES</span>
-                  <strong>{liveGamesCount}</strong>
-                </div>
-                <div className="hero-stat">
-                  <span className="hero-stat-label">TOTAL GAMES</span>
-                  <strong>{totalGames}</strong>
-                </div>
-                <div className="hero-stat">
-                  <span className="hero-stat-label">PLAYERS</span>
-                  <strong>{totalPlayers}</strong>
+                  <span className="hero-stat-label">LIVE</span>
+                  <strong>{liveGames.length}</strong>
                 </div>
                 <div className="hero-stat">
                   <span className="hero-stat-label">HISTORY</span>
-                  <strong>{historyGamesCount}</strong>
+                  <strong>{historyGames.length}</strong>
+                </div>
+                <div className="hero-stat">
+                  <span className="hero-stat-label">TOTAL</span>
+                  <strong>{totalGames}</strong>
                 </div>
               </div>
             </div>
@@ -271,7 +253,7 @@ export default function ViewerGamesPage() {
 
           <div className="hero-strip">
             <div className="strip-dot" />
-            <span>COURTSIDE VIEWER CENTER</span>
+            <span>COURTSIDE MATCH CENTER</span>
           </div>
         </section>
 
@@ -280,87 +262,114 @@ export default function ViewerGamesPage() {
         {!loading && msg && <div className="error-card">{msg}</div>}
 
         {!loading && !msg && (
-          <section className="card-grid">
-            <button className="feature-card" onClick={handleOpenMatches}>
-              <div className="feature-card-glow orange" />
-              <div className="feature-card-number">01</div>
-              <div className="feature-badge">MATCHES</div>
-              <div className="feature-icon">🏀</div>
-              <h2>比賽列表</h2>
-              <p>進入直播中的比賽與歷史比賽頁面，快速查看目前可觀看的所有賽事。</p>
-
-              <div className="feature-tags">
-                <span>LIVE</span>
-                <span>HISTORY</span>
-                <span>WATCH</span>
+          <>
+            <section className="section-block">
+              <div className="section-header">
+                <div className="section-title-wrap">
+                  <h2>直播中的比賽</h2>
+                  <p>正在進行的賽事可直接進入觀看</p>
+                </div>
+                <div className="section-count live">{liveGames.length}</div>
               </div>
 
-              <div className="feature-footer">
-                <span>ENTER</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
+              {liveGames.length === 0 ? (
+                <div className="info-card">目前沒有進行中的比賽</div>
+              ) : (
+                <div className="game-list">
+                  {liveGames.map((game, index) => (
+                    <button
+                      key={game.id}
+                      onClick={() => handleOpenGame(game.id)}
+                      className="game-card live-card"
+                    >
+                      <div className="card-glow" />
+                      <div className="card-shine" />
+                      <div className="live-pulse" />
 
-            <button className="feature-card" onClick={handleOpenTeamStats}>
-              <div className="feature-card-glow blue" />
-              <div className="feature-card-number">02</div>
-              <div className="feature-badge">TEAM STATS</div>
-              <div className="feature-icon">📊</div>
-              <h2>團隊數據</h2>
-              <p>查看團隊平均數據、命中率表現與整體輸出，快速掌握球隊狀態。</p>
+                      <div className="game-top">
+                        <div className="team-wrap">
+                          <div className="game-index">
+                            {String(index + 1).padStart(2, "0")}
+                          </div>
+                          <div className="team-title">
+                            {game.teamA || "主隊"} <span>vs</span> {game.teamB || "客隊"}
+                          </div>
+                          <div className="game-date">{formatGameDate(game)}</div>
 
-              <div className="feature-tags">
-                <span>TEAM</span>
-                <span>EFFICIENCY</span>
-                <span>BOX</span>
-              </div>
+                          <div className="mini-tags">
+                            <span>LIVE VIEW</span>
+                            <span>MATCH ENTRY</span>
+                            <span>COURTSIDE</span>
+                          </div>
+                        </div>
 
-              <div className="feature-footer blue-text">
-                <span>ENTER</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
+                        <div className="live-badge">直播中</div>
+                      </div>
 
-            <button className="feature-card" onClick={handleOpenPlayers}>
-              <div className="feature-card-glow violet" />
-              <div className="feature-card-number">03</div>
-              <div className="feature-badge">PLAYERS</div>
-              <div className="feature-icon">👤</div>
-              <h2>球員列表</h2>
-              <p>查看目前球員名單、背號與位置資訊，快速掌握整體登錄陣容。</p>
+                      <div className="game-bottom">
+                        <span>ENTER LIVE VIEW</span>
+                        <span className="arrow">→</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
 
-              <div className="feature-tags">
-                <span>ROSTER</span>
-                <span>NUMBER</span>
-                <span>POSITION</span>
-              </div>
-
-              <div className="feature-footer violet-text">
-                <span>ENTER</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
-
-            <button className="feature-card" onClick={handleOpenRankings}>
-              <div className="feature-card-glow emerald" />
-              <div className="feature-card-number">04</div>
-              <div className="feature-badge">RANKINGS</div>
-              <div className="feature-icon">🏆</div>
-              <h2>數據排行榜</h2>
-              <p>查看得分、籃板、助攻與效率等排行，快速找出目前表現最突出的球員。</p>
-
-              <div className="feature-tags">
-                <span>PTS</span>
-                <span>REB</span>
-                <span>AST</span>
+            <section className="section-block">
+              <div className="section-header">
+                <div className="section-title-wrap">
+                  <h2>歷史比賽</h2>
+                  <p>查看已結束或尚未開始的賽事資料</p>
+                </div>
+                <div className="section-count">{historyGames.length}</div>
               </div>
 
-              <div className="feature-footer emerald-text">
-                <span>ENTER</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
-          </section>
+              {historyGames.length === 0 ? (
+                <div className="info-card">目前還沒有歷史比賽資料</div>
+              ) : (
+                <div className="game-list">
+                  {historyGames.map((game, index) => (
+                    <button
+                      key={game.id}
+                      onClick={() => handleOpenGame(game.id)}
+                      className="game-card history-card"
+                    >
+                      <div className="card-glow history-glow" />
+                      <div className="card-shine" />
+
+                      <div className="game-top">
+                        <div className="team-wrap">
+                          <div className="game-index">
+                            {String(index + 1).padStart(2, "0")}
+                          </div>
+                          <div className="team-title small">
+                            {game.teamA || "主隊"} <span>vs</span> {game.teamB || "客隊"}
+                          </div>
+                          <div className="game-date">{formatGameDate(game)}</div>
+
+                          <div className="mini-tags">
+                            <span>OPEN MATCH</span>
+                            <span>ARCHIVE</span>
+                            <span>DETAILS</span>
+                          </div>
+                        </div>
+
+                        <div className={statusBadgeClass(normalizeStatus(game.status))}>
+                          {normalizeStatus(game.status)}
+                        </div>
+                      </div>
+
+                      <div className="game-bottom history">
+                        <span>OPEN MATCH</span>
+                        <span className="arrow">→</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
         )}
       </div>
 
@@ -513,7 +522,7 @@ export default function ViewerGamesPage() {
         .shell {
           position: relative;
           z-index: 2;
-          max-width: 1260px;
+          max-width: 1140px;
           margin: 0 auto;
         }
 
@@ -544,7 +553,7 @@ export default function ViewerGamesPage() {
         }
 
         .hero-card::after {
-          content: "VIEWER";
+          content: "MATCHES";
           position: absolute;
           right: 28px;
           bottom: -10px;
@@ -604,7 +613,7 @@ export default function ViewerGamesPage() {
         }
 
         .hero-copy {
-          max-width: 760px;
+          max-width: 720px;
         }
 
         .badge {
@@ -630,16 +639,11 @@ export default function ViewerGamesPage() {
           color: #ffffff;
         }
 
-        .hero-top h1 span {
-          color: #ffb347;
-        }
-
         .hero-top p {
           margin: 14px 0 0;
           color: rgba(255, 245, 235, 0.76);
           font-size: 15px;
           line-height: 1.8;
-          max-width: 760px;
         }
 
         .hero-stats {
@@ -650,7 +654,7 @@ export default function ViewerGamesPage() {
         }
 
         .hero-stat {
-          min-width: 124px;
+          min-width: 120px;
           padding: 12px 14px;
           border-radius: 18px;
           background: rgba(255,255,255,0.05);
@@ -682,42 +686,7 @@ export default function ViewerGamesPage() {
           z-index: 1;
         }
 
-        .refresh-btn,
-        .back-btn {
-          border: none;
-          border-radius: 16px;
-          padding: 14px 18px;
-          cursor: pointer;
-          font-size: 13px;
-          font-weight: 900;
-          letter-spacing: 0.14em;
-          transition: all 0.22s ease;
-        }
-
-        .refresh-btn {
-          background: linear-gradient(135deg, #ffb347 0%, #f48c06 55%, #d96a00 100%);
-          color: white;
-          box-shadow:
-            0 18px 34px rgba(244, 140, 6, 0.28),
-            inset 0 1px 0 rgba(255,255,255,0.24);
-        }
-
-        .back-btn {
-          background: linear-gradient(180deg, rgba(36,36,40,0.96) 0%, rgba(15,15,18,0.98) 100%);
-          color: #fff;
-          border: 1px solid rgba(255,255,255,0.08);
-          box-shadow: 0 14px 28px rgba(0,0,0,0.24);
-        }
-
-        .refresh-btn:hover:not(:disabled),
-        .back-btn:hover {
-          transform: translateY(-2px);
-        }
-
-        .refresh-btn:disabled {
-          opacity: 0.7;
-          cursor: not-allowed;
-        }
+       
 
         .hero-strip {
           position: relative;
@@ -742,121 +711,211 @@ export default function ViewerGamesPage() {
           box-shadow: 0 0 16px rgba(244, 140, 6, 0.4);
         }
 
-        .card-grid {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 18px;
+        .section-block {
+          margin-bottom: 28px;
         }
 
-        .feature-card {
+        .section-header {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 14px;
+        }
+
+        .section-title-wrap h2 {
+          margin: 0;
+          font-size: 24px;
+          font-weight: 1000;
+          color: #fff;
+          letter-spacing: -0.03em;
+        }
+
+        .section-title-wrap p {
+          margin: 6px 0 0;
+          color: rgba(255,255,255,0.5);
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .section-count {
+          min-width: 42px;
+          height: 42px;
+          padding: 0 14px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.08);
+          color: #ffddb4;
+          font-size: 14px;
+          font-weight: 900;
+        }
+
+        .section-count.live {
+          color: #fecaca;
+          border-color: rgba(239, 68, 68, 0.2);
+          background: rgba(239, 68, 68, 0.12);
+        }
+
+        .game-list {
+          display: grid;
+          gap: 14px;
+        }
+
+        .game-card {
           position: relative;
           overflow: hidden;
-          text-align: left;
           width: 100%;
-          min-height: 320px;
-          padding: 28px;
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 28px;
-          background:
-            linear-gradient(180deg, rgba(18,18,20,0.96) 0%, rgba(8,8,10,0.98) 100%);
+          text-align: left;
+          padding: 22px 24px;
+          border-radius: 24px;
           color: white;
           cursor: pointer;
+          border: 1px solid rgba(255,255,255,0.08);
+          background:
+            linear-gradient(180deg, rgba(18,18,20,0.96) 0%, rgba(8,8,10,0.98) 100%);
+          box-shadow:
+            0 16px 34px rgba(0,0,0,0.34),
+            0 0 0 1px rgba(255,140,0,0.04);
           transition:
             transform 0.24s ease,
             box-shadow 0.24s ease,
             border-color 0.24s ease;
-          box-shadow:
-            0 18px 40px rgba(0,0,0,0.34),
-            0 0 0 1px rgba(255,255,255,0.03);
         }
 
-        .feature-card:hover {
+        .live-card {
+          border-color: rgba(239, 68, 68, 0.18);
+          box-shadow:
+            0 18px 40px rgba(0,0,0,0.36),
+            0 0 28px rgba(239, 68, 68, 0.08);
+        }
+
+        .history-card {
+          box-shadow:
+            0 16px 34px rgba(0,0,0,0.34),
+            0 0 0 1px rgba(96,165,250,0.04);
+        }
+
+        .game-card:hover {
           transform: translateY(-4px);
-          border-color: rgba(255,255,255,0.14);
+          border-color: rgba(255, 166, 0, 0.18);
           box-shadow:
-            0 26px 52px rgba(0,0,0,0.42),
-            0 0 28px rgba(255,255,255,0.04);
+            0 24px 46px rgba(0,0,0,0.42),
+            0 0 26px rgba(244, 140, 6, 0.12);
         }
 
-        .feature-card-glow {
+        .history-card:hover {
+          border-color: rgba(96, 165, 250, 0.2);
+          box-shadow:
+            0 24px 46px rgba(0,0,0,0.42),
+            0 0 26px rgba(96,165,250,0.12);
+        }
+
+        .card-glow {
           position: absolute;
-          width: 220px;
-          height: 220px;
-          right: -70px;
-          top: -70px;
+          width: 180px;
+          height: 180px;
+          right: -50px;
+          top: -50px;
           border-radius: 999px;
+          background: radial-gradient(circle, rgba(244,140,6,0.2) 0%, transparent 70%);
           pointer-events: none;
         }
 
-        .feature-card-glow.orange {
-          background: radial-gradient(circle, rgba(244,140,6,0.22) 0%, transparent 72%);
+        .history-glow {
+          background: radial-gradient(circle, rgba(96,165,250,0.2) 0%, transparent 70%);
         }
 
-        .feature-card-glow.blue {
-          background: radial-gradient(circle, rgba(96,165,250,0.22) 0%, transparent 72%);
-        }
-
-        .feature-card-glow.violet {
-          background: radial-gradient(circle, rgba(168,85,247,0.22) 0%, transparent 72%);
-        }
-
-        .feature-card-glow.emerald {
-          background: radial-gradient(circle, rgba(52,211,153,0.22) 0%, transparent 72%);
-        }
-
-        .feature-card-number {
+        .card-shine {
           position: absolute;
-          top: 24px;
-          right: 24px;
-          font-size: 20px;
-          font-weight: 1000;
-          letter-spacing: -0.03em;
-          color: rgba(255, 214, 170, 0.5);
+          top: -120%;
+          left: -35%;
+          width: 38%;
+          height: 260%;
+          transform: rotate(18deg);
+          background: linear-gradient(
+            180deg,
+            transparent 0%,
+            rgba(255,255,255,0.07) 45%,
+            transparent 100%
+          );
+          pointer-events: none;
+          transition: transform 0.5s ease;
         }
 
-        .feature-badge {
-          display: inline-flex;
-          align-items: center;
-          padding: 8px 14px;
+        .game-card:hover .card-shine {
+          transform: translateX(230%) rotate(18deg);
+        }
+
+        .live-pulse {
+          position: absolute;
+          top: 18px;
+          right: 18px;
+          width: 10px;
+          height: 10px;
           border-radius: 999px;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.08);
-          color: #ffffff;
-          font-size: 12px;
-          font-weight: 900;
-          letter-spacing: 0.12em;
+          background: #ef4444;
+          box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+          animation: pulse 1.8s infinite;
+          pointer-events: none;
         }
 
-        .feature-icon {
-          margin-top: 24px;
-          font-size: 42px;
-          line-height: 1;
+        .game-top {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          justify-content: space-between;
+          gap: 14px;
+          align-items: flex-start;
+          flex-wrap: wrap;
         }
 
-        .feature-card h2 {
-          margin: 18px 0 0;
+        .team-wrap {
+          min-width: 0;
+        }
+
+        .game-index {
+          margin-bottom: 10px;
+          color: rgba(255, 210, 160, 0.34);
+          font-size: 13px;
+          font-weight: 1000;
+          letter-spacing: 0.18em;
+        }
+
+        .team-title {
           font-size: 24px;
           font-weight: 1000;
-          letter-spacing: -0.03em;
-          color: #fff;
+          color: #ffffff;
+          letter-spacing: -0.04em;
+          line-height: 1.2;
         }
 
-        .feature-card p {
-          margin: 14px 0 0;
-          color: rgba(255,255,255,0.66);
-          font-size: 15px;
-          line-height: 1.9;
-          max-width: 500px;
+        .team-title.small {
+          font-size: 22px;
         }
 
-        .feature-tags {
+        .team-title span {
+          color: #ffbe6b;
+          font-weight: 800;
+        }
+
+        .game-date {
+          margin-top: 10px;
+          color: #b9b9c0;
+          font-size: 14px;
+          line-height: 1.6;
+        }
+
+        .mini-tags {
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          margin-top: 28px;
+          margin-top: 14px;
         }
 
-        .feature-tags span {
+        .mini-tags span {
           padding: 7px 10px;
           border-radius: 999px;
           background: rgba(255,255,255,0.05);
@@ -867,8 +926,47 @@ export default function ViewerGamesPage() {
           letter-spacing: 0.08em;
         }
 
-        .feature-footer {
-          margin-top: 26px;
+        .live-badge,
+        .status-finished,
+        .status-upcoming,
+        .status-other {
+          padding: 8px 13px;
+          border-radius: 999px;
+          font-weight: 900;
+          font-size: 13px;
+          white-space: nowrap;
+          letter-spacing: 0.04em;
+        }
+
+        .live-badge {
+          background: rgba(239, 68, 68, 0.18);
+          border: 1px solid rgba(239, 68, 68, 0.32);
+          color: #fecaca;
+          box-shadow: 0 0 18px rgba(239, 68, 68, 0.08);
+        }
+
+        .status-finished {
+          background: rgba(34, 197, 94, 0.16);
+          border: 1px solid rgba(34, 197, 94, 0.28);
+          color: #dcfce7;
+        }
+
+        .status-upcoming {
+          background: rgba(161, 161, 170, 0.14);
+          border: 1px solid rgba(161, 161, 170, 0.22);
+          color: #f4f4f5;
+        }
+
+        .status-other {
+          background: rgba(245, 158, 11, 0.18);
+          border: 1px solid rgba(245, 158, 11, 0.28);
+          color: #fde68a;
+        }
+
+        .game-bottom {
+          position: relative;
+          z-index: 1;
+          margin-top: 18px;
           display: inline-flex;
           align-items: center;
           gap: 10px;
@@ -878,23 +976,15 @@ export default function ViewerGamesPage() {
           letter-spacing: 0.16em;
         }
 
-        .blue-text {
+        .game-bottom.history {
           color: #93c5fd;
-        }
-
-        .violet-text {
-          color: #c4b5fd;
-        }
-
-        .emerald-text {
-          color: #86efac;
         }
 
         .arrow {
           transition: transform 0.2s ease;
         }
 
-        .feature-card:hover .arrow {
+        .game-card:hover .arrow {
           transform: translateX(4px);
         }
 
@@ -919,6 +1009,18 @@ export default function ViewerGamesPage() {
           color: #fecaca;
         }
 
+        @keyframes pulse {
+          0% {
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+          }
+          70% {
+            box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+          }
+        }
+
         @keyframes floatBall1 {
           0%, 100% {
             transform: translateY(0px) rotate(-16deg);
@@ -937,19 +1039,13 @@ export default function ViewerGamesPage() {
           }
         }
 
-        @media (max-width: 980px) {
-          .card-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-
         @media (max-width: 768px) {
           .page {
             padding: 16px;
           }
 
           .hero-card,
-          .feature-card {
+          .game-card {
             border-radius: 24px;
           }
 
@@ -957,9 +1053,8 @@ export default function ViewerGamesPage() {
             padding: 24px;
           }
 
-          .feature-card {
-            padding: 22px;
-            min-height: 280px;
+          .game-card {
+            padding: 20px;
           }
 
           .hero-card::after {
@@ -988,21 +1083,24 @@ export default function ViewerGamesPage() {
             left: -10px;
           }
 
+          .team-title {
+            font-size: 20px;
+          }
+
+          .team-title.small {
+            font-size: 18px;
+          }
+
+          .section-title-wrap h2 {
+            font-size: 22px;
+          }
+
           .hero-stats {
             gap: 10px;
           }
 
           .hero-stat {
             min-width: calc(50% - 8px);
-          }
-
-          .feature-card h2 {
-            font-size: 22px;
-          }
-
-          .feature-card p {
-            font-size: 14px;
-            line-height: 1.8;
           }
         }
 
@@ -1015,8 +1113,8 @@ export default function ViewerGamesPage() {
             padding: 20px;
           }
 
-          .feature-card {
-            padding: 20px;
+          .game-card {
+            padding: 18px;
           }
 
           .hero-top h1 {
@@ -1036,9 +1134,9 @@ export default function ViewerGamesPage() {
             width: 100%;
           }
 
-          .refresh-btn,
-          .back-btn {
-            flex: 1;
+          .live-pulse {
+            top: 16px;
+            right: 16px;
           }
         }
       `}</style>
