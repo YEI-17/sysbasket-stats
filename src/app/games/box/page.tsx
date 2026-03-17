@@ -2,12 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import {
-  groupPlayerStats,
-  pct,
-  type EventRow as StatEventRow,
-  type Stat,
-} from "@/lib/stats";
+import { pct, type EventRow as StatEventRow, type Stat } from "@/lib/stats";
 
 type Player = {
   id: string;
@@ -201,7 +196,8 @@ function getQuarterStartMs(
 ) {
   const clockMap = new Map(clockRows.map((row) => [row.quarter, row]));
 
-  const ownClock = quarter === currentQuarter ? currentClock : clockMap.get(quarter);
+  const ownClock =
+    quarter === currentQuarter ? currentClock : clockMap.get(quarter);
   const ownStartMs = getQuarterStartMsFromClock(ownClock);
   if (ownStartMs != null) return ownStartMs;
 
@@ -261,6 +257,100 @@ function formatAverageSeconds(totalSeconds: number, gamesPlayed: number) {
   const mm = Math.floor(avgSeconds / 60);
   const ss = avgSeconds % 60;
   return `${mm}:${String(ss).padStart(2, "0")}`;
+}
+
+function normalizeEventType(
+  raw: string
+): StatEventRow["event_type"] | "reb" | "ast" | "stl" | "blk" | "tov" | "pf" | null {
+  switch (raw) {
+    case "fg2_made":
+    case "fg2_miss":
+    case "fg3_made":
+    case "fg3_miss":
+    case "ft_made":
+    case "ft_miss":
+    case "reb":
+    case "ast":
+    case "stl":
+    case "blk":
+    case "tov":
+    case "pf":
+    case "sub_in":
+    case "sub_out":
+      return raw;
+
+    // 舊資料相容
+    case "assist":
+      return "ast";
+    case "rebound":
+    case "oreb":
+    case "dreb":
+      return "reb";
+    case "steal":
+      return "stl";
+    case "block":
+      return "blk";
+    case "turnover":
+      return "tov";
+    case "foul":
+    case "personal_foul":
+      return "pf";
+
+    default:
+      return null;
+  }
+}
+
+function applyEventToStat(stat: Stat, rawEventType: string) {
+  const eventType = normalizeEventType(rawEventType);
+  if (!eventType) return;
+
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      stat.fg2m += 1;
+      stat.fg2a += 1;
+      break;
+    case "fg2_miss":
+      stat.fg2a += 1;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      stat.fg3m += 1;
+      stat.fg3a += 1;
+      break;
+    case "fg3_miss":
+      stat.fg3a += 1;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      stat.ftm += 1;
+      stat.fta += 1;
+      break;
+    case "ft_miss":
+      stat.fta += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    case "tov":
+      stat.tov += 1;
+      break;
+    case "pf":
+      stat.pf += 1;
+      break;
+    default:
+      break;
+  }
 }
 
 export default function BoxDashboardPage() {
@@ -426,6 +516,36 @@ export default function BoxDashboardPage() {
     return map;
   }, [gamePlayers]);
 
+  const teamAPlayerIdsByGame = useMemo(() => {
+    const map: Record<string, Set<string>> = {};
+    for (const row of gamePlayers) {
+      if (row.team_side !== "A") continue;
+      if (!activePlayerIdSet.has(row.player_id)) continue;
+      if (!map[row.game_id]) map[row.game_id] = new Set<string>();
+      map[row.game_id].add(row.player_id);
+    }
+    return map;
+  }, [gamePlayers, activePlayerIdSet]);
+
+  const isTeamAEvent = useCallback(
+    (event: EventWithGame) => {
+      if (!event.player_id) return false;
+      if (!activePlayerIdSet.has(event.player_id)) return false;
+
+      if (event.team_side === "A") return true;
+      if (event.team_side === "B") return false;
+
+      const knownTeamASet = teamAPlayerIdsByGame[event.game_id];
+      if (knownTeamASet && knownTeamASet.size > 0) {
+        return knownTeamASet.has(event.player_id);
+      }
+
+      // 舊資料沒寫 team_side / game_players 時，player_id 只要是本隊球員就算進來
+      return true;
+    },
+    [activePlayerIdSet, teamAPlayerIdsByGame]
+  );
+
   const eventsByGame = useMemo(() => {
     const map: Record<string, EventWithGame[]> = {};
     for (const event of validEvents) {
@@ -447,27 +567,38 @@ export default function BoxDashboardPage() {
     const ids = new Set<string>();
 
     for (const gp of gamePlayers) {
-      if (gp.team_side === "A") ids.add(gp.game_id);
+      if (gp.team_side === "A" && activePlayerIdSet.has(gp.player_id)) {
+        ids.add(gp.game_id);
+      }
     }
 
     for (const event of validEvents) {
-      if (event.team_side === "A") ids.add(event.game_id);
+      if (isTeamAEvent(event)) {
+        ids.add(event.game_id);
+      }
     }
 
     return Array.from(ids);
-  }, [gamePlayers, validEvents]);
+  }, [gamePlayers, validEvents, activePlayerIdSet, isTeamAEvent]);
 
   const teamPlayerEvents = useMemo(() => {
-    return validEvents.filter(
-      (event) =>
-        event.team_side === "A" &&
-        !!event.player_id &&
-        activePlayerIdSet.has(event.player_id)
-    );
-  }, [validEvents, activePlayerIdSet]);
+    return validEvents.filter(isTeamAEvent);
+  }, [validEvents, isTeamAEvent]);
 
   const playerStatMap = useMemo(() => {
-    return groupPlayerStats(teamPlayerEvents as StatEventRow[]);
+    const map: Record<string, Stat> = {};
+
+    for (const event of teamPlayerEvents) {
+      if (!event.player_id) continue;
+
+      if (!map[event.player_id]) {
+        map[event.player_id] = safeStat();
+      }
+
+      applyEventToStat(map[event.player_id], event.event_type);
+    }
+
+    return map;
   }, [teamPlayerEvents]);
 
   const teamStatByGame = useMemo(() => {
@@ -478,54 +609,7 @@ export default function BoxDashboardPage() {
         map[event.game_id] = safeStat();
       }
 
-      const current = map[event.game_id];
-
-      switch (event.event_type) {
-        case "fg2_made":
-          current.pts += 2;
-          current.fg2m += 1;
-          current.fg2a += 1;
-          break;
-        case "fg2_miss":
-          current.fg2a += 1;
-          break;
-        case "fg3_made":
-          current.pts += 3;
-          current.fg3m += 1;
-          current.fg3a += 1;
-          break;
-        case "fg3_miss":
-          current.fg3a += 1;
-          break;
-        case "ft_made":
-          current.pts += 1;
-          current.ftm += 1;
-          current.fta += 1;
-          break;
-        case "ft_miss":
-          current.fta += 1;
-          break;
-        case "reb":
-          current.reb += 1;
-          break;
-        case "ast":
-          current.ast += 1;
-          break;
-        case "stl":
-          current.stl += 1;
-          break;
-        case "blk":
-          current.blk += 1;
-          break;
-        case "tov":
-          current.tov += 1;
-          break;
-        case "pf":
-          current.pf += 1;
-          break;
-        default:
-          break;
-      }
+      applyEventToStat(map[event.game_id], event.event_type);
     }
 
     return map;
@@ -575,22 +659,33 @@ export default function BoxDashboardPage() {
   const playerGameCountMap = useMemo(() => {
     const map: Record<string, Set<string>> = {};
 
+    for (const player of players) {
+      map[player.id] = new Set<string>();
+    }
+
+    // 來源1：game_players
     for (const row of gamePlayers) {
       if (row.team_side !== "A") continue;
       if (!activePlayerIdSet.has(row.player_id)) continue;
 
-      if (!map[row.player_id]) {
-        map[row.player_id] = new Set<string>();
-      }
+      if (!map[row.player_id]) map[row.player_id] = new Set<string>();
       map[row.player_id].add(row.game_id);
+    }
+
+    // 來源2：events（補舊資料）
+    for (const event of teamPlayerEvents) {
+      if (!event.player_id) continue;
+      if (!map[event.player_id]) map[event.player_id] = new Set<string>();
+      map[event.player_id].add(event.game_id);
     }
 
     const result: Record<string, number> = {};
     for (const playerId of Object.keys(map)) {
       result[playerId] = map[playerId].size;
     }
+
     return result;
-  }, [gamePlayers, activePlayerIdSet]);
+  }, [players, gamePlayers, activePlayerIdSet, teamPlayerEvents]);
 
   const playerTotalSecondsMap = useMemo(() => {
     const secondsMap: Record<string, number> = {};
@@ -601,28 +696,47 @@ export default function BoxDashboardPage() {
 
     for (const gameId of relevantGameIds) {
       const game = gamesById[gameId] ?? null;
-      const gameEvents = (eventsByGame[gameId] || []).filter((e) => e.team_side === "A");
+      const allGameEvents = eventsByGame[gameId] || [];
+      const gameEvents = allGameEvents.filter(isTeamAEvent);
       const rows = gamePlayersByGame[gameId] || [];
       const gameClockRows = clocksByGame[gameId] || [];
 
-      const teamAIds = rows
-        .filter((gp) => gp.team_side === "A")
+      const teamAIdsFromGamePlayers = rows
+        .filter((gp) => gp.team_side === "A" && activePlayerIdSet.has(gp.player_id))
         .map((gp) => gp.player_id);
 
-      const teamAPlayers = sortPlayers(
-        players.filter((p) =>
-          teamAIds.length > 0 ? teamAIds.includes(p.id) : activePlayerIdSet.has(p.id)
+      const teamAIdsFromEvents = Array.from(
+        new Set(
+          gameEvents
+            .filter((e) => !!e.player_id)
+            .map((e) => e.player_id!)
+            .filter((id) => activePlayerIdSet.has(id))
         )
+      );
+
+      const mergedTeamAIds = Array.from(
+        new Set([...teamAIdsFromGamePlayers, ...teamAIdsFromEvents])
+      );
+
+      const teamAPlayers = sortPlayers(
+        players.filter((p) => mergedTeamAIds.includes(p.id))
       );
 
       if (teamAPlayers.length === 0) continue;
 
       const starterIds = rows
-        .filter((gp) => gp.team_side === "A" && gp.is_starter)
+        .filter(
+          (gp) =>
+            gp.team_side === "A" &&
+            gp.is_starter &&
+            activePlayerIdSet.has(gp.player_id)
+        )
         .map((gp) => gp.player_id);
 
       const fallbackStarterIds =
-        starterIds.length > 0 ? starterIds : teamAPlayers.slice(0, 5).map((p) => p.id);
+        starterIds.length > 0
+          ? starterIds
+          : teamAPlayers.slice(0, 5).map((p) => p.id);
 
       const currentClock =
         gameClockRows.length > 0 ? gameClockRows[gameClockRows.length - 1] : null;
@@ -634,8 +748,7 @@ export default function BoxDashboardPage() {
               ...gameEvents.map((e) => e.quarter),
               1
             )
-          : currentClock?.quarter ??
-            Math.max(...gameEvents.map((e) => e.quarter), 1);
+          : currentClock?.quarter ?? Math.max(...gameEvents.map((e) => e.quarter), 1);
 
       const currentDisplaySeconds =
         game?.status === "finished" ? 0 : computeDisplaySeconds(currentClock);
@@ -667,7 +780,8 @@ export default function BoxDashboardPage() {
             (e) =>
               e.quarter === q &&
               !!e.player_id &&
-              (e.event_type === "sub_in" || e.event_type === "sub_out")
+              (normalizeEventType(e.event_type) === "sub_in" ||
+                normalizeEventType(e.event_type) === "sub_out")
           )
           .sort((a, b) => {
             const diff =
@@ -678,6 +792,7 @@ export default function BoxDashboardPage() {
 
         for (const event of quarterSubEvents) {
           const playerId = event.player_id!;
+          const normalized = normalizeEventType(event.event_type);
           const eventElapsed = getPreciseEventElapsedSeconds(
             event,
             quarterSubEvents,
@@ -688,14 +803,14 @@ export default function BoxDashboardPage() {
             currentClock
           );
 
-          if (event.event_type === "sub_in") {
+          if (normalized === "sub_in") {
             if (activeStartMap[playerId] == null) {
               activeStartMap[playerId] = eventElapsed;
               lineup.add(playerId);
             }
           }
 
-          if (event.event_type === "sub_out") {
+          if (normalized === "sub_out") {
             const startedAt = activeStartMap[playerId];
 
             if (startedAt != null) {
@@ -728,6 +843,7 @@ export default function BoxDashboardPage() {
     gamePlayersByGame,
     clocksByGame,
     activePlayerIdSet,
+    isTeamAEvent,
   ]);
 
   const playerAvgMinutesMap = useMemo(() => {
