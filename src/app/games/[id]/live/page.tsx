@@ -862,7 +862,7 @@ export default function LiveGamePage() {
         player_id: playerId,
         quarter: clock.quarter,
         event_type: "sub_in",
-        team_side: "temaA" as const,
+        team_side: "teamA" as const,
       })),
     ];
 
