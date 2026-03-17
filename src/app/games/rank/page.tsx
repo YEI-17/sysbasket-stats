@@ -1,10 +1,33 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { supabase } from "@/lib/supabaseClient";
 
 type RankCategory = "pts" | "reb" | "ast" | "stl" | "blk";
 type RankMode = "avg" | "total";
+
+type PlayerRow = {
+  id: string;
+  name: string;
+  number: number | null;
+  position?: string | null;
+  active?: boolean | null;
+};
+
+type GameRow = {
+  id: string;
+  status?: string | null;
+};
+
+type EventRow = {
+  id: string;
+  game_id: string;
+  player_id: string | null;
+  event_type: string;
+  is_undone?: boolean | null;
+  team_side?: "A" | "B" | "teamA" | "teamB" | null;
+};
 
 type PlayerRank = {
   id: string;
@@ -13,7 +36,14 @@ type PlayerRank = {
   position: string;
   value: number;
   games: number;
-  minutes: string;
+};
+
+type PlayerStat = {
+  pts: number;
+  reb: number;
+  ast: number;
+  stl: number;
+  blk: number;
 };
 
 type CategoryConfig = {
@@ -74,62 +104,55 @@ const categoryList: CategoryConfig[] = [
   },
 ];
 
-const mockData: Record<RankMode, Record<RankCategory, PlayerRank[]>> = {
-  avg: {
-    pts: [
-      { id: "1", name: "陳冠宇", number: 7, position: "PG", value: 18.5, games: 6, minutes: "28:40" },
-      { id: "2", name: "林子豪", number: 11, position: "SG", value: 16.2, games: 6, minutes: "26:10" },
-      { id: "3", name: "王柏翔", number: 23, position: "SF", value: 14.8, games: 6, minutes: "24:55" },
-    ],
-    reb: [
-      { id: "4", name: "黃奕翔", number: 34, position: "C", value: 11.4, games: 6, minutes: "29:02" },
-      { id: "5", name: "吳承翰", number: 15, position: "PF", value: 9.1, games: 6, minutes: "25:14" },
-      { id: "6", name: "張育誠", number: 23, position: "SF", value: 7.6, games: 6, minutes: "23:47" },
-    ],
-    ast: [
-      { id: "7", name: "李承恩", number: 3, position: "PG", value: 7.8, games: 6, minutes: "30:10" },
-      { id: "8", name: "陳冠宇", number: 7, position: "PG", value: 5.9, games: 6, minutes: "28:40" },
-      { id: "9", name: "林子豪", number: 11, position: "SG", value: 4.3, games: 6, minutes: "26:10" },
-    ],
-    stl: [
-      { id: "10", name: "周宇辰", number: 9, position: "SG", value: 2.8, games: 6, minutes: "22:31" },
-      { id: "11", name: "李承恩", number: 3, position: "PG", value: 2.1, games: 6, minutes: "30:10" },
-      { id: "12", name: "張育誠", number: 23, position: "SF", value: 1.9, games: 6, minutes: "23:47" },
-    ],
-    blk: [
-      { id: "13", name: "黃奕翔", number: 34, position: "C", value: 2.4, games: 6, minutes: "29:02" },
-      { id: "14", name: "吳承翰", number: 15, position: "PF", value: 1.8, games: 6, minutes: "25:14" },
-      { id: "15", name: "許哲維", number: 21, position: "C", value: 1.2, games: 5, minutes: "19:38" },
-    ],
-  },
-  total: {
-    pts: [
-      { id: "1", name: "陳冠宇", number: 7, position: "PG", value: 111, games: 6, minutes: "28:40" },
-      { id: "2", name: "林子豪", number: 11, position: "SG", value: 97, games: 6, minutes: "26:10" },
-      { id: "3", name: "王柏翔", number: 23, position: "SF", value: 89, games: 6, minutes: "24:55" },
-    ],
-    reb: [
-      { id: "4", name: "黃奕翔", number: 34, position: "C", value: 68, games: 6, minutes: "29:02" },
-      { id: "5", name: "吳承翰", number: 15, position: "PF", value: 55, games: 6, minutes: "25:14" },
-      { id: "6", name: "張育誠", number: 23, position: "SF", value: 46, games: 6, minutes: "23:47" },
-    ],
-    ast: [
-      { id: "7", name: "李承恩", number: 3, position: "PG", value: 47, games: 6, minutes: "30:10" },
-      { id: "8", name: "陳冠宇", number: 7, position: "PG", value: 35, games: 6, minutes: "28:40" },
-      { id: "9", name: "林子豪", number: 11, position: "SG", value: 26, games: 6, minutes: "26:10" },
-    ],
-    stl: [
-      { id: "10", name: "周宇辰", number: 9, position: "SG", value: 17, games: 6, minutes: "22:31" },
-      { id: "11", name: "李承恩", number: 3, position: "PG", value: 13, games: 6, minutes: "30:10" },
-      { id: "12", name: "張育誠", number: 23, position: "SF", value: 11, games: 6, minutes: "23:47" },
-    ],
-    blk: [
-      { id: "13", name: "黃奕翔", number: 34, position: "C", value: 14, games: 6, minutes: "29:02" },
-      { id: "14", name: "吳承翰", number: 15, position: "PF", value: 11, games: 6, minutes: "25:14" },
-      { id: "15", name: "許哲維", number: 21, position: "C", value: 6, games: 5, minutes: "19:38" },
-    ],
-  },
-};
+function emptyStat(): PlayerStat {
+  return {
+    pts: 0,
+    reb: 0,
+    ast: 0,
+    stl: 0,
+    blk: 0,
+  };
+}
+
+function normalizeStatus(status?: string | null) {
+  const s = (status ?? "").trim().toLowerCase();
+  if (!s) return "unknown";
+  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
+    return "finished";
+  }
+  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
+    return "live";
+  }
+  return s;
+}
+
+function applyEventToStat(stat: PlayerStat, eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    default:
+      break;
+  }
+}
 
 function medalLabel(index: number) {
   if (index === 0) return "TOP 1";
@@ -148,14 +171,193 @@ function diffFromFirst(first: number, current: number, mode: RankMode) {
 }
 
 function rankGlow(index: number) {
-  if (index === 0) return "0 0 0 1px rgba(255,215,0,0.35), 0 18px 45px rgba(255,215,0,0.18)";
-  if (index === 1) return "0 0 0 1px rgba(255,255,255,0.18), 0 16px 38px rgba(255,255,255,0.08)";
+  if (index === 0) {
+    return "0 0 0 1px rgba(255,215,0,0.35), 0 18px 45px rgba(255,215,0,0.18)";
+  }
+  if (index === 1) {
+    return "0 0 0 1px rgba(255,255,255,0.18), 0 16px 38px rgba(255,255,255,0.08)";
+  }
   return "0 0 0 1px rgba(255,140,90,0.22), 0 16px 38px rgba(255,140,90,0.10)";
 }
 
 export default function RankingsPage() {
   const [mode, setMode] = useState<RankMode>("avg");
   const [activeCategory, setActiveCategory] = useState<RankCategory>("pts");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const [rankData, setRankData] = useState<Record<RankMode, Record<RankCategory, PlayerRank[]>>>({
+    avg: {
+      pts: [],
+      reb: [],
+      ast: [],
+      stl: [],
+      blk: [],
+    },
+    total: {
+      pts: [],
+      reb: [],
+      ast: [],
+      stl: [],
+      blk: [],
+    },
+  });
+
+  const [gameCount, setGameCount] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadRankings() {
+      setLoading(true);
+      setError("");
+
+      try {
+        const { data: gamesData, error: gamesError } = await supabase
+          .from("games")
+          .select("id, status")
+          .order("created_at", { ascending: true });
+
+        if (gamesError) throw gamesError;
+
+        const finishedGames = (gamesData ?? []).filter(
+          (g) => normalizeStatus(g.status) === "finished"
+        );
+
+        const gameIds = finishedGames.map((g) => g.id);
+
+        if (gameIds.length === 0) {
+          if (!alive) return;
+          setGameCount(0);
+          setRankData({
+            avg: { pts: [], reb: [], ast: [], stl: [], blk: [] },
+            total: { pts: [], reb: [], ast: [], stl: [], blk: [] },
+          });
+          setLoading(false);
+          return;
+        }
+
+        const [{ data: playersData, error: playersError }, { data: eventsData, error: eventsError }] =
+          await Promise.all([
+            supabase
+              .from("players")
+              .select("id, name, number, position, active")
+              .order("number", { ascending: true }),
+            supabase
+              .from("events")
+              .select("id, game_id, player_id, event_type, is_undone, team_side")
+              .in("game_id", gameIds)
+              .order("created_at", { ascending: true }),
+          ]);
+
+        if (playersError) throw playersError;
+        if (eventsError) throw eventsError;
+
+        const players = (playersData ?? []) as PlayerRow[];
+        const events = (eventsData ?? []) as EventRow[];
+
+        const playerMap = new Map<string, PlayerRow>();
+        for (const p of players) {
+          playerMap.set(p.id, p);
+        }
+
+        const totals = new Map<string, PlayerStat>();
+        const gamesPlayedByPlayer = new Map<string, Set<string>>();
+
+        for (const ev of events) {
+          if (ev.is_undone) continue;
+          if (!ev.player_id) continue;
+
+          const playerId = ev.player_id;
+
+          if (!totals.has(playerId)) {
+            totals.set(playerId, emptyStat());
+          }
+          if (!gamesPlayedByPlayer.has(playerId)) {
+            gamesPlayedByPlayer.set(playerId, new Set<string>());
+          }
+
+          gamesPlayedByPlayer.get(playerId)!.add(ev.game_id);
+
+          const stat = totals.get(playerId)!;
+          applyEventToStat(stat, ev.event_type);
+        }
+
+        const totalRanks: Record<RankCategory, PlayerRank[]> = {
+          pts: [],
+          reb: [],
+          ast: [],
+          stl: [],
+          blk: [],
+        };
+
+        const avgRanks: Record<RankCategory, PlayerRank[]> = {
+          pts: [],
+          reb: [],
+          ast: [],
+          stl: [],
+          blk: [],
+        };
+
+        for (const [playerId, stat] of totals.entries()) {
+          const player = playerMap.get(playerId);
+          if (!player) continue;
+
+          const gp = gamesPlayedByPlayer.get(playerId)?.size ?? 0;
+          if (gp <= 0) continue;
+
+          const baseInfo = {
+            id: player.id,
+            name: player.name ?? "未命名球員",
+            number: player.number ?? 0,
+            position: player.position ?? "-",
+            games: gp,
+          };
+
+          totalRanks.pts.push({ ...baseInfo, value: stat.pts });
+          totalRanks.reb.push({ ...baseInfo, value: stat.reb });
+          totalRanks.ast.push({ ...baseInfo, value: stat.ast });
+          totalRanks.stl.push({ ...baseInfo, value: stat.stl });
+          totalRanks.blk.push({ ...baseInfo, value: stat.blk });
+
+          avgRanks.pts.push({ ...baseInfo, value: stat.pts / gp });
+          avgRanks.reb.push({ ...baseInfo, value: stat.reb / gp });
+          avgRanks.ast.push({ ...baseInfo, value: stat.ast / gp });
+          avgRanks.stl.push({ ...baseInfo, value: stat.stl / gp });
+          avgRanks.blk.push({ ...baseInfo, value: stat.blk / gp });
+        }
+
+        const sortDesc = (a: PlayerRank, b: PlayerRank) => {
+          if (b.value !== a.value) return b.value - a.value;
+          if (b.games !== a.games) return b.games - a.games;
+          return a.number - b.number;
+        };
+
+        for (const key of ["pts", "reb", "ast", "stl", "blk"] as RankCategory[]) {
+          totalRanks[key].sort(sortDesc);
+          avgRanks[key].sort(sortDesc);
+        }
+
+        if (!alive) return;
+
+        setGameCount(gameIds.length);
+        setRankData({
+          avg: avgRanks,
+          total: totalRanks,
+        });
+      } catch (err: any) {
+        setError(err?.message || "載入排行榜失敗");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    loadRankings();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const activeConfig = useMemo(
     () => categoryList.find((c) => c.key === activeCategory)!,
@@ -163,8 +365,8 @@ export default function RankingsPage() {
   );
 
   const currentTop3 = useMemo(() => {
-    return mockData[mode][activeCategory];
-  }, [mode, activeCategory]);
+    return rankData[mode][activeCategory].slice(0, 3);
+  }, [rankData, mode, activeCategory]);
 
   return (
     <main
@@ -185,7 +387,6 @@ export default function RankingsPage() {
           gap: 20,
         }}
       >
-        {/* Header */}
         <section
           style={{
             borderRadius: 28,
@@ -247,7 +448,7 @@ export default function RankingsPage() {
                   maxWidth: 700,
                 }}
               >
-                聚焦全隊五大數據前三名，快速查看目前最具影響力的球員表現。
+                目前使用資料庫中已完成的 {gameCount} 場比賽數據，自動統計全隊五大數據前三名。
               </p>
             </div>
 
@@ -273,26 +474,9 @@ export default function RankingsPage() {
               >
                 回首頁
               </Link>
-
-              <button
-                type="button"
-                style={{
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  background: "rgba(255,255,255,0.08)",
-                  color: "#fff",
-                  padding: "10px 14px",
-                  borderRadius: 14,
-                  fontSize: 14,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                匯出圖片
-              </button>
             </div>
           </div>
 
-          {/* Mode Switch */}
           <div
             style={{
               display: "inline-flex",
@@ -334,7 +518,6 @@ export default function RankingsPage() {
           </div>
         </section>
 
-        {/* Category Tabs */}
         <section
           style={{
             borderRadius: 24,
@@ -385,7 +568,6 @@ export default function RankingsPage() {
           </div>
         </section>
 
-        {/* Current Category Summary */}
         <section
           style={{
             display: "grid",
@@ -441,216 +623,238 @@ export default function RankingsPage() {
             </div>
           </div>
 
-          {/* Top 3 Cards */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-              gap: 16,
-            }}
-          >
-            {currentTop3.map((player, index) => {
-              const firstValue = currentTop3[0]?.value ?? 0;
-              const isFirst = index === 0;
+          {loading ? (
+            <div
+              style={{
+                borderRadius: 24,
+                padding: 28,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                color: "rgba(255,255,255,0.72)",
+                fontWeight: 700,
+              }}
+            >
+              載入排行榜中...
+            </div>
+          ) : error ? (
+            <div
+              style={{
+                borderRadius: 24,
+                padding: 28,
+                background: "rgba(255,80,80,0.08)",
+                border: "1px solid rgba(255,80,80,0.25)",
+                color: "#ffd7d7",
+                fontWeight: 700,
+              }}
+            >
+              {error}
+            </div>
+          ) : currentTop3.length === 0 ? (
+            <div
+              style={{
+                borderRadius: 24,
+                padding: 28,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                color: "rgba(255,255,255,0.72)",
+                fontWeight: 700,
+              }}
+            >
+              目前沒有可顯示的排行榜資料。
+            </div>
+          ) : (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 16,
+              }}
+            >
+              {currentTop3.map((player, index) => {
+                const firstValue = currentTop3[0]?.value ?? 0;
+                const isFirst = index === 0;
 
-              return (
-                <div
-                  key={player.id}
-                  style={{
-                    position: "relative",
-                    overflow: "hidden",
-                    borderRadius: 28,
-                    padding: isFirst ? "24px 22px" : "20px 18px",
-                    background: isFirst
-                      ? `linear-gradient(145deg, ${activeConfig.accent}33, rgba(255,255,255,0.06))`
-                      : "linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
-                    border: isFirst
-                      ? `1px solid ${activeConfig.accent}`
-                      : "1px solid rgba(255,255,255,0.08)",
-                    boxShadow: rankGlow(index),
-                    minHeight: isFirst ? 260 : 230,
-                    display: "grid",
-                    gap: 14,
-                  }}
-                >
+                return (
                   <div
+                    key={player.id}
                     style={{
-                      position: "absolute",
-                      top: -28,
-                      right: -20,
-                      width: 120,
-                      height: 120,
-                      borderRadius: "50%",
-                      background: `${activeConfig.accent}22`,
-                      filter: "blur(8px)",
-                    }}
-                  />
-
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "flex-start",
-                      gap: 12,
                       position: "relative",
-                      zIndex: 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "7px 12px",
-                        borderRadius: 999,
-                        background: "rgba(0,0,0,0.28)",
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        fontSize: 12,
-                        fontWeight: 900,
-                        letterSpacing: 0.6,
-                      }}
-                    >
-                      {index === 0 ? "👑" : index === 1 ? "🥈" : "🥉"} {medalLabel(index)}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 48,
-                        fontWeight: 900,
-                        lineHeight: 1,
-                        opacity: 0.14,
-                      }}
-                    >
-                      #{index + 1}
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
+                      overflow: "hidden",
+                      borderRadius: 28,
+                      padding: isFirst ? "24px 22px" : "20px 18px",
+                      background: isFirst
+                        ? `linear-gradient(145deg, ${activeConfig.accent}33, rgba(255,255,255,0.06))`
+                        : "linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
+                      border: isFirst
+                        ? `1px solid ${activeConfig.accent}`
+                        : "1px solid rgba(255,255,255,0.08)",
+                      boxShadow: rankGlow(index),
+                      minHeight: isFirst ? 260 : 230,
                       display: "grid",
-                      gridTemplateColumns: "72px 1fr",
                       gap: 14,
-                      alignItems: "center",
-                      position: "relative",
-                      zIndex: 1,
                     }}
                   >
                     <div
                       style={{
-                        width: 72,
-                        height: 72,
-                        borderRadius: 22,
-                        background: "rgba(255,255,255,0.12)",
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        display: "grid",
-                        placeItems: "center",
-                        fontSize: 24,
-                        fontWeight: 900,
+                        position: "absolute",
+                        top: -28,
+                        right: -20,
+                        width: 120,
+                        height: 120,
+                        borderRadius: "50%",
+                        background: `${activeConfig.accent}22`,
+                        filter: "blur(8px)",
+                      }}
+                    />
+
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: 12,
+                        position: "relative",
+                        zIndex: 1,
                       }}
                     >
-                      {player.number}
-                    </div>
-
-                    <div style={{ display: "grid", gap: 4 }}>
-                      <div style={{ fontSize: 22, fontWeight: 900 }}>
-                        {player.name}
-                      </div>
                       <div
                         style={{
-                          fontSize: 13,
-                          color: "rgba(255,255,255,0.72)",
-                          display: "flex",
+                          display: "inline-flex",
+                          alignItems: "center",
                           gap: 8,
-                          flexWrap: "wrap",
+                          padding: "7px 12px",
+                          borderRadius: 999,
+                          background: "rgba(0,0,0,0.28)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          fontSize: 12,
+                          fontWeight: 900,
+                          letterSpacing: 0.6,
                         }}
                       >
-                        <span>#{player.number}</span>
-                        <span>{player.position}</span>
-                        <span>GP {player.games}</span>
-                        <span>MIN {player.minutes}</span>
+                        {index === 0 ? "👑" : index === 1 ? "🥈" : "🥉"} {medalLabel(index)}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: 48,
+                          fontWeight: 900,
+                          lineHeight: 1,
+                          opacity: 0.14,
+                        }}
+                      >
+                        #{index + 1}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "72px 1fr",
+                        gap: 14,
+                        alignItems: "center",
+                        position: "relative",
+                        zIndex: 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 72,
+                          height: 72,
+                          borderRadius: 22,
+                          background: "rgba(255,255,255,0.12)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          display: "grid",
+                          placeItems: "center",
+                          fontSize: 24,
+                          fontWeight: 900,
+                        }}
+                      >
+                        {player.number}
+                      </div>
+
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <div style={{ fontSize: 22, fontWeight: 900 }}>{player.name}</div>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            color: "rgba(255,255,255,0.72)",
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span>#{player.number}</span>
+                          <span>{player.position}</span>
+                          <span>GP {player.games}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 8,
+                        position: "relative",
+                        zIndex: 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: isFirst ? 44 : 36,
+                          fontWeight: 900,
+                          lineHeight: 1,
+                          letterSpacing: -1,
+                        }}
+                      >
+                        {formatValue(player.value, mode)}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: "rgba(255,255,255,0.72)",
+                          letterSpacing: 0.7,
+                        }}
+                      >
+                        {mode === "avg" ? activeConfig.unitAvg : activeConfig.unitTotal}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: "auto",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 10,
+                        flexWrap: "wrap",
+                        position: "relative",
+                        zIndex: 1,
+                      }}
+                    >
+                      <div
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 999,
+                          background: "rgba(255,255,255,0.08)",
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          fontSize: 12,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {index === 0
+                          ? "目前榜首"
+                          : `與第1差距 ${diffFromFirst(firstValue, player.value, mode)}`}
                       </div>
                     </div>
                   </div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gap: 8,
-                      position: "relative",
-                      zIndex: 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: isFirst ? 44 : 36,
-                        fontWeight: 900,
-                        lineHeight: 1,
-                        letterSpacing: -1,
-                      }}
-                    >
-                      {formatValue(player.value, mode)}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 800,
-                        color: "rgba(255,255,255,0.72)",
-                        letterSpacing: 0.7,
-                      }}
-                    >
-                      {mode === "avg" ? activeConfig.unitAvg : activeConfig.unitTotal}
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: "auto",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 10,
-                      flexWrap: "wrap",
-                      position: "relative",
-                      zIndex: 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 999,
-                        background: "rgba(255,255,255,0.08)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        fontSize: 12,
-                        fontWeight: 800,
-                      }}
-                    >
-                      {index === 0 ? "目前榜首" : `與第1差距 ${diffFromFirst(firstValue, player.value, mode)}`}
-                    </div>
-
-                    <button
-                      type="button"
-                      style={{
-                        border: "none",
-                        cursor: "pointer",
-                        borderRadius: 12,
-                        padding: "10px 14px",
-                        background: "#fff",
-                        color: "#111",
-                        fontSize: 13,
-                        fontWeight: 900,
-                      }}
-                    >
-                      查看球員
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </section>
 
-        {/* Other Categories Preview */}
         <section
           style={{
             borderRadius: 28,
@@ -671,7 +875,13 @@ export default function RankingsPage() {
             }}
           >
             <div style={{ fontSize: 22, fontWeight: 900 }}>其他排行榜快速預覽</div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.65)", fontWeight: 700 }}>
+            <div
+              style={{
+                fontSize: 13,
+                color: "rgba(255,255,255,0.65)",
+                fontWeight: 700,
+              }}
+            >
               點上方分類可切換完整前三名卡片
             </div>
           </div>
@@ -684,7 +894,7 @@ export default function RankingsPage() {
             }}
           >
             {categoryList.map((cat) => {
-              const top = mockData[mode][cat.key][0];
+              const top = rankData[mode][cat.key][0];
               const isActive = cat.key === activeCategory;
 
               return (
@@ -730,7 +940,9 @@ export default function RankingsPage() {
                     </div>
                   </div>
 
-                  <div style={{ fontSize: 20, fontWeight: 900 }}>{top.name}</div>
+                  <div style={{ fontSize: 20, fontWeight: 900 }}>
+                    {top?.name ?? "-"}
+                  </div>
 
                   <div
                     style={{
@@ -741,7 +953,7 @@ export default function RankingsPage() {
                     }}
                   >
                     <div style={{ fontSize: 12, color: "rgba(255,255,255,0.68)" }}>
-                      #{top.number} · {top.position}
+                      {top ? `#${top.number} · ${top.position}` : "尚無資料"}
                     </div>
                     <div
                       style={{
@@ -750,7 +962,7 @@ export default function RankingsPage() {
                         lineHeight: 1,
                       }}
                     >
-                      {formatValue(top.value, mode)}
+                      {top ? formatValue(top.value, mode) : "-"}
                     </div>
                   </div>
                 </button>

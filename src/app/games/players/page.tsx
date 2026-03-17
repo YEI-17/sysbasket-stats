@@ -27,8 +27,8 @@ type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side?: "A" | "B" | "teamA" | "teamB" | null;
-  is_starter?: boolean | null;
+  team_side: "teamA" | "teamB";
+  is_starter: boolean;
 };
 
 type EventRow = {
@@ -38,7 +38,7 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  team_side?: "A" | "B" | "teamA" | "teamB" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean | null;
   undone_at?: string | null;
 };
@@ -62,8 +62,9 @@ type Stat = {
 
 type PerGameStat = {
   gameId: string;
-  gameLabel: string;
   dateLabel: string;
+  opponent: string;
+  teamSide: "teamA" | "teamB";
   isStarter: boolean;
   stat: Omit<Stat, "gp">;
 };
@@ -105,14 +106,6 @@ function emptyGameStat(): Omit<Stat, "gp"> {
   };
 }
 
-function normalizeTeamSide(side?: string | null): "A" | "B" | null {
-  if (!side) return null;
-  const s = side.toLowerCase();
-  if (s === "a" || s === "teama") return "A";
-  if (s === "b" || s === "teamb") return "B";
-  return null;
-}
-
 function pct(made: number, att: number) {
   if (!att) return "0.0";
   return ((made / att) * 100).toFixed(1);
@@ -144,12 +137,6 @@ function formatDate(dateStr?: string | null) {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(
     d.getDate()
   ).padStart(2, "0")}`;
-}
-
-function formatOpponent(game: GameRow, playerSide: "A" | "B" | null) {
-  if (playerSide === "A") return game.teamB || "對手未設定";
-  if (playerSide === "B") return game.teamA || "對手未設定";
-  return `${game.teamA || "Team A"} vs ${game.teamB || "Team B"}`;
 }
 
 function applyEventToStat(stat: Omit<Stat, "gp">, eventType: string) {
@@ -234,11 +221,11 @@ export default function PlayerProfilePage() {
   const playerId = String(params?.id || "");
 
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [player, setPlayer] = useState<PlayerRow | null>(null);
   const [games, setGames] = useState<GameRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     if (!playerId) return;
@@ -266,9 +253,9 @@ export default function PlayerProfilePage() {
       const safeGamePlayers = (gpData || []) as GamePlayerRow[];
       setGamePlayers(safeGamePlayers);
 
-      const gameIds = [...new Set(safeGamePlayers.map((r) => r.game_id))];
+      const gameIds = [...new Set(safeGamePlayers.map((row) => row.game_id))];
 
-      if (!gameIds.length) {
+      if (gameIds.length === 0) {
         setGames([]);
         setEvents([]);
         setLoading(false);
@@ -278,14 +265,15 @@ export default function PlayerProfilePage() {
       const { data: gameData, error: gameError } = await supabase
         .from("games")
         .select("id, teamA, teamB, game_date, created_at, status")
-        .in("id", gameIds)
-        .order("game_date", { ascending: false });
+        .in("id", gameIds);
 
       if (gameError) throw gameError;
 
       const { data: eventData, error: eventError } = await supabase
         .from("events")
-        .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+        .select(
+          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+        )
         .eq("player_id", playerId)
         .in("game_id", gameIds)
         .order("created_at", { ascending: true });
@@ -295,7 +283,7 @@ export default function PlayerProfilePage() {
       setGames((gameData || []) as GameRow[]);
       setEvents((eventData || []) as EventRow[]);
     } catch (err: any) {
-      setError(err?.message || "載入失敗");
+      setError(err?.message || "載入資料失敗");
     } finally {
       setLoading(false);
     }
@@ -307,27 +295,28 @@ export default function PlayerProfilePage() {
 
   const perGameStats = useMemo(() => {
     const gameMap = new Map(games.map((g) => [g.id, g]));
-    const gpMap = new Map(gamePlayers.map((gp) => [gp.game_id, gp]));
-
+    const gamePlayerMap = new Map(gamePlayers.map((gp) => [gp.game_id, gp]));
     const bucket = new Map<string, PerGameStat>();
 
     for (const gp of gamePlayers) {
       const game = gameMap.get(gp.game_id);
       if (!game) continue;
 
-      const playerSide = normalizeTeamSide(gp.team_side);
+      const opponent = gp.team_side === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
+
       bucket.set(gp.game_id, {
         gameId: gp.game_id,
-        gameLabel: formatOpponent(game, playerSide),
         dateLabel: formatDate(game.game_date || game.created_at),
+        opponent,
+        teamSide: gp.team_side,
         isStarter: !!gp.is_starter,
         stat: emptyGameStat(),
       });
     }
 
     for (const ev of events) {
-      if (ev.is_undone) continue;
       if (!ev.player_id) continue;
+      if (ev.is_undone) continue;
 
       const item = bucket.get(ev.game_id);
       if (!item) continue;
@@ -336,8 +325,8 @@ export default function PlayerProfilePage() {
     }
 
     return [...bucket.values()].sort((a, b) => {
-      const ga = games.find((g) => g.id === a.gameId);
-      const gb = games.find((g) => g.id === b.gameId);
+      const ga = gameMap.get(a.gameId);
+      const gb = gameMap.get(b.gameId);
       const ta = new Date(ga?.game_date || ga?.created_at || 0).getTime();
       const tb = new Date(gb?.game_date || gb?.created_at || 0).getTime();
       return tb - ta;
@@ -348,6 +337,8 @@ export default function PlayerProfilePage() {
 
   const summary = useMemo(() => {
     const gp = total.gp || 0;
+    const totalEff = perGameStats.reduce((sum, item) => sum + eff(item.stat), 0);
+
     return {
       gp,
       avgPts: avg(total.pts, gp),
@@ -357,10 +348,11 @@ export default function PlayerProfilePage() {
       avgBlk: avg(total.blk, gp),
       avgTov: avg(total.tov, gp),
       avgPf: avg(total.pf, gp),
-      avgEff: gp ? (perGameStats.reduce((s, x) => s + eff(x.stat), 0) / gp).toFixed(1) : "0.0",
+      avgEff: gp ? (totalEff / gp).toFixed(1) : "0.0",
       fg2Pct: pct(total.fg2m, total.fg2a),
       fg3Pct: pct(total.fg3m, total.fg3a),
       ftPct: pct(total.ftm, total.fta),
+      totalEff,
     };
   }, [perGameStats, total]);
 
@@ -370,7 +362,7 @@ export default function PlayerProfilePage() {
         style={{
           minHeight: "100vh",
           background:
-            "radial-gradient(circle at top, rgba(245,158,11,0.14) 0%, #050505 24%, #000 100%)",
+            "radial-gradient(circle at top, rgba(245,158,11,0.16) 0%, #050505 28%, #000 100%)",
           color: "#fff",
           padding: 20,
         }}
@@ -378,13 +370,13 @@ export default function PlayerProfilePage() {
         <div style={{ maxWidth: 1280, margin: "0 auto" }}>
           <div
             style={{
+              background: "rgba(12,12,12,0.96)",
               border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(255,255,255,0.04)",
               borderRadius: 24,
               padding: 24,
             }}
           >
-            載入中...
+            載入資料中...
           </div>
         </div>
       </main>
@@ -397,7 +389,7 @@ export default function PlayerProfilePage() {
         style={{
           minHeight: "100vh",
           background:
-            "radial-gradient(circle at top, rgba(245,158,11,0.14) 0%, #050505 24%, #000 100%)",
+            "radial-gradient(circle at top, rgba(245,158,11,0.16) 0%, #050505 28%, #000 100%)",
           color: "#fff",
           padding: 20,
         }}
@@ -406,17 +398,15 @@ export default function PlayerProfilePage() {
           <LogoutButton />
           <div
             style={{
+              background: "rgba(12,12,12,0.96)",
               border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(255,255,255,0.04)",
               borderRadius: 24,
               padding: 24,
             }}
           >
             找不到球員資料
           </div>
-          {error ? (
-            <div style={{ color: "#fca5a5", fontSize: 14 }}>錯誤：{error}</div>
-          ) : null}
+          {error ? <div style={{ color: "#fca5a5" }}>錯誤：{error}</div> : null}
         </div>
       </main>
     );
@@ -427,7 +417,7 @@ export default function PlayerProfilePage() {
       style={{
         minHeight: "100vh",
         background:
-          "radial-gradient(circle at top, rgba(245,158,11,0.18) 0%, rgba(120,53,15,0.16) 12%, #050505 30%, #000 100%)",
+          "radial-gradient(circle at top, rgba(245,158,11,0.18) 0%, rgba(120,53,15,0.18) 12%, #050505 30%, #000 100%)",
         color: "#fff",
         padding: 20,
       }}
@@ -449,7 +439,7 @@ export default function PlayerProfilePage() {
             flexWrap: "wrap",
           }}
         >
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Link
               href="/games/players"
               style={{
@@ -501,13 +491,7 @@ export default function PlayerProfilePage() {
           </div>
         ) : null}
 
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(320px, 420px) minmax(0, 1fr)",
-            gap: 18,
-          }}
-        >
+        <section className="topSection">
           <div
             style={{
               background: "linear-gradient(180deg, rgba(20,20,20,0.98), rgba(10,10,10,0.98))",
@@ -533,6 +517,7 @@ export default function PlayerProfilePage() {
                     "linear-gradient(135deg, rgba(245,158,11,0.95), rgba(234,88,12,0.95))",
                   color: "#111",
                   boxShadow: "0 12px 30px rgba(245,158,11,0.28)",
+                  flexShrink: 0,
                 }}
               >
                 {initials(player.name)}
@@ -554,6 +539,7 @@ export default function PlayerProfilePage() {
                 >
                   #{player.number ?? "-"} {player.name}
                 </div>
+
                 <div
                   style={{
                     marginTop: 10,
@@ -630,13 +616,7 @@ export default function PlayerProfilePage() {
             </div>
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
-              gap: 14,
-            }}
-          >
+          <div className="statCards">
             {[
               { label: "AVG PTS", value: summary.avgPts },
               { label: "AVG REB", value: summary.avgReb },
@@ -677,14 +657,7 @@ export default function PlayerProfilePage() {
           </div>
         </section>
 
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.35fr 1fr",
-            gap: 18,
-            alignItems: "start",
-          }}
-        >
+        <section className="middleSection">
           <div
             style={{
               background: "rgba(10,10,10,0.96)",
@@ -694,21 +667,10 @@ export default function PlayerProfilePage() {
               boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 10,
-                marginBottom: 16,
-                flexWrap: "wrap",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 22, fontWeight: 900 }}>詳細數據</div>
-                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                  累積數據與投籃效率總覽
-                </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 22, fontWeight: 900 }}>詳細數據</div>
+              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
+                從資料庫 events 累計而來
               </div>
             </div>
 
@@ -750,8 +712,6 @@ export default function PlayerProfilePage() {
                           color: "rgba(255,255,255,0.62)",
                           borderBottom: "1px solid rgba(255,255,255,0.08)",
                           background: "rgba(255,255,255,0.03)",
-                          position: "sticky",
-                          top: 0,
                         }}
                       >
                         {th}
@@ -777,7 +737,7 @@ export default function PlayerProfilePage() {
                       `${summary.fg3Pct}%`,
                       `${total.ftm}-${total.fta}`,
                       `${summary.ftPct}%`,
-                      perGameStats.reduce((s, x) => s + eff(x.stat), 0),
+                      summary.totalEff,
                     ].map((td, idx) => (
                       <td
                         key={idx}
@@ -833,12 +793,7 @@ export default function PlayerProfilePage() {
             </div>
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gap: 18,
-            }}
-          >
+          <div style={{ display: "grid", gap: 18 }}>
             <div
               style={{
                 background: "rgba(10,10,10,0.96)",
@@ -850,7 +805,7 @@ export default function PlayerProfilePage() {
             >
               <div style={{ fontSize: 22, fontWeight: 900 }}>投籃命中率</div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                2 分、3 分、罰球效率
+                依照資料庫命中 / 出手計算
               </div>
 
               <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
@@ -907,7 +862,7 @@ export default function PlayerProfilePage() {
                 boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
               }}
             >
-              <div style={{ fontSize: 22, fontWeight: 900 }}>其他資訊</div>
+              <div style={{ fontSize: 22, fontWeight: 900 }}>總覽</div>
 
               <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
                 {[
@@ -915,6 +870,8 @@ export default function PlayerProfilePage() {
                   { label: "總得分", value: String(total.pts) },
                   { label: "總籃板", value: String(total.reb) },
                   { label: "總助攻", value: String(total.ast) },
+                  { label: "總抄截", value: String(total.stl) },
+                  { label: "總阻攻", value: String(total.blk) },
                 ].map((item) => (
                   <div
                     key={item.label}
@@ -947,21 +904,10 @@ export default function PlayerProfilePage() {
             boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 10,
-              marginBottom: 16,
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 900 }}>比賽紀錄</div>
-              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                每場比賽的個人表現
-              </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>比賽紀錄</div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
+              每場比賽從資料庫事件自動統計
             </div>
           </div>
 
@@ -1046,7 +992,7 @@ export default function PlayerProfilePage() {
                           fontWeight: 800,
                         }}
                       >
-                        {item.gameLabel}
+                        {item.opponent}
                       </td>
 
                       <td
@@ -1135,27 +1081,40 @@ export default function PlayerProfilePage() {
       </div>
 
       <style jsx>{`
+        .topSection {
+          display: grid;
+          grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+          gap: 18px;
+        }
+
+        .statCards {
+          display: grid;
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          gap: 14px;
+        }
+
+        .middleSection {
+          display: grid;
+          grid-template-columns: 1.35fr 1fr;
+          gap: 18px;
+          align-items: start;
+        }
+
         @media (max-width: 1100px) {
-          section[style*="minmax(320px, 420px) minmax(0, 1fr)"] {
-            grid-template-columns: 1fr !important;
+          .topSection {
+            grid-template-columns: 1fr;
           }
         }
 
         @media (max-width: 980px) {
-          section[style*="1.35fr 1fr"] {
-            grid-template-columns: 1fr !important;
+          .middleSection {
+            grid-template-columns: 1fr;
           }
         }
 
         @media (max-width: 900px) {
-          div[style*="repeat(6, minmax(0, 1fr))"] {
-            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-          }
-        }
-
-        @media (max-width: 560px) {
-          div[style*="repeat(6, minmax(0, 1fr))"] {
-            grid-template-columns: 1fr 1fr !important;
+          .statCards {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
       `}</style>

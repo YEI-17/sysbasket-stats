@@ -183,7 +183,7 @@ export default function ViewerGamesPage() {
   }
 
   function handleOpenMatches() {
-    router.push("/games");
+    router.push("/games/list");
   }
 
   function handleOpenTeamStats() {

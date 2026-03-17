@@ -1,8 +1,29 @@
 "use client";
 
 import Link from "next/link";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
+
+type GameRow = {
+  id: string;
+  teamA: string | null;
+  teamB: string | null;
+  status?: string | null;
+  game_date?: string | null;
+  created_at?: string | null;
+};
+
+type EventRow = {
+  id: string;
+  game_id: string;
+  player_id: string | null;
+  quarter: number;
+  event_type: string;
+  created_at: string;
+  team_side?: "A" | "B" | "teamA" | "teamB" | null;
+  is_undone?: boolean | null;
+};
 
 type OverviewStat = {
   label: string;
@@ -17,6 +38,8 @@ type GameItem = {
   opponent: string;
   result: "W" | "L";
   score: string;
+  myScore: number;
+  oppScore: number;
 };
 
 type TrendItem = {
@@ -24,74 +47,337 @@ type TrendItem = {
   value: number;
 };
 
-type LeaderItem = {
-  title: string;
+type TeamStatRow = {
   name: string;
-  number: number;
   value: string;
 };
 
-export default function TeamStatsPage() {
-  const [selectedRange, setSelectedRange] = useState("全部比賽");
+function normalizeTeamSide(side?: string | null): "teamA" | "teamB" | null {
+  if (!side) return null;
+  const s = String(side).trim().toLowerCase();
+  if (s === "a" || s === "teama") return "teamA";
+  if (s === "b" || s === "teamb") return "teamB";
+  return null;
+}
 
-  // 之後把這裡換成資料庫計算結果
+function safeNum(n: number) {
+  return Number.isFinite(n) ? n : 0;
+}
+
+function pct(made: number, att: number) {
+  if (!att) return "0.0%";
+  return `${((made / att) * 100).toFixed(1)}%`;
+}
+
+function avg(total: number, gp: number) {
+  if (!gp) return "0.0";
+  return (total / gp).toFixed(1);
+}
+
+function formatDate(dateStr?: string | null, createdAt?: string | null) {
+  const raw = dateStr || createdAt;
+  if (!raw) return "-";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "-";
+  const mm = `${d.getMonth() + 1}`.padStart(2, "0");
+  const dd = `${d.getDate()}`.padStart(2, "0");
+  return `${mm}/${dd}`;
+}
+
+function getPointsFromEventType(eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      return 2;
+    case "fg3_made":
+      return 3;
+    case "ft_made":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function calcGameScore(events: EventRow[], side: "teamA" | "teamB") {
+  return events.reduce((sum, e) => {
+    if (normalizeTeamSide(e.team_side) !== side) return sum;
+    return sum + getPointsFromEventType(e.event_type);
+  }, 0);
+}
+
+function buildTeamSummary(games: GameRow[], events: EventRow[]) {
+  const gameIds = new Set(games.map((g) => g.id));
+  const validEvents = events.filter(
+    (e) => gameIds.has(e.game_id) && !e.is_undone
+  );
+
+  let totalPts = 0;
+  let totalReb = 0;
+  let totalAst = 0;
+  let totalTov = 0;
+
+  let totalFg2m = 0;
+  let totalFg2a = 0;
+  let totalFg3m = 0;
+  let totalFg3a = 0;
+  let totalFtm = 0;
+  let totalFta = 0;
+
+  let totalOppPts = 0;
+
+  const recentGames: GameItem[] = [];
+
+  const gamesSorted = [...games].sort((a, b) => {
+    const ta = new Date(a.game_date || a.created_at || 0).getTime();
+    const tb = new Date(b.game_date || b.created_at || 0).getTime();
+    return tb - ta;
+  });
+
+  for (const game of gamesSorted) {
+    const gameEvents = validEvents.filter((e) => e.game_id === game.id);
+
+    let gamePts = 0;
+    let gameReb = 0;
+    let gameAst = 0;
+    let gameTov = 0;
+
+    let gameFg2m = 0;
+    let gameFg2a = 0;
+    let gameFg3m = 0;
+    let gameFg3a = 0;
+    let gameFtm = 0;
+    let gameFta = 0;
+
+    for (const e of gameEvents) {
+      const side = normalizeTeamSide(e.team_side);
+
+      if (side === "teamA") {
+        switch (e.event_type) {
+          case "fg2_made":
+            gamePts += 2;
+            gameFg2m += 1;
+            gameFg2a += 1;
+            break;
+          case "fg2_miss":
+            gameFg2a += 1;
+            break;
+          case "fg3_made":
+            gamePts += 3;
+            gameFg3m += 1;
+            gameFg3a += 1;
+            break;
+          case "fg3_miss":
+            gameFg3a += 1;
+            break;
+          case "ft_made":
+            gamePts += 1;
+            gameFtm += 1;
+            gameFta += 1;
+            break;
+          case "ft_miss":
+            gameFta += 1;
+            break;
+          case "reb":
+            gameReb += 1;
+            break;
+          case "ast":
+            gameAst += 1;
+            break;
+          case "tov":
+            gameTov += 1;
+            break;
+          default:
+            break;
+        }
+      }
+    }
+
+    const myScore = calcGameScore(gameEvents, "teamA");
+    const oppScore = calcGameScore(gameEvents, "teamB");
+
+    totalPts += gamePts;
+    totalReb += gameReb;
+    totalAst += gameAst;
+    totalTov += gameTov;
+    totalFg2m += gameFg2m;
+    totalFg2a += gameFg2a;
+    totalFg3m += gameFg3m;
+    totalFg3a += gameFg3a;
+    totalFtm += gameFtm;
+    totalFta += gameFta;
+    totalOppPts += oppScore;
+
+    recentGames.push({
+      id: game.id,
+      date: formatDate(game.game_date, game.created_at),
+      opponent: game.teamB || "對手",
+      result: myScore >= oppScore ? "W" : "L",
+      score: `${myScore} - ${oppScore}`,
+      myScore,
+      oppScore,
+    });
+  }
+
+  const gp = games.length;
+
+  return {
+    gp,
+    totalPts,
+    totalReb,
+    totalAst,
+    totalTov,
+    totalFg2m,
+    totalFg2a,
+    totalFg3m,
+    totalFg3a,
+    totalFtm,
+    totalFta,
+    totalOppPts,
+    avgPts: avg(totalPts, gp),
+    avgReb: avg(totalReb, gp),
+    avgAst: avg(totalAst, gp),
+    avgTov: avg(totalTov, gp),
+    ftPct: pct(totalFtm, totalFta),
+    fg2Pct: pct(totalFg2m, totalFg2a),
+    fg3Pct: pct(totalFg3m, totalFg3a),
+    oppAvgPts: avg(totalOppPts, gp),
+    recentGames,
+  };
+}
+
+export default function TeamStatsPage() {
+  const [games, setGames] = useState<GameRow[]>([]);
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRange, setSelectedRange] = useState("全部比賽");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    loadAll();
+  }, []);
+
+  async function loadAll() {
+    setLoading(true);
+    setError("");
+
+    const { data: gamesData, error: gamesError } = await supabase
+      .from("games")
+      .select("id, teamA, teamB, status, game_date, created_at")
+      .order("game_date", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (gamesError) {
+      console.error("load games error:", gamesError);
+      setError("載入比賽資料失敗");
+      setLoading(false);
+      return;
+    }
+
+    const safeGames = (gamesData ?? []) as GameRow[];
+    const gameIds = safeGames.map((g) => g.id);
+
+    if (gameIds.length === 0) {
+      setGames([]);
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    const { data: eventsData, error: eventsError } = await supabase
+      .from("events")
+      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone")
+      .in("game_id", gameIds)
+      .order("created_at", { ascending: true });
+
+    if (eventsError) {
+      console.error("load events error:", eventsError);
+      setError("載入事件資料失敗");
+      setGames(safeGames);
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    setGames(safeGames);
+    setEvents((eventsData ?? []) as EventRow[]);
+    setLoading(false);
+  }
+
+  const filteredGames = useMemo(() => {
+    if (selectedRange === "最近5場") return games.slice(0, 5);
+    if (selectedRange === "最近10場") return games.slice(0, 10);
+    return games;
+  }, [games, selectedRange]);
+
+  const summary = useMemo(() => {
+    return buildTeamSummary(filteredGames, events);
+  }, [filteredGames, events]);
+
   const overviewStats: OverviewStat[] = useMemo(
     () => [
-      { label: "團隊場均得分", value: "72.4", sub: "PPG", highlight: true },
-      { label: "團隊場均籃板", value: "38.1", sub: "RPG" },
-      { label: "團隊場均助攻", value: "15.6", sub: "APG" },
-      { label: "團隊場均失誤", value: "12.8", sub: "TOV" },
-      { label: "罰球命中率", value: "71.9%", sub: "FT%" },
-      { label: "2分命中率", value: "48.6%", sub: "2PT%" },
-      { label: "3分命中率", value: "34.2%", sub: "3PT%" },
-      { label: "團隊場均失分", value: "67.3", sub: "Opp PPG" },
+      { label: "團隊場均得分", value: summary.avgPts, sub: "PPG", highlight: true },
+      { label: "團隊場均籃板", value: summary.avgReb, sub: "RPG" },
+      { label: "團隊場均助攻", value: summary.avgAst, sub: "APG" },
+      { label: "團隊場均失誤", value: summary.avgTov, sub: "TOV" },
+      { label: "罰球命中率", value: summary.ftPct, sub: "FT%" },
+      { label: "2分命中率", value: summary.fg2Pct, sub: "2PT%" },
+      { label: "3分命中率", value: summary.fg3Pct, sub: "3PT%" },
+      { label: "團隊場均失分", value: summary.oppAvgPts, sub: "Opp PPG" },
     ],
-    []
+    [summary]
   );
 
-  const recentGames: GameItem[] = useMemo(
+  const trendData: TrendItem[] = useMemo(() => {
+    return [...summary.recentGames]
+      .slice(0, 5)
+      .reverse()
+      .map((g, idx) => ({
+        label: `G${idx + 1}`,
+        value: g.myScore,
+      }));
+  }, [summary.recentGames]);
+
+  const statRows: TeamStatRow[] = useMemo(
     () => [
-      { id: "1", date: "03/12", opponent: "資工A", result: "W", score: "78 - 66" },
-      { id: "2", date: "03/09", opponent: "機械系", result: "L", score: "64 - 69" },
-      { id: "3", date: "03/05", opponent: "電機系", result: "W", score: "81 - 73" },
-      { id: "4", date: "02/28", opponent: "土木系", result: "W", score: "75 - 61" },
+      { name: "出賽場次", value: String(summary.gp) },
+      { name: "團隊場均得分", value: summary.avgPts },
+      { name: "團隊場均失分", value: summary.oppAvgPts },
+      { name: "團隊場均籃板", value: summary.avgReb },
+      { name: "團隊場均助攻", value: summary.avgAst },
+      { name: "團隊場均失誤", value: summary.avgTov },
+      {
+        name: "2分球",
+        value: `${summary.totalFg2m}/${summary.totalFg2a} (${summary.fg2Pct})`,
+      },
+      {
+        name: "3分球",
+        value: `${summary.totalFg3m}/${summary.totalFg3a} (${summary.fg3Pct})`,
+      },
+      {
+        name: "罰球",
+        value: `${summary.totalFtm}/${summary.totalFta} (${summary.ftPct})`,
+      },
     ],
-    []
+    [summary]
   );
 
-  const scoreTrend: TrendItem[] = useMemo(
-    () => [
-      { label: "G1", value: 78 },
-      { label: "G2", value: 64 },
-      { label: "G3", value: 81 },
-      { label: "G4", value: 75 },
-      { label: "G5", value: 72 },
-    ],
-    []
-  );
+  const maxPts = useMemo(() => {
+    if (!summary.recentGames.length) return 0;
+    return Math.max(...summary.recentGames.map((g) => g.myScore));
+  }, [summary.recentGames]);
 
-  const leaders: LeaderItem[] = useMemo(
-    () => [
-      { title: "得分最高", name: "王小明", number: 7, value: "18.4 PPG" },
-      { title: "籃板最高", name: "陳冠宇", number: 11, value: "9.2 RPG" },
-      { title: "助攻最高", name: "李承恩", number: 3, value: "5.8 APG" },
-    ],
-    []
-  );
+  const minOppPts = useMemo(() => {
+    if (!summary.recentGames.length) return 0;
+    return Math.min(...summary.recentGames.map((g) => g.oppScore));
+  }, [summary.recentGames]);
 
-  const statRows = useMemo(
-    () => [
-      { name: "團隊場均得分", value: "72.4" },
-      { name: "團隊場均失分", value: "67.3" },
-      { name: "團隊場均籃板", value: "38.1" },
-      { name: "團隊場均助攻", value: "15.6" },
-      { name: "團隊場均失誤", value: "12.8" },
-      { name: "罰球命中率", value: "71.9%" },
-      { name: "2分命中率", value: "48.6%" },
-      { name: "3分命中率", value: "34.2%" },
-    ],
-    []
-  );
+  const avgDiff = useMemo(() => {
+    if (!summary.recentGames.length) return "0.0";
+    const total = summary.recentGames.reduce(
+      (acc, g) => acc + (g.myScore - g.oppScore),
+      0
+    );
+    return (total / summary.recentGames.length).toFixed(1);
+  }, [summary.recentGames]);
 
   return (
     <main
@@ -111,7 +397,6 @@ export default function TeamStatsPage() {
           gap: 18,
         }}
       >
-        {/* Header */}
         <section
           style={{
             background: "rgba(10,14,24,0.86)",
@@ -213,7 +498,21 @@ export default function TeamStatsPage() {
           </div>
         </section>
 
-        {/* Overview Cards */}
+        {error ? (
+          <section
+            style={{
+              background: "rgba(120,20,20,0.22)",
+              border: "1px solid rgba(255,120,120,0.28)",
+              borderRadius: 20,
+              padding: 16,
+              color: "#ffd2d2",
+              fontWeight: 700,
+            }}
+          >
+            {error}
+          </section>
+        ) : null}
+
         <section
           style={{
             display: "grid",
@@ -245,7 +544,6 @@ export default function TeamStatsPage() {
                   fontSize: 13,
                   color: "rgba(255,255,255,0.66)",
                   fontWeight: 600,
-                  letterSpacing: 0.2,
                 }}
               >
                 {item.label}
@@ -259,13 +557,16 @@ export default function TeamStatsPage() {
                   lineHeight: 1,
                 }}
               >
-                {item.value}
+                {loading ? "..." : item.value}
               </div>
 
               <div
                 style={{
                   fontSize: 12,
-                  color: item.sub === "Opp PPG" ? "rgba(255,180,180,0.95)" : "rgba(255,255,255,0.48)",
+                  color:
+                    item.sub === "Opp PPG"
+                      ? "rgba(255,180,180,0.95)"
+                      : "rgba(255,255,255,0.48)",
                   fontWeight: 700,
                   letterSpacing: 1,
                 }}
@@ -276,15 +577,14 @@ export default function TeamStatsPage() {
           ))}
         </section>
 
-        {/* Middle Grid */}
         <section
+          className="team-mid-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1.05fr 0.95fr",
             gap: 18,
           }}
         >
-          {/* Recent Games */}
           <div
             style={{
               background: "rgba(10,14,24,0.88)",
@@ -296,39 +596,30 @@ export default function TeamStatsPage() {
           >
             <div
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
+                fontSize: 12,
+                color: "rgba(255,255,255,0.48)",
+                letterSpacing: 1,
+                marginBottom: 4,
+              }}
+            >
+              RECENT GAMES
+            </div>
+            <div
+              style={{
+                fontSize: 22,
+                fontWeight: 800,
+                letterSpacing: -0.4,
                 marginBottom: 16,
               }}
             >
-              <div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "rgba(255,255,255,0.48)",
-                    letterSpacing: 1,
-                    marginBottom: 4,
-                  }}
-                >
-                  RECENT GAMES
-                </div>
-                <div
-                  style={{
-                    fontSize: 22,
-                    fontWeight: 800,
-                    letterSpacing: -0.4,
-                  }}
-                >
-                  最近比賽
-                </div>
-              </div>
+              最近比賽
             </div>
 
             <div style={{ display: "grid", gap: 10 }}>
-              {recentGames.map((game) => (
+              {summary.recentGames.slice(0, 5).map((game) => (
                 <div
                   key={game.id}
+                  className="recent-row"
                   style={{
                     borderRadius: 18,
                     padding: 14,
@@ -363,7 +654,6 @@ export default function TeamStatsPage() {
                     style={{
                       textAlign: "center",
                       fontWeight: 800,
-                      letterSpacing: 0.2,
                     }}
                   >
                     {game.score}
@@ -401,7 +691,6 @@ export default function TeamStatsPage() {
             </div>
           </div>
 
-          {/* Trend / Visual Block */}
           <div
             style={{
               background: "rgba(10,14,24,0.88)",
@@ -448,8 +737,8 @@ export default function TeamStatsPage() {
                 gap: 14,
               }}
             >
-              {scoreTrend.map((item) => {
-                const height = Math.max(26, item.value * 2);
+              {trendData.map((item) => {
+                const height = maxPts ? Math.max(26, (item.value / maxPts) * 150) : 26;
                 return (
                   <div
                     key={item.label}
@@ -507,18 +796,18 @@ export default function TeamStatsPage() {
                 gap: 10,
               }}
             >
-              <MiniInfoCard title="最高得分" value="81" sub="MAX PTS" />
-              <MiniInfoCard title="最低失分" value="61" sub="BEST DEF" />
-              <MiniInfoCard title="平均分差" value="+5.1" sub="AVG DIFF" />
+              <MiniInfoCard title="最高得分" value={String(maxPts)} sub="MAX PTS" />
+              <MiniInfoCard title="最低失分" value={String(minOppPts)} sub="BEST DEF" />
+              <MiniInfoCard title="平均分差" value={avgDiff} sub="AVG DIFF" />
             </div>
           </div>
         </section>
 
-        {/* Stats Table + Leaders */}
         <section
+          className="team-bottom-grid"
           style={{
             display: "grid",
-            gridTemplateColumns: "1.1fr 0.9fr",
+            gridTemplateColumns: "1fr",
             gap: 18,
           }}
         >
@@ -604,7 +893,6 @@ export default function TeamStatsPage() {
                       textAlign: "right",
                       fontSize: 16,
                       fontWeight: 800,
-                      letterSpacing: -0.2,
                     }}
                   >
                     {row.value}
@@ -613,200 +901,12 @@ export default function TeamStatsPage() {
               ))}
             </div>
           </div>
-
-          <div
-            style={{
-              display: "grid",
-              gap: 18,
-            }}
-          >
-            <div
-              style={{
-                background: "rgba(10,14,24,0.88)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 28,
-                padding: 20,
-                boxShadow: "0 18px 40px rgba(0,0,0,0.24)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,255,255,0.48)",
-                  letterSpacing: 1,
-                  marginBottom: 4,
-                }}
-              >
-                LEADERS
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 800,
-                  letterSpacing: -0.4,
-                  marginBottom: 16,
-                }}
-              >
-                團隊王者
-              </div>
-
-              <div style={{ display: "grid", gap: 12 }}>
-                {leaders.map((leader) => (
-                  <div
-                    key={leader.title}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "54px 1fr auto",
-                      gap: 12,
-                      alignItems: "center",
-                      padding: 14,
-                      borderRadius: 18,
-                      background: "rgba(255,255,255,0.035)",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 54,
-                        height: 54,
-                        borderRadius: 16,
-                        background:
-                          "linear-gradient(180deg, rgba(73,109,255,0.3) 0%, rgba(255,255,255,0.06) 100%)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: 900,
-                        fontSize: 18,
-                        border: "1px solid rgba(255,255,255,0.08)",
-                      }}
-                    >
-                      #{leader.number}
-                    </div>
-
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "rgba(255,255,255,0.5)",
-                          fontWeight: 700,
-                          marginBottom: 3,
-                        }}
-                      >
-                        {leader.title}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 16,
-                          fontWeight: 800,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {leader.name}
-                      </div>
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 800,
-                        color: "rgba(137,173,255,0.95)",
-                      }}
-                    >
-                      {leader.value}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div
-              style={{
-                background: "rgba(10,14,24,0.88)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 28,
-                padding: 20,
-                boxShadow: "0 18px 40px rgba(0,0,0,0.24)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,255,255,0.48)",
-                  letterSpacing: 1,
-                  marginBottom: 4,
-                }}
-              >
-                NOTES
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 800,
-                  letterSpacing: -0.4,
-                  marginBottom: 12,
-                }}
-              >
-                團隊概況
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gap: 10,
-                  color: "rgba(255,255,255,0.74)",
-                  fontSize: 14,
-                  lineHeight: 1.7,
-                }}
-              >
-                <div
-                  style={{
-                    padding: 12,
-                    borderRadius: 16,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
-                  }}
-                >
-                  進攻端平均得分穩定，2分命中率優於3分命中率。
-                </div>
-                <div
-                  style={{
-                    padding: 12,
-                    borderRadius: 16,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
-                  }}
-                >
-                  場均失分控制在 70 分以下，整體防守表現不錯。
-                </div>
-                <div
-                  style={{
-                    padding: 12,
-                    borderRadius: 16,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
-                  }}
-                >
-                  後續可再加入 OREB、DREB、AST/TOV 等進階團隊指標。
-                </div>
-              </div>
-            </div>
-          </div>
         </section>
       </div>
 
       <style jsx>{`
-        @media (max-width: 1080px) {
-          section[data-mid-grid],
-          section[data-bottom-grid] {
-            grid-template-columns: 1fr;
-          }
-        }
-
         @media (max-width: 980px) {
-          .team-mid-grid,
-          .team-bottom-grid {
+          .team-mid-grid {
             grid-template-columns: 1fr !important;
           }
         }
