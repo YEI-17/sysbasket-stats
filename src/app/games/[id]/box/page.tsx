@@ -1,260 +1,526 @@
 "use client";
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-  useCallback,
-} from "react";
-import { supabase } from "@/lib/supabaseClient";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { calcPlayerStats, calcTeamStats, pct, type EventRow } from "@/lib/stats";
+import { supabase } from "@/lib/supabaseClient";
+import LogoutButton from "@/components/LogoutButton";
 
-type Player = {
+type EventRow = {
   id: string;
-  name: string;
-  number: number | null;
-  active?: boolean | null;
+  game_id: string;
+  player_id: string | null;
+  quarter: number;
+  event_type: string;
+  created_at: string;
+  team_side?: "A" | "B" | null;
+  is_undone?: boolean;
+  undone_at?: string | null;
 };
 
-type EventDbRow = {
-  player_id: string | null;
-  event_type: EventRow["event_type"];
-  team_side?: "A" | "B" | null;
-  is_undone?: boolean | null;
+type ClockRow = {
+  game_id: string;
+  quarter: number;
+  seconds_left: number;
+  is_running: boolean;
+  updated_at?: string;
 };
 
 type GameRow = {
   id: string;
   teamA: string | null;
   teamB: string | null;
+  is_live?: boolean | null;
+  ended_at?: string | null;
   status?: string | null;
-  game_date?: string | null;
-  created_at?: string | null;
 };
 
-type PlayerRow = {
-  player: Player;
-  stat: ReturnType<typeof calcPlayerStats>;
-  hasPlayed: boolean;
+type Player = {
+  id: string;
+  name: string;
+  number: number | null;
+  active?: boolean;
 };
 
-function normalizeStatus(status?: string | null) {
-  const s = (status ?? "").trim().toLowerCase();
+type GamePlayerRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: "A" | "B";
+  is_starter: boolean;
+};
 
-  if (!s) return "未設定";
-  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
-    return "已結束";
-  }
-  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
-    return "進行中";
-  }
-  if (["scheduled", "upcoming", "pending"].includes(s)) {
-    return "未開始";
-  }
+type Stat = {
+  pts: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  reb: number;
+  ast: number;
+  tov: number;
+  stl: number;
+  blk: number;
+  pf: number;
+  plusMinus: number | null;
+};
 
-  return status ?? "未設定";
+const CLOCK_TABLE = "game_clock";
+const REGULAR_SECONDS = 600;
+
+const emptyStat = (): Stat => ({
+  pts: 0,
+  fg2m: 0,
+  fg2a: 0,
+  fg3m: 0,
+  fg3a: 0,
+  ftm: 0,
+  fta: 0,
+  reb: 0,
+  ast: 0,
+  tov: 0,
+  stl: 0,
+  blk: 0,
+  pf: 0,
+  plusMinus: null,
+});
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
-function getStatusStyle(status: string): CSSProperties {
-  if (status === "已結束") {
+function formatClock(secondsLeft: number) {
+  const safe = Math.max(0, Math.floor(secondsLeft || 0));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function formatMinutesFromSeconds(totalSeconds: number) {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function applyEvent(stat: Stat, eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      stat.fg2m += 1;
+      stat.fg2a += 1;
+      break;
+    case "fg2_miss":
+      stat.fg2a += 1;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      stat.fg3m += 1;
+      stat.fg3a += 1;
+      break;
+    case "fg3_miss":
+      stat.fg3a += 1;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      stat.ftm += 1;
+      stat.fta += 1;
+      break;
+    case "ft_miss":
+      stat.fta += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "tov":
+      stat.tov += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    case "pf":
+      stat.pf += 1;
+      break;
+    default:
+      break;
+  }
+}
+
+function getPoints(eventType: string) {
+  if (eventType === "fg2_made") return 2;
+  if (eventType === "fg3_made") return 3;
+  if (eventType === "ft_made") return 1;
+  return 0;
+}
+
+function computeDisplaySeconds(clock: ClockRow | null) {
+  if (!clock) return REGULAR_SECONDS;
+
+  const base = Math.max(0, clock.seconds_left ?? 0);
+
+  if (!clock.is_running) return base;
+  if (!clock.updated_at) return base;
+
+  const updatedAtMs = new Date(clock.updated_at).getTime();
+  if (Number.isNaN(updatedAtMs)) return base;
+
+  const nowMs = Date.now();
+  const elapsedSeconds = Math.floor((nowMs - updatedAtMs) / 1000);
+
+  return Math.max(0, base - elapsedSeconds);
+}
+
+function getQuarterLabel(quarter: number) {
+  if (quarter <= 4) return `Q${quarter}`;
+  return `OT${quarter - 4}`;
+}
+
+function sortPlayers(list: Player[]) {
+  return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+}
+
+function getQuarterPlayedSeconds(
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number
+) {
+  if (quarter < currentQuarter) return REGULAR_SECONDS;
+  if (quarter > currentQuarter) return 0;
+  return REGULAR_SECONDS - currentDisplaySeconds;
+}
+
+function getClockUpdatedAtMs(clockRow: ClockRow | null | undefined) {
+  if (!clockRow?.updated_at) return null;
+  const ms = new Date(clockRow.updated_at).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function getQuarterStartMsFromClock(clockRow: ClockRow | null | undefined) {
+  const updatedAtMs = getClockUpdatedAtMs(clockRow);
+  if (updatedAtMs == null) return null;
+
+  const secondsLeft = clamp(
+    clockRow?.seconds_left ?? REGULAR_SECONDS,
+    0,
+    REGULAR_SECONDS
+  );
+  const playedAtSnapshot = REGULAR_SECONDS - secondsLeft;
+
+  return updatedAtMs - playedAtSnapshot * 1000;
+}
+
+function getFallbackElapsedFromOrder(
+  eventId: string,
+  quarterEvents: EventRow[],
+  playedSecondsThisQuarter: number
+) {
+  const subEvents = quarterEvents.filter(
+    (e) => e.event_type === "sub_in" || e.event_type === "sub_out"
+  );
+
+  if (subEvents.length === 0) return playedSecondsThisQuarter;
+
+  const index = subEvents.findIndex((e) => e.id === eventId);
+  if (index === -1) return playedSecondsThisQuarter;
+
+  return Math.floor(
+    ((index + 1) / (subEvents.length + 1)) * playedSecondsThisQuarter
+  );
+}
+
+function getQuarterStartMs(
+  quarter: number,
+  currentQuarter: number,
+  clockRows: ClockRow[],
+  currentClock: ClockRow | null
+) {
+  const clockMap = new Map(clockRows.map((row) => [row.quarter, row]));
+
+  const ownClock = quarter === currentQuarter ? currentClock : clockMap.get(quarter);
+  const ownStartMs = getQuarterStartMsFromClock(ownClock);
+  if (ownStartMs != null) return ownStartMs;
+
+  const nextClock = clockMap.get(quarter + 1);
+  const nextStartMs = getQuarterStartMsFromClock(nextClock);
+  if (nextStartMs != null) {
+    return nextStartMs - REGULAR_SECONDS * 1000;
+  }
+
+  return null;
+}
+
+function getPreciseEventElapsedSeconds(
+  event: EventRow,
+  quarterEvents: EventRow[],
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number,
+  clockRows: ClockRow[],
+  currentClock: ClockRow | null
+) {
+  const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+    quarter,
+    currentQuarter,
+    currentDisplaySeconds
+  );
+
+  if (playedSecondsThisQuarter <= 0) return 0;
+
+  const quarterStartMs = getQuarterStartMs(
+    quarter,
+    currentQuarter,
+    clockRows,
+    currentClock
+  );
+
+  const eventMs = new Date(event.created_at).getTime();
+
+  if (quarterStartMs != null && !Number.isNaN(eventMs)) {
+    return clamp(
+      Math.floor((eventMs - quarterStartMs) / 1000),
+      0,
+      playedSecondsThisQuarter
+    );
+  }
+
+  return getFallbackElapsedFromOrder(
+    event.id,
+    quarterEvents,
+    playedSecondsThisQuarter
+  );
+}
+
+function getGameStatusText(game: GameRow | null, clock: ClockRow | null) {
+  if (game?.status === "finished") return "比賽已結束";
+  if (clock?.is_running) return "計時中";
+  return "暫停中";
+}
+
+function getGameStatusColors(game: GameRow | null, clock: ClockRow | null) {
+  if (game?.status === "finished") {
     return {
-      color: "#d1fae5",
-      background: "rgba(16, 185, 129, 0.14)",
-      border: "1px solid rgba(16, 185, 129, 0.28)",
+      background: "rgba(34,197,94,0.14)",
+      color: "#bbf7d0",
+      borderColor: "rgba(34,197,94,0.28)",
+      dot: "#4ade80",
     };
   }
 
-  if (status === "進行中") {
+  if (clock?.is_running) {
     return {
-      color: "#fde68a",
-      background: "rgba(245, 158, 11, 0.14)",
-      border: "1px solid rgba(245, 158, 11, 0.28)",
+      background: "rgba(239,68,68,0.14)",
+      color: "#fecaca",
+      borderColor: "rgba(239,68,68,0.30)",
+      dot: "#ef4444",
     };
   }
 
   return {
-    color: "#d4d4d8",
-    background: "rgba(161, 161, 170, 0.12)",
-    border: "1px solid rgba(161, 161, 170, 0.2)",
+    background: "rgba(245,158,11,0.14)",
+    color: "#fde68a",
+    borderColor: "rgba(245,158,11,0.28)",
+    dot: "#f59e0b",
   };
 }
 
-function formatGameDate(game: GameRow | null) {
-  if (!game) return "未提供日期";
+export default function BoardPage() {
+  const params = useParams();
+  const gameId = String(params.id);
 
-  const raw = game.game_date ?? game.created_at ?? null;
-  if (!raw) return "未提供日期";
-
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return String(raw);
-
-  return d.toLocaleString("zh-TW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: raw.includes("T") ? "2-digit" : undefined,
-    minute: raw.includes("T") ? "2-digit" : undefined,
-    hour12: false,
-  });
-}
-
-function getLeader(
-  rows: PlayerRow[],
-  key: keyof ReturnType<typeof calcPlayerStats>
-): PlayerRow | null {
-  if (rows.length === 0) return null;
-
-  const sorted = [...rows].sort((a, b) => {
-    const aValue = Number(a.stat[key] ?? 0);
-    const bValue = Number(b.stat[key] ?? 0);
-    return bValue - aValue;
-  });
-
-  const best = sorted[0];
-  return Number(best.stat[key] ?? 0) > 0 ? best : null;
-}
-
-function SummaryCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string | number;
-  sub?: string;
-}) {
-  return (
-    <div
-      style={{
-        padding: 16,
-        borderRadius: 20,
-        background: "rgba(12, 12, 12, 0.96)",
-        border: "1px solid rgba(255,255,255,0.08)",
-        boxShadow: "0 14px 30px rgba(0,0,0,0.28)",
-      }}
-    >
-      <div style={{ color: "#71717a", fontSize: 13, marginBottom: 8 }}>{label}</div>
-      <div style={{ color: "#fafafa", fontSize: 24, fontWeight: 900 }}>{value}</div>
-      {sub ? (
-        <div style={{ color: "#d4d4d8", fontSize: 13, marginTop: 8 }}>{sub}</div>
-      ) : null}
-    </div>
-  );
-}
-
-export default function BoxPage() {
-  const params = useParams<{ id: string }>();
-  const gameId = params.id;
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
 
   const [game, setGame] = useState<GameRow | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [msg, setMsg] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [clock, setClock] = useState<ClockRow | null>(null);
+  const [clockRows, setClockRows] = useState<ClockRow[]>([]);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
+  const [displaySeconds, setDisplaySeconds] = useState(REGULAR_SECONDS);
+  const [viewerCount, setViewerCount] = useState(1);
 
-  const loadData = useCallback(async () => {
+  const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
+
+  async function loadGame() {
+    const { data, error } = await supabase
+      .from("games")
+      .select("id, teamA, teamB, is_live, ended_at, status")
+      .eq("id", gameId)
+      .single();
+
+    if (error) {
+      setMsg(`讀取 games 失敗：${error.message}`);
+      return;
+    }
+
+    setGame(data as GameRow);
+  }
+
+  async function loadPlayers() {
+    const { data, error } = await supabase
+      .from("players")
+      .select("id, name, number, active")
+      .eq("active", true)
+      .order("number", { ascending: true });
+
+    if (error) {
+      setMsg(`讀取 players 失敗：${error.message}`);
+      return;
+    }
+
+    setPlayers((data as Player[]) || []);
+  }
+
+  async function loadGamePlayers() {
+    const { data, error } = await supabase
+      .from("game_players")
+      .select("id, game_id, player_id, team_side, is_starter")
+      .eq("game_id", gameId);
+
+    if (error) {
+      setMsg(`讀取 game_players 失敗：${error.message}`);
+      return;
+    }
+
+    setGamePlayers((data as GamePlayerRow[]) || []);
+  }
+
+  async function loadEvents() {
+    const { data, error } = await supabase
+      .from("events")
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+      )
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setMsg(`讀取 events 失敗：${error.message}`);
+      return;
+    }
+
+    setEvents((data as EventRow[]) || []);
+  }
+
+  async function loadClock() {
+    const { data, error } = await supabase
+      .from(CLOCK_TABLE)
+      .select("game_id, quarter, seconds_left, is_running, updated_at")
+      .eq("game_id", gameId)
+      .order("quarter", { ascending: true });
+
+    if (error) {
+      setMsg(`讀取 ${CLOCK_TABLE} 失敗：${error.message}`);
+      return;
+    }
+
+    const rows = ((data as ClockRow[] | null) ?? []).sort(
+      (a, b) => a.quarter - b.quarter
+    );
+
+    if (rows.length === 0) {
+      const { data: inserted, error: insertError } = await supabase
+        .from(CLOCK_TABLE)
+        .insert({
+          game_id: gameId,
+          quarter: 1,
+          seconds_left: REGULAR_SECONDS,
+          is_running: false,
+        })
+        .select("game_id, quarter, seconds_left, is_running, updated_at")
+        .single();
+
+      if (insertError) {
+        setMsg(`建立 ${CLOCK_TABLE} 失敗：${insertError.message}`);
+        return;
+      }
+
+      const firstRow = inserted as ClockRow;
+      setClockRows([firstRow]);
+      setClock(firstRow);
+      return;
+    }
+
+    setClockRows(rows);
+    setClock(rows[rows.length - 1] ?? null);
+  }
+
+  async function loadAll(showLoading = false) {
     if (!gameId) return;
-
+    if (showLoading) setLoading(true);
     setMsg("");
 
-    try {
-      const { data: gameData, error: gameError } = await supabase
-        .from("games")
-        .select("id, teamA, teamB, status, game_date, created_at")
-        .eq("id", gameId)
-        .maybeSingle();
+    await Promise.all([
+      loadGame(),
+      loadPlayers(),
+      loadGamePlayers(),
+      loadEvents(),
+      loadClock(),
+    ]);
 
-      if (gameError) {
-        throw new Error(`讀取比賽資料失敗：${gameError.message}`);
-      }
+    if (showLoading) setLoading(false);
+  }
 
-      setGame((gameData as GameRow | null) ?? null);
-
-      const { data: ev, error: evError } = await supabase
-        .from("events")
-        .select("player_id, event_type, team_side, is_undone")
-        .eq("game_id", gameId)
-        .order("created_at", { ascending: true });
-
-      if (evError) {
-        throw new Error(`讀取事件失敗：${evError.message}`);
-      }
-
-      const normalizedEvents: EventRow[] = ((ev ?? []) as EventDbRow[]).map((e) => ({
-        player_id: e.player_id,
-        event_type: e.event_type,
-        team_side: e.team_side ?? null,
-        is_undone: e.is_undone ?? false,
-      }));
-
-      setEvents(normalizedEvents);
-
-      // 直接抓所有啟用中的球員，確保沒出場、沒數據的人也會顯示
-      const { data: playerData, error: playerError } = await supabase
-        .from("players")
-        .select("id, name, number, active")
-        .eq("active", true)
-        .order("number", { ascending: true });
-
-      if (playerError) {
-        throw new Error(`讀取球員詳細資料失敗：${playerError.message}`);
-      }
-
-      setPlayers((playerData ?? []) as Player[]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "讀取資料失敗";
-      setMsg(message);
-      setGame(null);
-      setPlayers([]);
-      setEvents([]);
-    }
+  useEffect(() => {
+    if (!gameId) return;
+    void loadAll(true);
   }, [gameId]);
 
   useEffect(() => {
-    let mounted = true;
+    setDisplaySeconds(computeDisplaySeconds(clock));
 
-    async function init() {
-      if (!gameId) return;
-      setLoading(true);
-      await loadData();
-      if (mounted) setLoading(false);
-    }
+    const timer = setInterval(() => {
+      setDisplaySeconds(computeDisplaySeconds(clock));
+    }, 250);
 
-    init();
-
-    return () => {
-      mounted = false;
-    };
-  }, [gameId, loadData]);
+    return () => clearInterval(timer);
+  }, [clock]);
 
   useEffect(() => {
     if (!gameId) return;
 
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const presenceChannel = supabase.channel(`game-presence-${gameId}`, {
+      config: {
+        presence: { key: presenceKeyRef.current },
+      },
+    });
 
-    const scheduleReload = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => {
-        loadData();
-      }, 150);
-    };
-
-    const channel = supabase
-      .channel(`box-realtime-${gameId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "events",
-          filter: `game_id=eq.${gameId}`,
-        },
-        () => {
-          scheduleReload();
+    presenceChannel
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceChannel.presenceState();
+        const count = Object.keys(state).length;
+        setViewerCount(count || 1);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({
+            role: "viewer",
+            page: "board",
+            gameId,
+            joinedAt: new Date().toISOString(),
+          });
         }
-      )
+      });
+
+    return () => {
+      supabase.removeChannel(presenceChannel);
+    };
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    const dataChannel = supabase.channel(`game-data-${gameId}`);
+
+    dataChannel
       .on(
         "postgres_changes",
         {
@@ -263,8 +529,13 @@ export default function BoxPage() {
           table: "games",
           filter: `id=eq.${gameId}`,
         },
-        () => {
-          scheduleReload();
+        (payload) => {
+          const newRow = payload.new as GameRow | undefined;
+          if (newRow && newRow.id) {
+            setGame(newRow);
+          } else {
+            void loadGame();
+          }
         }
       )
       .on(
@@ -272,500 +543,883 @@ export default function BoxPage() {
         {
           event: "*",
           schema: "public",
-          table: "players",
+          table: "events",
+          filter: `game_id=eq.${gameId}`,
         },
-        () => {
-          scheduleReload();
+        async () => {
+          await loadEvents();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "game_players",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadGamePlayers();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: CLOCK_TABLE,
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadClock();
         }
       )
       .subscribe();
 
     return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      supabase.removeChannel(channel);
+      supabase.removeChannel(dataChannel);
     };
-  }, [gameId, loadData]);
+  }, [gameId]);
 
-  const rows = useMemo<PlayerRow[]>(() => {
-    const mapped = players.map((player) => {
-      const playerEvents = events.filter(
-        (e) => e.team_side === "A" && e.player_id === player.id
+  const validEvents = useMemo(() => {
+    return events.filter((e) => !e.is_undone);
+  }, [events]);
+
+  const teamAPlayerIds = useMemo(() => {
+    const ids = gamePlayers
+      .filter((gp) => gp.team_side === "A")
+      .map((gp) => gp.player_id);
+
+    if (ids.length > 0) return ids;
+    return players.map((p) => p.id);
+  }, [gamePlayers, players]);
+
+  const teamAPlayers = useMemo(() => {
+    return sortPlayers(players.filter((p) => teamAPlayerIds.includes(p.id)));
+  }, [players, teamAPlayerIds]);
+
+  const starterIds = useMemo(() => {
+    const ids = gamePlayers
+      .filter((gp) => gp.team_side === "A" && gp.is_starter)
+      .map((gp) => gp.player_id);
+
+    if (ids.length > 0) return ids;
+    return teamAPlayers.slice(0, 5).map((p) => p.id);
+  }, [gamePlayers, teamAPlayers]);
+
+  const currentOnCourtIds = useMemo(() => {
+    const lineup = new Set<string>(starterIds);
+
+    for (const e of validEvents) {
+      if (e.team_side !== "A") continue;
+      if (!e.player_id) continue;
+
+      if (e.event_type === "sub_in") lineup.add(e.player_id);
+      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+    }
+
+    return Array.from(lineup);
+  }, [starterIds, validEvents]);
+
+  const statsMap = useMemo(() => {
+    const map: Record<string, Stat> = {};
+
+    for (const p of teamAPlayers) {
+      map[p.id] = emptyStat();
+    }
+
+    for (const e of validEvents) {
+      if (e.team_side !== "A") continue;
+      if (!e.player_id) continue;
+      if (e.event_type === "sub_in" || e.event_type === "sub_out") continue;
+
+      if (!map[e.player_id]) {
+        map[e.player_id] = emptyStat();
+      }
+
+      applyEvent(map[e.player_id], e.event_type);
+    }
+
+    return map;
+  }, [teamAPlayers, validEvents]);
+
+  const minutesMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    const currentQuarter = clock?.quarter ?? 1;
+    const maxQuarter = Math.max(
+      currentQuarter,
+      ...validEvents.map((e) => e.quarter),
+      1
+    );
+
+    for (const p of teamAPlayers) {
+      map[p.id] = 0;
+    }
+
+    let lineup = new Set<string>(starterIds);
+
+    for (let q = 1; q <= maxQuarter; q += 1) {
+      const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+        q,
+        currentQuarter,
+        displaySeconds
       );
 
-      const stat = calcPlayerStats(playerEvents);
+      if (playedSecondsThisQuarter <= 0) continue;
 
-      const hasPlayed =
-        stat.pts > 0 ||
-        stat.fg2a > 0 ||
-        stat.fg3a > 0 ||
-        stat.fta > 0 ||
-        stat.reb > 0 ||
-        stat.ast > 0 ||
-        stat.stl > 0 ||
-        stat.blk > 0 ||
-        stat.tov > 0 ||
-        stat.pf > 0;
+      const activeStartMap: Record<string, number | null> = {};
+      for (const p of teamAPlayers) {
+        activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
+      }
 
-      return { player, stat, hasPlayed };
-    });
+      const quarterSubEvents = validEvents
+        .filter(
+          (e) =>
+            e.team_side === "A" &&
+            e.quarter === q &&
+            !!e.player_id &&
+            (e.event_type === "sub_in" || e.event_type === "sub_out")
+        )
+        .sort((a, b) => {
+          const diff =
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          if (diff !== 0) return diff;
+          return a.id.localeCompare(b.id);
+        });
 
-    return mapped.sort((a, b) => {
-      if (a.hasPlayed !== b.hasPlayed) return a.hasPlayed ? -1 : 1;
-      return (a.player.number ?? 999) - (b.player.number ?? 999);
-    });
-  }, [players, events]);
+      for (const e of quarterSubEvents) {
+        const playerId = e.player_id!;
+        const eventElapsed = getPreciseEventElapsedSeconds(
+          e,
+          quarterSubEvents,
+          q,
+          currentQuarter,
+          displaySeconds,
+          clockRows,
+          clock
+        );
 
-  const team = useMemo(() => calcTeamStats(events, "A"), [events]);
-  const opponent = useMemo(() => calcTeamStats(events, "B"), [events]);
+        if (e.event_type === "sub_in") {
+          if (activeStartMap[playerId] == null) {
+            activeStartMap[playerId] = eventElapsed;
+            lineup.add(playerId);
+          }
+        }
 
-  const scoringLeader = useMemo(() => getLeader(rows, "pts"), [rows]);
-  const reboundLeader = useMemo(() => getLeader(rows, "reb"), [rows]);
-  const assistLeader = useMemo(() => getLeader(rows, "ast"), [rows]);
+        if (e.event_type === "sub_out") {
+          const startedAt = activeStartMap[playerId];
 
-  const gameTitleA = game?.teamA?.trim() || "我方";
-  const gameTitleB = game?.teamB?.trim() || "對手";
-  const statusText = normalizeStatus(game?.status);
-  const statusStyle = getStatusStyle(statusText);
+          if (startedAt != null) {
+            map[playerId] =
+              (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
+            activeStartMap[playerId] = null;
+          }
 
-  return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background:
-          "radial-gradient(circle at top, rgba(255,255,255,0.05) 0%, #000000 24%, #000000 100%)",
-        color: "#f5f5f5",
-        padding: "24px 16px 40px",
-      }}
-    >
-      <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-        <div style={{ marginBottom: 18 }}>
-          <div style={{ color: "#71717a", fontSize: 13, marginBottom: 8 }}>
-            單場數據頁
-          </div>
-          <h1
-            style={{
-              margin: 0,
-              fontSize: 30,
-              lineHeight: 1.2,
-              color: "#ffffff",
-              fontWeight: 900,
-              letterSpacing: -0.4,
-            }}
-          >
-            Box Score
-          </h1>
-        </div>
+          lineup.delete(playerId);
+        }
+      }
 
-        <div
-          style={{
-            marginBottom: 18,
-            padding: 20,
-            borderRadius: 24,
-            background: "rgba(10, 10, 10, 0.96)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: 14,
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-              marginBottom: 18,
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  fontSize: 28,
-                  fontWeight: 900,
-                  color: "#ffffff",
-                  lineHeight: 1.3,
-                  wordBreak: "break-word",
-                }}
-              >
-                {gameTitleA}
-                <span style={{ color: "#52525b", margin: "0 8px" }}>VS</span>
-                {gameTitleB}
-              </div>
-              <div
-                style={{
-                  marginTop: 10,
-                  color: "#a1a1aa",
-                  fontSize: 14,
-                }}
-              >
-                比賽日期：{formatGameDate(game)}
-              </div>
-            </div>
+      for (const p of teamAPlayers) {
+        const startedAt = activeStartMap[p.id];
+        if (startedAt != null) {
+          map[p.id] =
+            (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
+        }
+      }
+    }
 
+    return map;
+  }, [teamAPlayers, validEvents, starterIds, clock, clockRows, displaySeconds]);
+
+  const totalScore = useMemo(() => {
+    let home = 0;
+    let away = 0;
+
+    for (const e of validEvents) {
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") home += pts;
+      if (e.team_side === "B") away += pts;
+    }
+
+    return { home, away };
+  }, [validEvents]);
+
+  const quarterScores = useMemo(() => {
+    const maxQuarter = Math.max(
+      clock?.quarter ?? 1,
+      ...validEvents.map((e) => e.quarter),
+      1
+    );
+    const byQuarter: Record<number, { home: number; away: number }> = {};
+
+    for (let q = 1; q <= maxQuarter; q += 1) {
+      byQuarter[q] = { home: 0, away: 0 };
+    }
+
+    for (const e of validEvents) {
+      if (!byQuarter[e.quarter]) {
+        byQuarter[e.quarter] = { home: 0, away: 0 };
+      }
+
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") byQuarter[e.quarter].home += pts;
+      if (e.team_side === "B") byQuarter[e.quarter].away += pts;
+    }
+
+    return byQuarter;
+  }, [validEvents, clock?.quarter]);
+
+  const onCourtPlayers = useMemo(() => {
+    return teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id));
+  }, [teamAPlayers, currentOnCourtIds]);
+
+  const benchPlayers = useMemo(() => {
+    return teamAPlayers.filter((p) => !currentOnCourtIds.includes(p.id));
+  }, [teamAPlayers, currentOnCourtIds]);
+
+  const statusColors = getGameStatusColors(game, clock);
+
+  if (loading) {
+    return (
+      <main style={pageStyle}>
+        <div style={bgGlowTopStyle} />
+        <div style={bgGlowBottomStyle} />
+        <div style={loadingCardStyle}>載入中...</div>
+      </main>
+    );
+  }
+
+  function renderPlayerRow(p: Player, isOnCourt: boolean) {
+    const s = statsMap[p.id] || emptyStat();
+    const min = formatMinutesFromSeconds(minutesMap[p.id] || 0);
+
+    return (
+      <tr
+        key={p.id}
+        style={{
+          background: isOnCourt ? "rgba(255,255,255,0.02)" : "transparent",
+        }}
+      >
+        <td style={tdNameStyle}>
+          <div style={playerCellWrapStyle}>
             <span
               style={{
-                ...statusStyle,
-                padding: "7px 12px",
-                borderRadius: 999,
-                fontSize: 13,
-                fontWeight: 800,
-                whiteSpace: "nowrap",
+                ...playerDotStyle,
+                background: isOnCourt ? "#f97316" : "#52525b",
+                boxShadow: isOnCourt ? "0 0 14px rgba(249,115,22,0.45)" : "none",
               }}
-            >
-              {statusText}
+            />
+            <span style={playerNameStyle}>
+              {p.number ? `#${p.number} ` : ""}
+              {p.name}
             </span>
           </div>
+        </td>
+        <td style={tdStyle}>{min}</td>
+        <td style={{ ...tdStyle, color: "#fdba74", fontWeight: 800 }}>
+          {s.pts}
+        </td>
+        <td style={tdStyle}>
+          {s.fg2m}/{s.fg2a}
+        </td>
+        <td style={tdStyle}>
+          {s.fg3m}/{s.fg3a}
+        </td>
+        <td style={tdStyle}>
+          {s.ftm}/{s.fta}
+        </td>
+        <td style={tdStyle}>{s.reb}</td>
+        <td style={tdStyle}>{s.ast}</td>
+        <td style={tdStyle}>{s.tov}</td>
+        <td style={tdStyle}>{s.stl}</td>
+        <td style={tdStyle}>{s.blk}</td>
+        <td style={tdStyle}>{s.pf}</td>
+        <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
+      </tr>
+    );
+  }
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr auto 1fr",
-              gap: 12,
-              alignItems: "center",
-              padding: "16px 18px",
-              borderRadius: 20,
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.06)",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ color: "#71717a", fontSize: 12, marginBottom: 6 }}>
-                我方
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 800,
-                  color: "#ffffff",
-                  wordBreak: "break-word",
-                }}
-              >
-                {gameTitleA}
-              </div>
-            </div>
+  return (
+    <main style={pageStyle}>
+      <div style={bgGlowTopStyle} />
+      <div style={bgGlowBottomStyle} />
+      <div style={bgBallStyle} />
 
-            <div
-              style={{
-                fontSize: 36,
-                fontWeight: 900,
-                color: "#ffffff",
-                letterSpacing: 1,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {team.pts} : {opponent.pts}
-            </div>
-
-            <div style={{ minWidth: 0, textAlign: "right" }}>
-              <div style={{ color: "#71717a", fontSize: 12, marginBottom: 6 }}>
-                對手
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 800,
-                  color: "#ffffff",
-                  wordBreak: "break-word",
-                }}
-              >
-                {gameTitleB}
-              </div>
+      <div style={containerStyle}>
+        <div style={topBarStyle}>
+          <div style={topLeftStyle}>
+            <div style={eyebrowStyle}>COURTSIDE LIVE BOARD</div>
+            <div style={topButtonRowStyle}>
+              <Link href={`/games/${gameId}/box`} style={linkButtonStyle}>
+                Box Score
+              </Link>
             </div>
           </div>
+          <LogoutButton />
         </div>
 
-        {loading && <div style={infoCardStyle}>讀取中...</div>}
+        <section style={scoreCardStyle}>
+          <div style={scoreGlowOverlayStyle} />
 
-        {!loading && msg && (
-          <div
-            style={{
-              borderRadius: 18,
-              padding: 18,
-              background: "rgba(127, 29, 29, 0.2)",
-              border: "1px solid rgba(248, 113, 113, 0.24)",
-              color: "#fecaca",
-            }}
-          >
-            {msg}
+          <div style={teamBigBlockStyle}>
+            <div style={teamLabelStyle}>{game?.teamA || "主場"}</div>
+            <div style={bigScoreStyle}>{totalScore.home}</div>
           </div>
-        )}
 
-        {!loading && !msg && (
-          <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: 14,
-                marginBottom: 18,
-              }}
-            >
-              <SummaryCard
-                label="得分王"
-                value={
-                  scoringLeader
-                    ? `#${scoringLeader.player.number ?? "-"} ${scoringLeader.player.name}`
-                    : "—"
-                }
-                sub={scoringLeader ? `${scoringLeader.stat.pts} 分` : "尚無資料"}
-              />
-
-              <SummaryCard
-                label="籃板王"
-                value={
-                  reboundLeader
-                    ? `#${reboundLeader.player.number ?? "-"} ${reboundLeader.player.name}`
-                    : "—"
-                }
-                sub={reboundLeader ? `${reboundLeader.stat.reb} 籃板` : "尚無資料"}
-              />
-
-              <SummaryCard
-                label="助攻王"
-                value={
-                  assistLeader
-                    ? `#${assistLeader.player.number ?? "-"} ${assistLeader.player.name}`
-                    : "—"
-                }
-                sub={assistLeader ? `${assistLeader.stat.ast} 助攻` : "尚無資料"}
-              />
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-                gap: 14,
-                marginBottom: 18,
-              }}
-            >
-              <div style={panelStyle}>
-                <div style={panelTitleStyle}>{gameTitleA} 團隊摘要</div>
-                <div style={summaryGridStyle}>
-                  <div style={miniStatStyle}><span>PTS</span><strong>{team.pts}</strong></div>
-                  <div style={miniStatStyle}><span>2FG</span><strong>{team.fg2m}/{team.fg2a}</strong></div>
-                  <div style={miniStatStyle}><span>3FG</span><strong>{team.fg3m}/{team.fg3a}</strong></div>
-                  <div style={miniStatStyle}><span>FT</span><strong>{team.ftm}/{team.fta}</strong></div>
-                  <div style={miniStatStyle}><span>2%</span><strong>{pct(team.fg2m, team.fg2a)}</strong></div>
-                  <div style={miniStatStyle}><span>3%</span><strong>{pct(team.fg3m, team.fg3a)}</strong></div>
-                  <div style={miniStatStyle}><span>FT%</span><strong>{pct(team.ftm, team.fta)}</strong></div>
-                  <div style={miniStatStyle}><span>REB</span><strong>{team.reb}</strong></div>
-                  <div style={miniStatStyle}><span>AST</span><strong>{team.ast}</strong></div>
-                  <div style={miniStatStyle}><span>STL</span><strong>{team.stl}</strong></div>
-                  <div style={miniStatStyle}><span>BLK</span><strong>{team.blk}</strong></div>
-                  <div style={miniStatStyle}><span>TOV</span><strong>{team.tov}</strong></div>
-                </div>
+          <div style={centerBlockStyle}>
+            <div style={topInfoRowStyle}>
+              <div style={quarterBadgeStyle}>
+                {getQuarterLabel(clock?.quarter ?? 1)}
               </div>
 
-              <div style={panelStyle}>
-                <div style={panelTitleStyle}>{gameTitleB} 團隊摘要</div>
-                <div style={summaryGridStyle}>
-                  <div style={miniStatStyle}><span>PTS</span><strong>{opponent.pts}</strong></div>
-                  <div style={miniStatStyle}><span>2FG</span><strong>{opponent.fg2m}/{opponent.fg2a}</strong></div>
-                  <div style={miniStatStyle}><span>3FG</span><strong>{opponent.fg3m}/{opponent.fg3a}</strong></div>
-                  <div style={miniStatStyle}><span>FT</span><strong>{opponent.ftm}/{opponent.fta}</strong></div>
-                  <div style={miniStatStyle}><span>2%</span><strong>{pct(opponent.fg2m, opponent.fg2a)}</strong></div>
-                  <div style={miniStatStyle}><span>3%</span><strong>{pct(opponent.fg3m, opponent.fg3a)}</strong></div>
-                  <div style={miniStatStyle}><span>FT%</span><strong>{pct(opponent.ftm, opponent.fta)}</strong></div>
-                  <div style={miniStatStyle}><span>REB</span><strong>{opponent.reb}</strong></div>
-                  <div style={miniStatStyle}><span>AST</span><strong>{opponent.ast}</strong></div>
-                  <div style={miniStatStyle}><span>STL</span><strong>{opponent.stl}</strong></div>
-                  <div style={miniStatStyle}><span>BLK</span><strong>{opponent.blk}</strong></div>
-                  <div style={miniStatStyle}><span>TOV</span><strong>{opponent.tov}</strong></div>
-                </div>
+              <div style={viewerPillStyle}>
+                <span style={viewerDotStyle} />
+                線上觀看 {viewerCount}
               </div>
-            </div>
 
-            {rows.length === 0 ? (
-              <div style={infoCardStyle}>目前這場比賽還沒有球員資料。</div>
-            ) : (
               <div
                 style={{
-                  overflowX: "auto",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 20,
-                  background: "rgba(10, 10, 10, 0.96)",
-                  boxShadow: "0 14px 30px rgba(0,0,0,0.28)",
+                  ...statusBadgeStyle,
+                  background: statusColors.background,
+                  color: statusColors.color,
+                  borderColor: statusColors.borderColor,
                 }}
               >
-                <table
+                <span
                   style={{
-                    borderCollapse: "collapse",
-                    width: "100%",
-                    minWidth: 980,
-                    fontSize: 14,
+                    ...statusDotStyle,
+                    background: statusColors.dot,
                   }}
-                >
-                  <thead>
-                    <tr style={{ background: "rgba(255,255,255,0.04)" }}>
-                      {[
-                        "球員",
-                        "PTS",
-                        "2FG",
-                        "3FG",
-                        "FT",
-                        "REB",
-                        "AST",
-                        "STL",
-                        "BLK",
-                        "TOV",
-                        "PF",
-                        "2%",
-                        "3%",
-                        "FT%",
-                      ].map((header) => (
-                        <th
-                          key={header}
-                          style={{
-                            borderBottom: "1px solid rgba(255,255,255,0.08)",
-                            padding: 12,
-                            textAlign: "left",
-                            whiteSpace: "nowrap",
-                            color: "#d4d4d8",
-                            fontWeight: 800,
-                          }}
-                        >
-                          {header}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {rows.map(({ player, stat, hasPlayed }) => (
-                      <tr
-                        key={player.id}
-                        style={{
-                          background: hasPlayed
-                            ? "transparent"
-                            : "rgba(255,255,255,0.025)",
-                        }}
-                      >
-                        <td
-                          style={{
-                            padding: 12,
-                            borderBottom: "1px solid rgba(255,255,255,0.06)",
-                            whiteSpace: "nowrap",
-                            color: "#fafafa",
-                            fontWeight: 700,
-                          }}
-                        >
-                          #{player.number ?? "-"} {player.name}
-                          {!hasPlayed && (
-                            <span
-                              style={{
-                                marginLeft: 8,
-                                fontSize: 12,
-                                color: "#71717a",
-                                fontWeight: 600,
-                              }}
-                            >
-                              DNP
-                            </span>
-                          )}
-                        </td>
-
-                        <td style={cellStyle}>{stat.pts}</td>
-                        <td style={cellStyle}>{stat.fg2m}/{stat.fg2a}</td>
-                        <td style={cellStyle}>{stat.fg3m}/{stat.fg3a}</td>
-                        <td style={cellStyle}>{stat.ftm}/{stat.fta}</td>
-                        <td style={cellStyle}>{stat.reb}</td>
-                        <td style={cellStyle}>{stat.ast}</td>
-                        <td style={cellStyle}>{stat.stl}</td>
-                        <td style={cellStyle}>{stat.blk}</td>
-                        <td style={cellStyle}>{stat.tov}</td>
-                        <td style={cellStyle}>{stat.pf}</td>
-                        <td style={cellStyle}>{pct(stat.fg2m, stat.fg2a)}</td>
-                        <td style={cellStyle}>{pct(stat.fg3m, stat.fg3a)}</td>
-                        <td style={cellStyle}>{pct(stat.ftm, stat.fta)}</td>
-                      </tr>
-                    ))}
-
-                    <tr style={{ background: "rgba(255,255,255,0.05)" }}>
-                      <td
-                        style={{
-                          padding: 12,
-                          fontWeight: 900,
-                          whiteSpace: "nowrap",
-                          color: "#ffffff",
-                          borderTop: "1px solid rgba(255,255,255,0.08)",
-                        }}
-                      >
-                        TEAM
-                      </td>
-                      <td style={teamCellStyle}>{team.pts}</td>
-                      <td style={teamCellStyle}>{team.fg2m}/{team.fg2a}</td>
-                      <td style={teamCellStyle}>{team.fg3m}/{team.fg3a}</td>
-                      <td style={teamCellStyle}>{team.ftm}/{team.fta}</td>
-                      <td style={teamCellStyle}>{team.reb}</td>
-                      <td style={teamCellStyle}>{team.ast}</td>
-                      <td style={teamCellStyle}>{team.stl}</td>
-                      <td style={teamCellStyle}>{team.blk}</td>
-                      <td style={teamCellStyle}>{team.tov}</td>
-                      <td style={teamCellStyle}>{team.pf}</td>
-                      <td style={teamCellStyle}>{pct(team.fg2m, team.fg2a)}</td>
-                      <td style={teamCellStyle}>{pct(team.fg3m, team.fg3a)}</td>
-                      <td style={teamCellStyle}>{pct(team.ftm, team.fta)}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                />
+                {getGameStatusText(game, clock)}
               </div>
-            )}
-          </>
-        )}
+            </div>
+
+            <div style={clockStyle}>{formatClock(displaySeconds)}</div>
+
+            <div style={quarterLineWrapStyle}>
+              {Object.keys(quarterScores)
+                .map(Number)
+                .sort((a, b) => a - b)
+                .map((q) => (
+                  <div key={q} style={quarterItemStyle}>
+                    <div style={quarterItemLabelStyle}>{getQuarterLabel(q)}</div>
+                    <div style={quarterItemScoreStyle}>
+                      {quarterScores[q].home} - {quarterScores[q].away}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          <div style={teamBigBlockStyle}>
+            <div style={teamLabelStyle}>{game?.teamB || "客場"}</div>
+            <div style={bigScoreStyle}>{totalScore.away}</div>
+          </div>
+        </section>
+
+        <section style={tableCardStyle}>
+          <div style={tableHeaderStyle}>
+            <div>
+              <div style={sectionEyebrowStyle}>TEAM A LIVE STATS</div>
+              <div style={sectionTitleStyle}>球員數據</div>
+            </div>
+
+            <div style={legendWrapStyle}>
+              <div style={legendItemStyle}>
+                <span style={legendOnStyle} />
+                場上球員
+              </div>
+              <div style={legendItemStyle}>
+                <span style={legendBenchStyle} />
+                場下球員
+              </div>
+            </div>
+          </div>
+
+          <div style={tableWrapStyle}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <th style={thNameStyle}>球員</th>
+                  <th style={thStyle}>MIN</th>
+                  <th style={thStyle}>PTS</th>
+                  <th style={thStyle}>2PT</th>
+                  <th style={thStyle}>3PT</th>
+                  <th style={thStyle}>FT</th>
+                  <th style={thStyle}>REB</th>
+                  <th style={thStyle}>AST</th>
+                  <th style={thStyle}>TOV</th>
+                  <th style={thStyle}>STL</th>
+                  <th style={thStyle}>BLK</th>
+                  <th style={thStyle}>PF</th>
+                  <th style={thStyle}>+/-</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {onCourtPlayers.map((p) => renderPlayerRow(p, true))}
+
+                {benchPlayers.length > 0 && (
+                  <tr>
+                    <td colSpan={13} style={dividerCellStyle}>
+                      <div style={dividerWrapStyle}>
+                        <div style={dividerLineStyle} />
+                        <div style={dividerLabelStyle}>BENCH</div>
+                        <div style={dividerLineStyle} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+
+                {benchPlayers.map((p) => renderPlayerRow(p, false))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {msg ? <div style={msgStyle}>{msg}</div> : null}
       </div>
     </main>
   );
 }
 
-const infoCardStyle: CSSProperties = {
-  borderRadius: 18,
-  padding: 24,
-  background: "rgba(10, 10, 10, 0.96)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  color: "#e4e4e7",
+const pageStyle: React.CSSProperties = {
+  minHeight: "100vh",
+  background:
+    "radial-gradient(circle at 50% 0%, rgba(255,140,0,0.16), transparent 28%), radial-gradient(circle at 0% 100%, rgba(255,98,0,0.10), transparent 30%), radial-gradient(circle at 100% 100%, rgba(255,180,80,0.08), transparent 26%), linear-gradient(180deg, #0b0b0d 0%, #101014 55%, #060606 100%)",
+  color: "#fff",
+  padding: 16,
+  position: "relative",
+  overflow: "hidden",
 };
 
-const panelStyle: CSSProperties = {
-  padding: 18,
-  borderRadius: 20,
-  background: "rgba(10, 10, 10, 0.96)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  boxShadow: "0 12px 28px rgba(0,0,0,0.24)",
+const bgGlowTopStyle: React.CSSProperties = {
+  position: "absolute",
+  left: -80,
+  top: 90,
+  width: 320,
+  height: 320,
+  borderRadius: "50%",
+  background: "rgba(249,115,22,0.18)",
+  filter: "blur(90px)",
+  pointerEvents: "none",
 };
 
-const panelTitleStyle: CSSProperties = {
-  color: "#ffffff",
-  fontSize: 18,
-  fontWeight: 900,
-  marginBottom: 14,
+const bgGlowBottomStyle: React.CSSProperties = {
+  position: "absolute",
+  right: -80,
+  bottom: 60,
+  width: 320,
+  height: 320,
+  borderRadius: "50%",
+  background: "rgba(251,191,36,0.14)",
+  filter: "blur(90px)",
+  pointerEvents: "none",
 };
 
-const summaryGridStyle: CSSProperties = {
+const bgBallStyle: React.CSSProperties = {
+  position: "absolute",
+  right: 70,
+  top: 90,
+  width: 210,
+  height: 210,
+  borderRadius: "50%",
+  transform: "rotate(-15deg)",
+  background:
+    "radial-gradient(circle at 30% 30%, #ffb347 0%, #f48c06 38%, #d96a00 70%, #9a4d00 100%)",
+  opacity: 0.12,
+  boxShadow:
+    "inset -18px -18px 40px rgba(0,0,0,0.24), inset 10px 10px 20px rgba(255,255,255,0.08), 0 20px 50px rgba(0,0,0,0.35)",
+  pointerEvents: "none",
+};
+
+const containerStyle: React.CSSProperties = {
+  width: "100%",
+  maxWidth: 1500,
+  margin: "0 auto",
   display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 16,
+  position: "relative",
+  zIndex: 1,
+};
+
+const loadingCardStyle: React.CSSProperties = {
+  maxWidth: 900,
+  margin: "80px auto",
+  borderRadius: 28,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background:
+    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
+  padding: 32,
+  textAlign: "center",
+  color: "#d4d4d8",
+  fontSize: 18,
+  backdropFilter: "blur(10px)",
+};
+
+const topBarStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 16,
+  flexWrap: "wrap",
+};
+
+const topLeftStyle: React.CSSProperties = {
+  display: "grid",
   gap: 10,
 };
 
-const miniStatStyle: CSSProperties = {
+const eyebrowStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "8px 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(255,255,255,0.05)",
+  color: "#ffedd5",
+  fontSize: 11,
+  fontWeight: 900,
+  letterSpacing: "0.14em",
+  width: "fit-content",
+};
+
+const topButtonRowStyle: React.CSSProperties = {
   display: "flex",
-  flexDirection: "column",
-  gap: 6,
-  padding: 12,
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const linkButtonStyle: React.CSSProperties = {
+  padding: "10px 14px",
   borderRadius: 14,
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.05)",
+  background:
+    "linear-gradient(135deg, #ffb347 0%, #f48c06 55%, #d96a00 100%)",
+  color: "#fff",
+  textDecoration: "none",
+  fontSize: 14,
+  fontWeight: 800,
+  boxShadow:
+    "0 14px 30px rgba(244,140,6,0.28), inset 0 1px 0 rgba(255,255,255,0.22)",
+};
+
+const scoreCardStyle: React.CSSProperties = {
+  position: "relative",
+  overflow: "hidden",
+  borderRadius: 30,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background:
+    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
+  padding: 24,
+  display: "grid",
+  gridTemplateColumns: "1.2fr 1fr 1.2fr",
+  alignItems: "center",
+  gap: 20,
+  boxShadow:
+    "0 30px 80px rgba(0,0,0,0.50), 0 0 0 1px rgba(255,140,0,0.08)",
+  backdropFilter: "blur(10px)",
+};
+
+const scoreGlowOverlayStyle: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  background:
+    "linear-gradient(135deg, rgba(255,140,0,0.12), transparent 28%, transparent 70%, rgba(255,140,0,0.08)), linear-gradient(180deg, rgba(255,255,255,0.04), transparent 18%)",
+  pointerEvents: "none",
+};
+
+const teamBigBlockStyle: React.CSSProperties = {
+  display: "grid",
+  gap: 14,
+  justifyItems: "center",
+  position: "relative",
+  zIndex: 1,
+};
+
+const centerBlockStyle: React.CSSProperties = {
+  display: "grid",
+  justifyItems: "center",
+  gap: 16,
+  position: "relative",
+  zIndex: 1,
+};
+
+const topInfoRowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+  justifyContent: "center",
+};
+
+const teamLabelStyle: React.CSSProperties = {
+  fontSize: 30,
+  color: "#d4d4d8",
+  fontWeight: 800,
+  textAlign: "center",
+};
+
+const bigScoreStyle: React.CSSProperties = {
+  fontSize: 140,
+  lineHeight: 1,
+  fontWeight: 900,
+  letterSpacing: "-0.04em",
+  textShadow: "0 8px 30px rgba(0,0,0,0.35)",
+};
+
+const quarterBadgeStyle: React.CSSProperties = {
+  padding: "8px 14px",
+  borderRadius: 999,
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.10)",
+  fontSize: 16,
+  fontWeight: 900,
+  color: "#f5f5f5",
+};
+
+const viewerPillStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "8px 14px",
+  borderRadius: 999,
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.10)",
+  fontSize: 14,
+  fontWeight: 700,
   color: "#d4d4d8",
 };
 
-const cellStyle: CSSProperties = {
-  padding: 12,
-  borderBottom: "1px solid rgba(255,255,255,0.06)",
-  color: "#e5e7eb",
+const viewerDotStyle: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+  background: "#22c55e",
+  boxShadow: "0 0 12px rgba(34,197,94,0.5)",
 };
 
-const teamCellStyle: CSSProperties = {
-  padding: 12,
+const statusBadgeStyle: React.CSSProperties = {
+  fontSize: 14,
+  fontWeight: 800,
+  padding: "8px 14px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.10)",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const statusDotStyle: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+};
+
+const clockStyle: React.CSSProperties = {
+  fontSize: 96,
+  lineHeight: 1,
   fontWeight: 900,
-  color: "#ffffff",
-  borderTop: "1px solid rgba(255,255,255,0.08)",
+  letterSpacing: "-0.05em",
+  textShadow: "0 12px 40px rgba(0,0,0,0.4)",
+};
+
+const quarterLineWrapStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+  justifyContent: "center",
+};
+
+const quarterItemStyle: React.CSSProperties = {
+  minWidth: 84,
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.04)",
+  padding: "10px 12px",
+  textAlign: "center",
+};
+
+const quarterItemLabelStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "#a1a1aa",
+  fontWeight: 800,
+  letterSpacing: "0.08em",
+};
+
+const quarterItemScoreStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontSize: 16,
+  color: "#fff",
+  fontWeight: 900,
+};
+
+const tableCardStyle: React.CSSProperties = {
+  borderRadius: 30,
+  overflow: "hidden",
+  border: "1px solid rgba(255,255,255,0.10)",
+  background:
+    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
+  boxShadow:
+    "0 30px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,140,0,0.05)",
+  backdropFilter: "blur(10px)",
+};
+
+const tableHeaderStyle: React.CSSProperties = {
+  padding: "20px 20px 14px 20px",
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-end",
+  gap: 16,
+  flexWrap: "wrap",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+};
+
+const sectionEyebrowStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "#fdba74",
+  fontWeight: 900,
+  letterSpacing: "0.16em",
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontSize: 28,
+  fontWeight: 900,
+  letterSpacing: "-0.03em",
+};
+
+const legendWrapStyle: React.CSSProperties = {
+  display: "flex",
+  gap: 14,
+  flexWrap: "wrap",
+};
+
+const legendItemStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  fontSize: 14,
+  color: "#d4d4d8",
+  padding: "8px 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.04)",
+};
+
+const legendOnStyle: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  background: "#f97316",
+  boxShadow: "0 0 12px rgba(249,115,22,0.45)",
+};
+
+const legendBenchStyle: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  background: "#52525b",
+};
+
+const tableWrapStyle: React.CSSProperties = {
+  width: "100%",
+  overflowX: "auto",
+};
+
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  minWidth: 1180,
+  borderCollapse: "collapse",
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "16px 10px",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  color: "#a1a1aa",
+  fontSize: 15,
+  fontWeight: 900,
+  whiteSpace: "nowrap",
+  background: "rgba(255,255,255,0.03)",
+};
+
+const thNameStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "16px 14px",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  color: "#a1a1aa",
+  fontSize: 15,
+  fontWeight: 900,
+  whiteSpace: "nowrap",
+  background: "rgba(255,255,255,0.03)",
+};
+
+const tdStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "16px 10px",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+  fontSize: 16,
+  color: "#f4f4f5",
+  whiteSpace: "nowrap",
+};
+
+const tdNameStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "16px 14px",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+  fontSize: 16,
+  color: "#f4f4f5",
+  whiteSpace: "nowrap",
+};
+
+const playerCellWrapStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+};
+
+const playerDotStyle: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  flexShrink: 0,
+};
+
+const playerNameStyle: React.CSSProperties = {
+  fontWeight: 800,
+};
+
+const dividerCellStyle: React.CSSProperties = {
+  padding: "14px 12px",
+  background: "rgba(0,0,0,0.24)",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+};
+
+const dividerWrapStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+};
+
+const dividerLineStyle: React.CSSProperties = {
+  flex: 1,
+  height: 1,
+  background: "rgba(255,255,255,0.10)",
+};
+
+const dividerLabelStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 900,
+  color: "#71717a",
+  whiteSpace: "nowrap",
+  letterSpacing: "0.18em",
+};
+
+const msgStyle: React.CSSProperties = {
+  color: "#fecaca",
+  padding: "12px 14px",
+  borderRadius: 18,
+  background: "rgba(127,29,29,0.20)",
+  border: "1px solid rgba(248,113,113,0.18)",
 };

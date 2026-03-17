@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   calcPlayerStats,
@@ -25,8 +25,27 @@ type EventDbRow = {
   is_undone?: boolean | null;
 };
 
-type EventWithGame = EventRow & {
+type EventWithGame = {
   game_id: string;
+  player_id: string | null;
+  event_type: EventRow["event_type"];
+  team_side?: "A" | "B" | null;
+  is_undone?: boolean;
+};
+
+type PlayerRow = Player & {
+  stat: Stat;
+  gamesPlayed: number;
+  avgMin: string;
+  eff: number;
+  avgPts: string;
+  avgReb: string;
+  avgAst: string;
+  avgStl: string;
+  avgBlk: string;
+  avgTov: string;
+  avgPf: string;
+  avgEff: string;
 };
 
 function eff(stat: Stat) {
@@ -72,45 +91,49 @@ export default function BoxDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
-  async function loadAll() {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     setMsg("");
 
-    const { data: playerData, error: playerError } = await supabase
-      .from("players")
-      .select("id, name, number, active")
-      .eq("active", true)
-      .order("number", { ascending: true });
+    const [playersRes, eventsRes] = await Promise.all([
+      supabase
+        .from("players")
+        .select("id, name, number, active")
+        .eq("active", true)
+        .order("number", { ascending: true }),
+      supabase
+        .from("events")
+        .select("game_id, player_id, event_type, team_side, is_undone")
+        .order("created_at", { ascending: true }),
+    ]);
 
-    if (playerError) {
-      setMsg(`讀取球員失敗：${playerError.message}`);
+    if (playersRes.error) {
+      setMsg(`讀取球員失敗：${playersRes.error.message}`);
       setLoading(false);
       return;
     }
 
-    const { data: eventData, error: eventError } = await supabase
-      .from("events")
-      .select("game_id, player_id, event_type, team_side, is_undone")
-      .order("created_at", { ascending: true });
-
-    if (eventError) {
-      setMsg(`讀取事件失敗：${eventError.message}`);
+    if (eventsRes.error) {
+      setMsg(`讀取事件失敗：${eventsRes.error.message}`);
       setLoading(false);
       return;
     }
 
-    setPlayers((playerData || []) as Player[]);
-    setEvents(
-      ((eventData || []) as EventDbRow[]).map((e) => ({
-        game_id: e.game_id,
-        player_id: e.player_id,
-        event_type: e.event_type,
-        team_side: e.team_side ?? null,
-        is_undone: !!e.is_undone,
-      }))
+    const playerRows = (playersRes.data || []) as Player[];
+    const eventRows = ((eventsRes.data || []) as EventDbRow[]).map(
+      (event): EventWithGame => ({
+        game_id: event.game_id,
+        player_id: event.player_id,
+        event_type: event.event_type,
+        team_side: event.team_side ?? null,
+        is_undone: !!event.is_undone,
+      })
     );
+
+    setPlayers(playerRows);
+    setEvents(eventRows);
     setLoading(false);
-  }
+  }, []);
 
   useEffect(() => {
     void loadAll();
@@ -130,40 +153,29 @@ export default function BoxDashboardPage() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [loadAll]);
 
   const validEvents = useMemo(
-    () => events.filter((e) => !e.is_undone),
+    () => events.filter((event) => !event.is_undone),
     [events]
   );
 
   const activePlayerIdSet = useMemo(() => {
-    return new Set(players.map((p) => p.id));
+    return new Set(players.map((player) => player.id));
   }, [players]);
 
-  /**
-   * 只保留本隊球員名單內的事件
-   * 這樣不會把對手事件或沒有 player_id 的事件算進團隊平均
-   */
   const teamPlayerEvents = useMemo(() => {
     return validEvents.filter(
-      (e) => e.player_id && activePlayerIdSet.has(e.player_id)
+      (event) => !!event.player_id && activePlayerIdSet.has(event.player_id)
     );
   }, [validEvents, activePlayerIdSet]);
 
-  /**
-   * 球員個人總數據
-   */
   const playerStatMap = useMemo(() => {
     return groupPlayerStats(teamPlayerEvents);
   }, [teamPlayerEvents]);
 
-  /**
-   * 團隊每場數據
-   * 用每場比賽分開累計，再算平均，避免算法被混雜事件影響
-   */
   const teamStatByGame = useMemo(() => {
     const map: Record<string, Stat> = {};
 
@@ -172,50 +184,50 @@ export default function BoxDashboardPage() {
         map[event.game_id] = safeStat();
       }
 
-      const gameEvents = map[event.game_id];
+      const current = map[event.game_id];
 
       switch (event.event_type) {
         case "fg2_made":
-          gameEvents.pts += 2;
-          gameEvents.fg2m += 1;
-          gameEvents.fg2a += 1;
+          current.pts += 2;
+          current.fg2m += 1;
+          current.fg2a += 1;
           break;
         case "fg2_miss":
-          gameEvents.fg2a += 1;
+          current.fg2a += 1;
           break;
         case "fg3_made":
-          gameEvents.pts += 3;
-          gameEvents.fg3m += 1;
-          gameEvents.fg3a += 1;
+          current.pts += 3;
+          current.fg3m += 1;
+          current.fg3a += 1;
           break;
         case "fg3_miss":
-          gameEvents.fg3a += 1;
+          current.fg3a += 1;
           break;
         case "ft_made":
-          gameEvents.pts += 1;
-          gameEvents.ftm += 1;
-          gameEvents.fta += 1;
+          current.pts += 1;
+          current.ftm += 1;
+          current.fta += 1;
           break;
         case "ft_miss":
-          gameEvents.fta += 1;
+          current.fta += 1;
           break;
         case "reb":
-          gameEvents.reb += 1;
+          current.reb += 1;
           break;
         case "ast":
-          gameEvents.ast += 1;
+          current.ast += 1;
           break;
         case "stl":
-          gameEvents.stl += 1;
+          current.stl += 1;
           break;
         case "blk":
-          gameEvents.blk += 1;
+          current.blk += 1;
           break;
         case "tov":
-          gameEvents.tov += 1;
+          current.tov += 1;
           break;
         case "pf":
-          gameEvents.pf += 1;
+          current.pf += 1;
           break;
         default:
           break;
@@ -269,38 +281,35 @@ export default function BoxDashboardPage() {
   const playerGameCountMap = useMemo(() => {
     const map: Record<string, Set<string>> = {};
 
-    for (const e of teamPlayerEvents) {
-      if (!e.player_id) continue;
-      if (!map[e.player_id]) {
-        map[e.player_id] = new Set<string>();
+    for (const event of teamPlayerEvents) {
+      if (!event.player_id) continue;
+
+      if (!map[event.player_id]) {
+        map[event.player_id] = new Set<string>();
       }
-      map[e.player_id].add(e.game_id);
+
+      map[event.player_id].add(event.game_id);
     }
 
     const result: Record<string, number> = {};
     for (const playerId of Object.keys(map)) {
       result[playerId] = map[playerId].size;
     }
+
     return result;
   }, [teamPlayerEvents]);
 
-  /**
-   * 目前資料表無法精準算場均上場時間
-   * 先保留欄位，等 events 有「當下比賽秒數 / 節數 / 換人時間」後再補完整算法
-   */
   const playerAvgMinutesMap = useMemo(() => {
     const result: Record<string, string> = {};
-
     for (const player of players) {
       result[player.id] = "--";
     }
-
     return result;
   }, [players]);
 
-  const playerRows = useMemo(() => {
+  const playerRows = useMemo<PlayerRow[]>(() => {
     return players.map((player) => {
-      const stat: Stat = playerStatMap[player.id] || safeStat();
+      const stat = playerStatMap[player.id] || calcPlayerStats([]);
       const gamesPlayed = playerGameCountMap[player.id] || 0;
       const playerEff = eff(stat);
 
@@ -324,8 +333,8 @@ export default function BoxDashboardPage() {
 
   const sortedPlayerRows = useMemo(() => {
     return [...playerRows].sort((a, b) => {
-      const aAvgPts = Number(a.avgPts);
       const bAvgPts = Number(b.avgPts);
+      const aAvgPts = Number(a.avgPts);
 
       if (bAvgPts !== aAvgPts) return bAvgPts - aAvgPts;
       if (b.eff !== a.eff) return b.eff - a.eff;
@@ -346,8 +355,8 @@ export default function BoxDashboardPage() {
       <div className="pointer-events-none absolute left-[-60px] top-[120px] h-[320px] w-[320px] rounded-full bg-orange-500/20 blur-[100px]" />
       <div className="pointer-events-none absolute bottom-[60px] right-[-60px] h-[320px] w-[320px] rounded-full bg-blue-400/15 blur-[100px]" />
 
-      <div className="pointer-events-none absolute right-[70px] top-[90px] h-[210px] w-[210px] animate-[floatBall1_8s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)]" />
-      <div className="pointer-events-none absolute bottom-[90px] left-[60px] h-[160px] w-[160px] animate-[floatBall2_10s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)]" />
+      <div className="pointer-events-none absolute right-[70px] top-[90px] hidden h-[210px] w-[210px] animate-[floatBall1_8s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
+      <div className="pointer-events-none absolute bottom-[90px] left-[60px] hidden h-[160px] w-[160px] animate-[floatBall2_10s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
 
       <div className="relative z-10 mx-auto max-w-7xl">
         <section className="relative mb-6 overflow-hidden rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-6 shadow-[0_30px_80px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,140,0,0.08)] backdrop-blur md:p-8">
@@ -447,18 +456,24 @@ export default function BoxDashboardPage() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-3">
-                {topThree.map((row, index) => (
-                  <TopPlayerCard
-                    key={row.id}
-                    rank={index + 1}
-                    number={row.number}
-                    name={row.name}
-                    avgPts={row.avgPts}
-                    avgReb={row.avgReb}
-                    avgAst={row.avgAst}
-                    avgEff={row.avgEff}
-                  />
-                ))}
+                {topThree.length > 0 ? (
+                  topThree.map((row, index) => (
+                    <TopPlayerCard
+                      key={row.id}
+                      rank={index + 1}
+                      number={row.number}
+                      name={row.name}
+                      avgPts={row.avgPts}
+                      avgReb={row.avgReb}
+                      avgAst={row.avgAst}
+                      avgEff={row.avgEff}
+                    />
+                  ))
+                ) : (
+                  <div className="col-span-full rounded-[28px] border border-white/10 bg-white/5 p-5 text-zinc-300">
+                    尚無可顯示的球員資料
+                  </div>
+                )}
               </div>
             </section>
 
@@ -486,7 +501,7 @@ export default function BoxDashboardPage() {
               </div>
 
               <div className="overflow-x-auto rounded-3xl border border-white/10 bg-black/20">
-                <table className="min-w-[1500px] w-full text-sm">
+                <table className="min-w-[1480px] w-full text-sm">
                   <thead>
                     <tr className="border-b border-white/10 bg-white/[0.03] text-zinc-400">
                       <th className="px-3 py-4 text-left">球員</th>
@@ -506,60 +521,72 @@ export default function BoxDashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedPlayerRows.map((row, index) => (
-                      <tr
-                        key={row.id}
-                        className="border-b border-white/5 transition hover:bg-white/[0.03]"
-                      >
-                        <td className="px-3 py-4">
-                          <div className="flex items-center gap-3">
-                            <div
-                              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-black ring-1 ${
-                                index === 0
-                                  ? "bg-orange-500/20 text-orange-100 ring-orange-300/20"
-                                  : index === 1
-                                  ? "bg-sky-500/20 text-sky-100 ring-sky-300/20"
-                                  : index === 2
-                                  ? "bg-violet-500/20 text-violet-100 ring-violet-300/20"
-                                  : "bg-white/5 text-orange-100 ring-white/10"
-                              }`}
-                            >
-                              {index + 1}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="whitespace-nowrap font-bold text-white">
-                                #{row.number ?? "-"} {row.name}
+                    {sortedPlayerRows.length > 0 ? (
+                      sortedPlayerRows.map((row, index) => (
+                        <tr
+                          key={row.id}
+                          className="border-b border-white/5 transition hover:bg-white/[0.03]"
+                        >
+                          <td className="px-3 py-4">
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-black ring-1 ${
+                                  index === 0
+                                    ? "bg-orange-500/20 text-orange-100 ring-orange-300/20"
+                                    : index === 1
+                                    ? "bg-sky-500/20 text-sky-100 ring-sky-300/20"
+                                    : index === 2
+                                    ? "bg-violet-500/20 text-violet-100 ring-violet-300/20"
+                                    : "bg-white/5 text-orange-100 ring-white/10"
+                                }`}
+                              >
+                                {index + 1}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="whitespace-nowrap font-bold text-white">
+                                  #{row.number ?? "-"} {row.name}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-4 text-center font-semibold">
-                          {row.gamesPlayed}
-                        </td>
-                        <td className="px-3 py-4 text-center">{row.avgMin}</td>
-                        <td className="px-3 py-4 text-center font-bold text-orange-300">
-                          {row.avgPts}
-                        </td>
-                        <td className="px-3 py-4 text-center">{row.avgReb}</td>
-                        <td className="px-3 py-4 text-center">{row.avgAst}</td>
-                        <td className="px-3 py-4 text-center">{row.avgStl}</td>
-                        <td className="px-3 py-4 text-center">{row.avgBlk}</td>
-                        <td className="px-3 py-4 text-center">{row.avgTov}</td>
-                        <td className="px-3 py-4 text-center">{row.avgPf}</td>
-                        <td className="px-3 py-4 text-center">
-                          {pct(row.stat.fg2m, row.stat.fg2a)}
-                        </td>
-                        <td className="px-3 py-4 text-center">
-                          {pct(row.stat.fg3m, row.stat.fg3a)}
-                        </td>
-                        <td className="px-3 py-4 text-center">
-                          {pct(row.stat.ftm, row.stat.fta)}
-                        </td>
-                        <td className="px-3 py-4 text-center font-bold text-cyan-300">
-                          {row.avgEff}
+                          </td>
+                          <td className="px-3 py-4 text-center font-semibold">
+                            {row.gamesPlayed}
+                          </td>
+                          <td className="px-3 py-4 text-center">{row.avgMin}</td>
+                          <td className="px-3 py-4 text-center font-bold text-orange-300">
+                            {row.avgPts}
+                          </td>
+                          <td className="px-3 py-4 text-center">{row.avgReb}</td>
+                          <td className="px-3 py-4 text-center">{row.avgAst}</td>
+                          <td className="px-3 py-4 text-center">{row.avgStl}</td>
+                          <td className="px-3 py-4 text-center">{row.avgBlk}</td>
+                          <td className="px-3 py-4 text-center">{row.avgTov}</td>
+                          <td className="px-3 py-4 text-center">{row.avgPf}</td>
+                          <td className="px-3 py-4 text-center">
+                            {pct(row.stat.fg2m, row.stat.fg2a)}
+                          </td>
+                          <td className="px-3 py-4 text-center">
+                            {pct(row.stat.fg3m, row.stat.fg3a)}
+                          </td>
+                          <td className="px-3 py-4 text-center">
+                            {pct(row.stat.ftm, row.stat.fta)}
+                          </td>
+                          <td className="px-3 py-4 text-center font-bold text-cyan-300">
+                            {row.avgEff}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={14}
+                          className="px-4 py-10 text-center text-zinc-400"
+                        >
+                          目前沒有球員數據
                         </td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -619,11 +646,10 @@ function StatCard({
   value: number | string;
   accent?: "orange" | "blue" | "violet";
 }) {
-  const accentMap: Record<string, string> = {
+  const accentMap: Record<"orange" | "blue" | "violet", string> = {
     orange:
       "from-orange-500/20 to-orange-300/5 text-orange-200 border-orange-400/20",
-    blue:
-      "from-blue-500/20 to-blue-300/5 text-blue-200 border-blue-400/20",
+    blue: "from-blue-500/20 to-blue-300/5 text-blue-200 border-blue-400/20",
     violet:
       "from-violet-500/20 to-violet-300/5 text-violet-200 border-violet-400/20",
   };
@@ -671,9 +697,7 @@ function RateCard({
         };
 
   return (
-    <div
-      className={`rounded-[28px] border bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-5 shadow-[0_18px_40px_rgba(0,0,0,0.34)] backdrop-blur transition hover:-translate-y-1`}
-    >
+    <div className="rounded-[28px] border bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-5 shadow-[0_18px_40px_rgba(0,0,0,0.34)] backdrop-blur transition hover:-translate-y-1">
       <div
         className={`inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-black tracking-[0.12em] ${accentClasses.pill}`}
       >
@@ -687,7 +711,7 @@ function RateCard({
         {made}/{attempt}
       </div>
       <div
-        className={`mt-4 h-2 w-full overflow-hidden rounded-full border ${accentClasses.glow}`}
+        className={`mt-4 h-2 w-full overflow-hidden rounded-full border bg-gradient-to-r ${accentClasses.glow}`}
       >
         <div
           className="h-full rounded-full bg-white/80"
@@ -721,18 +745,15 @@ function TopPlayerCard({
     rank === 1
       ? {
           ring: "border-orange-300/20",
-          glow: "from-orange-500/20 to-orange-300/5",
           badge: "bg-orange-500/20 text-orange-100",
         }
       : rank === 2
       ? {
           ring: "border-sky-300/20",
-          glow: "from-sky-500/20 to-sky-300/5",
           badge: "bg-sky-500/20 text-sky-100",
         }
       : {
           ring: "border-violet-300/20",
-          glow: "from-violet-500/20 to-violet-300/5",
           badge: "bg-violet-500/20 text-violet-100",
         };
 
