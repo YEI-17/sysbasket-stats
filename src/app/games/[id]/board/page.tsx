@@ -38,7 +38,7 @@ type Player = {
   id: string;
   name: string;
   number: number | null;
-  active?: boolean;
+  active?: boolean | null;
 };
 
 type GamePlayerRow = {
@@ -130,7 +130,6 @@ function getLiveSecondsFromShifts(params: {
     const inSec = Math.max(0, Math.min(maxSeconds, s.in_seconds_left ?? maxSeconds));
 
     if (s.out_seconds_left == null) {
-      // 只有目前這一節且仍在場上的 open shift 才要即時累加
       if (clock && clock.quarter === s.quarter) {
         total += Math.max(0, inSec - displaySeconds);
       }
@@ -229,83 +228,6 @@ function sortPlayers(list: Player[]) {
   return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
 }
 
-function getQuarterPlayedSeconds(
-  quarter: number,
-  currentQuarter: number,
-  currentDisplaySeconds: number
-) {
-  if (quarter < currentQuarter) return REGULAR_SECONDS;
-  if (quarter > currentQuarter) return 0;
-  return REGULAR_SECONDS - currentDisplaySeconds;
-}
-
-function getEstimatedQuarterStartMs(
-  clock: ClockRow | null,
-  currentQuarter: number,
-  currentDisplaySeconds: number
-) {
-  if (!clock?.updated_at) return null;
-
-  const updatedAtMs = new Date(clock.updated_at).getTime();
-  if (Number.isNaN(updatedAtMs)) return null;
-
-  const playedSecondsNow = getQuarterPlayedSeconds(
-    currentQuarter,
-    currentQuarter,
-    currentDisplaySeconds
-  );
-
-  return updatedAtMs - playedSecondsNow * 1000;
-}
-
-function getEventElapsedSeconds(
-  event: EventRow,
-  quarterEvents: EventRow[],
-  quarter: number,
-  currentQuarter: number,
-  currentDisplaySeconds: number,
-  clock: ClockRow | null
-) {
-  const playedSecondsThisQuarter = getQuarterPlayedSeconds(
-    quarter,
-    currentQuarter,
-    currentDisplaySeconds
-  );
-
-  if (quarter < currentQuarter) {
-    const subEvents = quarterEvents.filter(
-      (e) => e.event_type === "sub_in" || e.event_type === "sub_out"
-    );
-
-    if (subEvents.length === 0) return playedSecondsThisQuarter;
-
-    const index = subEvents.findIndex((e) => e.id === event.id);
-    if (index === -1) return playedSecondsThisQuarter;
-
-    return Math.floor(((index + 1) / (subEvents.length + 1)) * REGULAR_SECONDS);
-  }
-
-  const estimatedQuarterStartMs = getEstimatedQuarterStartMs(
-    clock,
-    currentQuarter,
-    currentDisplaySeconds
-  );
-
-  if (estimatedQuarterStartMs == null) {
-    return playedSecondsThisQuarter;
-  }
-
-  const eventMs = new Date(event.created_at).getTime();
-  if (Number.isNaN(eventMs)) {
-    return playedSecondsThisQuarter;
-  }
-
-  return Math.max(
-    0,
-    Math.min(playedSecondsThisQuarter, Math.floor((eventMs - estimatedQuarterStartMs) / 1000))
-  );
-}
-
 function getGameStatusText(game: GameRow | null, clock: ClockRow | null) {
   if (game?.status === "finished") return "比賽已結束";
   if (clock?.is_running) return "計時中";
@@ -376,7 +298,6 @@ export default function BoardPage() {
     const { data, error } = await supabase
       .from("players")
       .select("id, name, number, active")
-      .eq("active", true)
       .order("number", { ascending: true });
 
     if (error) {
@@ -402,28 +323,24 @@ export default function BoardPage() {
   }
 
   async function loadPlayerShifts() {
-  const { data, error } = await supabase
-    .from("player_shifts")
-    .select(
-      "id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left"
-    )
-    .eq("game_id", gameId)
-    .eq("team_side", "teamA");
+    const { data, error } = await supabase
+      .from("player_shifts")
+      .select("id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left")
+      .eq("game_id", gameId)
+      .eq("team_side", "teamA");
 
-  if (error) {
-    setMsg(`讀取 player_shifts 失敗：${error.message}`);
-    return;
+    if (error) {
+      setMsg(`讀取 player_shifts 失敗：${error.message}`);
+      return;
+    }
+
+    setPlayerShifts((data as PlayerShiftRow[]) || []);
   }
-
-  setPlayerShifts((data as PlayerShiftRow[]) || []);
-}
 
   async function loadEvents() {
     const { data, error } = await supabase
       .from("events")
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-      )
+      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
       .eq("game_id", gameId)
       .order("created_at", { ascending: true });
 
@@ -480,13 +397,13 @@ export default function BoardPage() {
     setMsg("");
 
     await Promise.all([
-  loadGame(),
-  loadPlayers(),
-  loadGamePlayers(),
-  loadPlayerShifts(),
-  loadEvents(),
-  loadClock(),
-]);
+      loadGame(),
+      loadPlayers(),
+      loadGamePlayers(),
+      loadPlayerShifts(),
+      loadEvents(),
+      loadClock(),
+    ]);
 
     if (showLoading) setLoading(false);
   }
@@ -551,7 +468,6 @@ export default function BoardPage() {
           table: "games",
           filter: `id=eq.${gameId}`,
         },
-        
         (payload) => {
           const newRow = payload.new as GameRow | undefined;
           if (newRow && newRow.id) {
@@ -585,20 +501,18 @@ export default function BoardPage() {
           await loadGamePlayers();
         }
       )
-
-.on(
-  "postgres_changes",
-  {
-    event: "*",
-    schema: "public",
-    table: "player_shifts",
-    filter: `game_id=eq.${gameId}`,
-  },
-  async () => {
-    await loadPlayerShifts();
-  }
-)
-
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "player_shifts",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          await loadPlayerShifts();
+        }
+      )
       .on(
         "postgres_changes",
         {
@@ -627,111 +541,121 @@ export default function BoardPage() {
     return events.filter((e) => !e.is_undone);
   }, [events]);
 
+  const playersMap = useMemo(() => {
+    const map: Record<string, Player> = {};
+    for (const p of players) {
+      map[p.id] = p;
+    }
+    return map;
+  }, [players]);
+
+  const teamAGamePlayers = useMemo(() => {
+    return gamePlayers.filter((gp) => gp.team_side === "teamA");
+  }, [gamePlayers]);
+
   const teamAPlayerIds = useMemo(() => {
-  return gamePlayers
-    .filter((gp) => gp.team_side === "teamA")
-    .map((gp) => gp.player_id);
-}, [gamePlayers]);
+    return teamAGamePlayers.map((gp) => gp.player_id);
+  }, [teamAGamePlayers]);
 
   const teamAPlayers = useMemo(() => {
-    return sortPlayers(players.filter((p) => teamAPlayerIds.includes(p.id)));
-  }, [players, teamAPlayerIds]);
+    const merged: Player[] = teamAPlayerIds
+      .map((id) => playersMap[id])
+      .filter(Boolean);
+
+    return sortPlayers(merged);
+  }, [teamAPlayerIds, playersMap]);
 
   const starterIds = useMemo(() => {
-  const ids = gamePlayers
-    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
-    .map((gp) => gp.player_id);
-
-  return ids.slice(0, 5);
-}, [gamePlayers]);
+    return teamAGamePlayers
+      .filter((gp) => gp.is_starter)
+      .map((gp) => gp.player_id)
+      .slice(0, 5);
+  }, [teamAGamePlayers]);
 
   const currentOnCourtIds = useMemo(() => {
-  const lineup = new Set<string>(starterIds.slice(0, 5));
+    const lineup = new Set<string>(starterIds);
 
-  for (const e of validEvents) {
-    if (e.team_side !== "teamA") continue;
-    if (!e.player_id) continue;
+    for (const e of validEvents) {
+      if (e.team_side !== "teamA") continue;
+      if (!e.player_id) continue;
 
-    if (e.event_type === "sub_out") {
-      lineup.delete(e.player_id);
-      continue;
-    }
-
-    if (e.event_type === "sub_in") {
-      if (lineup.size < 5) {
-        lineup.add(e.player_id);
-      }
-    }
-  }
-
-  return Array.from(lineup).slice(0, 5);
-}, [starterIds, validEvents]);
-
-  const statsMap = useMemo(() => {
-  const map: Record<string, Stat> = {};
-
-  for (const p of teamAPlayers) {
-    map[p.id] = emptyStat();
-  }
-
-  const lineup = new Set<string>(starterIds.slice(0, 5));
-
-  for (const e of validEvents) {
-    if (e.team_side === "teamA" && e.player_id && !map[e.player_id]) {
-      map[e.player_id] = emptyStat();
-    }
-
-    if (e.team_side === "teamA" && e.player_id) {
       if (e.event_type === "sub_out") {
         lineup.delete(e.player_id);
         continue;
       }
 
       if (e.event_type === "sub_in") {
-        if (lineup.size < 5) {
-          lineup.add(e.player_id);
-        }
+        lineup.add(e.player_id);
         continue;
       }
     }
 
-    if (e.team_side === "teamA" && e.player_id) {
-      applyEvent(map[e.player_id], e.event_type);
+    return Array.from(lineup);
+  }, [starterIds, validEvents]);
+
+  const statsMap = useMemo(() => {
+    const map: Record<string, Stat> = {};
+
+    for (const p of teamAPlayers) {
+      map[p.id] = emptyStat();
     }
 
-    if (isScoringEvent(e.event_type)) {
-      const pts = getPoints(e.event_type);
-      if (pts > 0) {
-        for (const playerId of Array.from(lineup).slice(0, 5)) {
-          if (!map[playerId]) map[playerId] = emptyStat();
+    const lineup = new Set<string>(starterIds);
 
-          if (e.team_side === "teamA") {
-            map[playerId].plusMinus += pts;
-          } else if (e.team_side === "teamB") {
-            map[playerId].plusMinus -= pts;
+    for (const e of validEvents) {
+      if (e.team_side === "teamA" && e.player_id && !map[e.player_id]) {
+        map[e.player_id] = emptyStat();
+      }
+
+      if (e.team_side === "teamA" && e.player_id) {
+        if (e.event_type === "sub_out") {
+          lineup.delete(e.player_id);
+          continue;
+        }
+
+        if (e.event_type === "sub_in") {
+          lineup.add(e.player_id);
+          continue;
+        }
+      }
+
+      if (e.team_side === "teamA" && e.player_id) {
+        applyEvent(map[e.player_id], e.event_type);
+      }
+
+      if (isScoringEvent(e.event_type)) {
+        const pts = getPoints(e.event_type);
+        if (pts > 0) {
+          for (const playerId of Array.from(lineup)) {
+            if (!map[playerId]) map[playerId] = emptyStat();
+
+            if (e.team_side === "teamA") {
+              map[playerId].plusMinus += pts;
+            } else if (e.team_side === "teamB") {
+              map[playerId].plusMinus -= pts;
+            }
           }
         }
       }
     }
-  }
 
-  return map;
-}, [teamAPlayers, validEvents, starterIds]);
+    return map;
+  }, [teamAPlayers, validEvents, starterIds]);
 
   const minutesMap = useMemo(() => {
-  const map: Record<string, number> = {};
+    const map: Record<string, number> = {};
 
-  for (const p of teamAPlayers) {
-    map[p.id] = getLiveSecondsFromShifts({
-      playerId: p.id,
-      shifts: playerShifts,
-      clock,
-      displaySeconds,
-    });
-  }
+    for (const p of teamAPlayers) {
+      map[p.id] = getLiveSecondsFromShifts({
+        playerId: p.id,
+        shifts: playerShifts,
+        clock,
+        displaySeconds,
+      });
+    }
 
-  return map;
-}, [teamAPlayers, playerShifts, clock, displaySeconds]);
+    return map;
+  }, [teamAPlayers, playerShifts, clock, displaySeconds]);
 
   const totalScore = useMemo(() => {
     let home = 0;
@@ -845,15 +769,9 @@ export default function BoardPage() {
         </td>
         <td style={tdStyle}>{min}</td>
         <td style={{ ...tdStyle, color: "#fdba74", fontWeight: 800 }}>{s.pts}</td>
-        <td style={tdStyle}>
-          {s.fg2m}/{s.fg2a}
-        </td>
-        <td style={tdStyle}>
-          {s.fg3m}/{s.fg3a}
-        </td>
-        <td style={tdStyle}>
-          {s.ftm}/{s.fta}
-        </td>
+        <td style={tdStyle}>{s.fg2m}/{s.fg2a}</td>
+        <td style={tdStyle}>{s.fg3m}/{s.fg3a}</td>
+        <td style={tdStyle}>{s.ftm}/{s.fta}</td>
         <td style={tdStyle}>{s.reb}</td>
         <td style={tdStyle}>{s.ast}</td>
         <td style={tdStyle}>{s.tov}</td>
@@ -882,15 +800,9 @@ export default function BoardPage() {
         <td style={teamTotalNameStyle}>TEAM</td>
         <td style={teamTotalTdStyle}>{min}</td>
         <td style={{ ...teamTotalTdStyle, color: "#fdba74", fontWeight: 900 }}>{s.pts}</td>
-        <td style={teamTotalTdStyle}>
-          {s.fg2m}/{s.fg2a}
-        </td>
-        <td style={teamTotalTdStyle}>
-          {s.fg3m}/{s.fg3a}
-        </td>
-        <td style={teamTotalTdStyle}>
-          {s.ftm}/{s.fta}
-        </td>
+        <td style={teamTotalTdStyle}>{s.fg2m}/{s.fg2a}</td>
+        <td style={teamTotalTdStyle}>{s.fg3m}/{s.fg3a}</td>
+        <td style={teamTotalTdStyle}>{s.ftm}/{s.fta}</td>
         <td style={teamTotalTdStyle}>{s.reb}</td>
         <td style={teamTotalTdStyle}>{s.ast}</td>
         <td style={teamTotalTdStyle}>{s.tov}</td>
@@ -924,6 +836,8 @@ export default function BoardPage() {
           <LogoutButton />
         </div>
 
+        {!!msg && <div style={errorStyle}>{msg}</div>}
+
         <section style={scoreCardStyle}>
           <div style={scoreGlowOverlayStyle} />
 
@@ -951,8 +865,11 @@ export default function BoardPage() {
               >
                 <span
                   style={{
-                    ...statusDotStyle,
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
                     background: statusColors.dot,
+                    display: "inline-block",
                   }}
                 />
                 {getGameStatusText(game, clock)}
@@ -961,18 +878,15 @@ export default function BoardPage() {
 
             <div style={clockStyle}>{formatClock(displaySeconds)}</div>
 
-            <div style={quarterLineWrapStyle}>
-              {Object.keys(quarterScores)
-                .map(Number)
-                .sort((a, b) => a - b)
-                .map((q) => (
-                  <div key={q} style={quarterItemStyle}>
-                    <div style={quarterItemLabelStyle}>{getQuarterLabel(q)}</div>
-                    <div style={quarterItemScoreStyle}>
-                      {quarterScores[q].home} - {quarterScores[q].away}
-                    </div>
+            <div style={quarterScoreRowStyle}>
+              {Object.entries(quarterScores).map(([q, score]) => (
+                <div key={q} style={quarterCardStyle}>
+                  <div style={quarterCardTitleStyle}>{getQuarterLabel(Number(q))}</div>
+                  <div style={quarterCardValueStyle}>
+                    {score.home} - {score.away}
                   </div>
-                ))}
+                </div>
+              ))}
             </div>
           </div>
 
@@ -983,25 +897,25 @@ export default function BoardPage() {
         </section>
 
         <section style={tableCardStyle}>
-          <div style={tableHeaderStyle}>
+          <div style={tableHeaderWrapStyle}>
             <div>
               <div style={sectionEyebrowStyle}>TEAM A LIVE STATS</div>
-              <div style={sectionTitleStyle}>球員數據</div>
+              <h2 style={sectionTitleStyle}>球員數據</h2>
             </div>
 
             <div style={legendWrapStyle}>
               <div style={legendItemStyle}>
-                <span style={legendOnStyle} />
+                <span style={{ ...legendDotStyle, background: "#f97316" }} />
                 場上球員
               </div>
               <div style={legendItemStyle}>
-                <span style={legendBenchStyle} />
+                <span style={{ ...legendDotStyle, background: "#52525b" }} />
                 場下球員
               </div>
             </div>
           </div>
 
-          <div style={tableWrapStyle}>
+          <div style={tableScrollStyle}>
             <table style={tableStyle}>
               <thead>
                 <tr>
@@ -1020,30 +934,14 @@ export default function BoardPage() {
                   <th style={thStyle}>+/-</th>
                 </tr>
               </thead>
-
               <tbody>
                 {onCourtPlayers.map((p) => renderPlayerRow(p, true))}
-
-                {benchPlayers.length > 0 && (
-                  <tr>
-                    <td colSpan={13} style={dividerCellStyle}>
-                      <div style={dividerWrapStyle}>
-                        <div style={dividerLineStyle} />
-                        <div style={dividerLabelStyle}>BENCH</div>
-                        <div style={dividerLineStyle} />
-                      </div>
-                    </td>
-                  </tr>
-                )}
-
                 {benchPlayers.map((p) => renderPlayerRow(p, false))}
                 {renderTeamRow()}
               </tbody>
             </table>
           </div>
         </section>
-
-        {msg ? <div style={msgStyle}>{msg}</div> : null}
       </div>
     </main>
   );
@@ -1052,292 +950,225 @@ export default function BoardPage() {
 const pageStyle: React.CSSProperties = {
   minHeight: "100vh",
   background:
-    "radial-gradient(circle at 50% 0%, rgba(255,140,0,0.16), transparent 28%), radial-gradient(circle at 0% 100%, rgba(255,98,0,0.10), transparent 30%), radial-gradient(circle at 100% 100%, rgba(255,180,80,0.08), transparent 26%), linear-gradient(180deg, #0b0b0d 0%, #101014 55%, #060606 100%)",
-  color: "#fff",
-  padding: 16,
+    "radial-gradient(circle at top, rgba(249,115,22,0.16), transparent 28%), #05060a",
+  color: "#f4f4f5",
   position: "relative",
   overflow: "hidden",
 };
 
-const bgGlowTopStyle: React.CSSProperties = {
-  position: "absolute",
-  left: -80,
-  top: 90,
-  width: 320,
-  height: 320,
-  borderRadius: "50%",
-  background: "rgba(249,115,22,0.18)",
-  filter: "blur(90px)",
-  pointerEvents: "none",
-};
-
-const bgGlowBottomStyle: React.CSSProperties = {
-  position: "absolute",
-  right: -80,
-  bottom: 60,
-  width: 320,
-  height: 320,
-  borderRadius: "50%",
-  background: "rgba(251,191,36,0.14)",
-  filter: "blur(90px)",
-  pointerEvents: "none",
-};
-
-const bgBallStyle: React.CSSProperties = {
-  position: "absolute",
-  right: 70,
-  top: 90,
-  width: 210,
-  height: 210,
-  borderRadius: "50%",
-  transform: "rotate(-15deg)",
-  background:
-    "radial-gradient(circle at 30% 30%, #ffb347 0%, #f48c06 38%, #d96a00 70%, #9a4d00 100%)",
-  opacity: 0.12,
-  boxShadow:
-    "inset -18px -18px 40px rgba(0,0,0,0.24), inset 10px 10px 20px rgba(255,255,255,0.08), 0 20px 50px rgba(0,0,0,0.35)",
-  pointerEvents: "none",
-};
-
 const containerStyle: React.CSSProperties = {
-  width: "100%",
-  maxWidth: 1500,
-  margin: "0 auto",
-  display: "grid",
-  gap: 16,
   position: "relative",
-  zIndex: 1,
-};
-
-const loadingCardStyle: React.CSSProperties = {
-  maxWidth: 900,
-  margin: "80px auto",
-  borderRadius: 28,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background:
-    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
-  padding: 32,
-  textAlign: "center",
-  color: "#d4d4d8",
-  fontSize: 18,
-  backdropFilter: "blur(10px)",
+  zIndex: 2,
+  width: "100%",
+  maxWidth: 1600,
+  margin: "0 auto",
+  padding: "20px 18px 28px",
 };
 
 const topBarStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
-  gap: 16,
-  flexWrap: "wrap",
+  marginBottom: 18,
 };
 
 const topLeftStyle: React.CSSProperties = {
-  display: "grid",
-  gap: 10,
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
 };
 
 const eyebrowStyle: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
-  padding: "8px 12px",
+  padding: "10px 14px",
   borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(255,255,255,0.05)",
-  color: "#ffedd5",
-  fontSize: 11,
-  fontWeight: 900,
-  letterSpacing: "0.14em",
-  width: "fit-content",
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.04)",
+  fontSize: 13,
+  fontWeight: 800,
+  letterSpacing: "0.16em",
+  color: "#fef3c7",
 };
 
 const scoreCardStyle: React.CSSProperties = {
   position: "relative",
-  overflow: "hidden",
-  borderRadius: 30,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background:
-    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
-  padding: 24,
   display: "grid",
-  gridTemplateColumns: "1.2fr 1fr 1.2fr",
-  alignItems: "center",
-  gap: 20,
+  gridTemplateColumns: "1fr 1.15fr 1fr",
+  gap: 16,
+  padding: 24,
+  borderRadius: 28,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background:
+    "linear-gradient(180deg, rgba(17,24,39,0.92), rgba(2,6,23,0.96))",
   boxShadow:
-    "0 30px 80px rgba(0,0,0,0.50), 0 0 0 1px rgba(255,140,0,0.08)",
-  backdropFilter: "blur(10px)",
+    "0 24px 60px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+  overflow: "hidden",
 };
 
 const scoreGlowOverlayStyle: React.CSSProperties = {
   position: "absolute",
   inset: 0,
   background:
-    "linear-gradient(135deg, rgba(255,140,0,0.12), transparent 28%, transparent 70%, rgba(255,140,0,0.08)), linear-gradient(180deg, rgba(255,255,255,0.04), transparent 18%)",
+    "radial-gradient(circle at 50% 0%, rgba(59,130,246,0.10), transparent 28%), radial-gradient(circle at 0% 50%, rgba(249,115,22,0.10), transparent 26%), radial-gradient(circle at 100% 50%, rgba(249,115,22,0.10), transparent 26%)",
   pointerEvents: "none",
 };
 
 const teamBigBlockStyle: React.CSSProperties = {
-  display: "grid",
-  gap: 14,
-  justifyItems: "center",
-  position: "relative",
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  alignItems: "center",
+  minHeight: 240,
   zIndex: 1,
 };
 
+const teamLabelStyle: React.CSSProperties = {
+  fontSize: 42,
+  fontWeight: 900,
+  letterSpacing: "-0.02em",
+  marginBottom: 16,
+};
+
+const bigScoreStyle: React.CSSProperties = {
+  fontSize: 150,
+  lineHeight: 1,
+  fontWeight: 900,
+  letterSpacing: "-0.06em",
+};
+
 const centerBlockStyle: React.CSSProperties = {
-  display: "grid",
-  justifyItems: "center",
-  gap: 16,
-  position: "relative",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
   zIndex: 1,
 };
 
 const topInfoRowStyle: React.CSSProperties = {
   display: "flex",
-  alignItems: "center",
-  gap: 12,
   flexWrap: "wrap",
   justifyContent: "center",
-};
-
-const teamLabelStyle: React.CSSProperties = {
-  fontSize: 30,
-  color: "#d4d4d8",
-  fontWeight: 800,
-  textAlign: "center",
-};
-
-const bigScoreStyle: React.CSSProperties = {
-  fontSize: 140,
-  lineHeight: 1,
-  fontWeight: 900,
-  letterSpacing: "-0.04em",
-  textShadow: "0 8px 30px rgba(0,0,0,0.35)",
+  gap: 10,
+  marginBottom: 20,
 };
 
 const quarterBadgeStyle: React.CSSProperties = {
-  padding: "8px 14px",
+  minWidth: 76,
+  height: 48,
   borderRadius: 999,
-  background: "rgba(255,255,255,0.05)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  fontSize: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "rgba(255,255,255,0.06)",
+  border: "1px solid rgba(255,255,255,0.12)",
   fontWeight: 900,
-  color: "#f5f5f5",
+  fontSize: 18,
 };
 
 const viewerPillStyle: React.CSSProperties = {
+  height: 48,
+  padding: "0 16px",
+  borderRadius: 999,
   display: "inline-flex",
   alignItems: "center",
-  gap: 8,
-  padding: "8px 14px",
-  borderRadius: 999,
-  background: "rgba(255,255,255,0.05)",
+  gap: 10,
+  background: "rgba(255,255,255,0.06)",
   border: "1px solid rgba(255,255,255,0.10)",
-  fontSize: 14,
   fontWeight: 700,
-  color: "#d4d4d8",
 };
 
 const viewerDotStyle: React.CSSProperties = {
-  width: 8,
-  height: 8,
+  width: 9,
+  height: 9,
   borderRadius: 999,
   background: "#22c55e",
-  boxShadow: "0 0 12px rgba(34,197,94,0.5)",
+  boxShadow: "0 0 12px rgba(34,197,94,0.55)",
 };
 
 const statusBadgeStyle: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 800,
-  padding: "8px 14px",
+  height: 48,
+  padding: "0 16px",
   borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.10)",
   display: "inline-flex",
   alignItems: "center",
-  gap: 8,
-};
-
-const statusDotStyle: React.CSSProperties = {
-  width: 8,
-  height: 8,
-  borderRadius: 999,
+  gap: 10,
+  border: "1px solid transparent",
+  fontWeight: 800,
 };
 
 const clockStyle: React.CSSProperties = {
-  fontSize: 96,
+  fontSize: 104,
   lineHeight: 1,
   fontWeight: 900,
-  letterSpacing: "-0.05em",
-  textShadow: "0 12px 40px rgba(0,0,0,0.4)",
+  letterSpacing: "-0.06em",
+  marginBottom: 22,
 };
 
-const quarterLineWrapStyle: React.CSSProperties = {
+const quarterScoreRowStyle: React.CSSProperties = {
   display: "flex",
-  gap: 10,
   flexWrap: "wrap",
   justifyContent: "center",
+  gap: 10,
 };
 
-const quarterItemStyle: React.CSSProperties = {
-  minWidth: 84,
-  borderRadius: 16,
-  border: "1px solid rgba(255,255,255,0.08)",
+const quarterCardStyle: React.CSSProperties = {
+  minWidth: 104,
+  padding: "16px 14px",
+  borderRadius: 18,
   background: "rgba(255,255,255,0.04)",
-  padding: "10px 12px",
+  border: "1px solid rgba(255,255,255,0.08)",
   textAlign: "center",
 };
 
-const quarterItemLabelStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "#a1a1aa",
+const quarterCardTitleStyle: React.CSSProperties = {
+  fontSize: 16,
   fontWeight: 800,
-  letterSpacing: "0.08em",
+  color: "#a1a1aa",
+  marginBottom: 8,
 };
 
-const quarterItemScoreStyle: React.CSSProperties = {
-  marginTop: 6,
-  fontSize: 16,
-  color: "#fff",
+const quarterCardValueStyle: React.CSSProperties = {
+  fontSize: 20,
   fontWeight: 900,
 };
 
 const tableCardStyle: React.CSSProperties = {
-  borderRadius: 30,
-  overflow: "hidden",
-  border: "1px solid rgba(255,255,255,0.10)",
+  marginTop: 18,
+  borderRadius: 28,
+  border: "1px solid rgba(255,255,255,0.08)",
   background:
-    "linear-gradient(180deg, rgba(24,24,28,0.96) 0%, rgba(10,10,12,0.98) 100%)",
+    "linear-gradient(180deg, rgba(17,24,39,0.88), rgba(2,6,23,0.94))",
   boxShadow:
-    "0 30px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,140,0,0.05)",
-  backdropFilter: "blur(10px)",
+    "0 24px 60px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.04)",
+  overflow: "hidden",
 };
 
-const tableHeaderStyle: React.CSSProperties = {
-  padding: "20px 20px 14px 20px",
+const tableHeaderWrapStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "flex-end",
   gap: 16,
-  flexWrap: "wrap",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  padding: "22px 22px 14px",
 };
 
 const sectionEyebrowStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 13,
+  letterSpacing: "0.14em",
+  fontWeight: 800,
   color: "#fdba74",
-  fontWeight: 900,
-  letterSpacing: "0.16em",
+  marginBottom: 10,
 };
 
 const sectionTitleStyle: React.CSSProperties = {
-  marginTop: 6,
-  fontSize: 28,
+  margin: 0,
+  fontSize: 30,
   fontWeight: 900,
-  letterSpacing: "-0.03em",
 };
 
 const legendWrapStyle: React.CSSProperties = {
   display: "flex",
-  gap: 14,
+  gap: 10,
   flexWrap: "wrap",
 };
 
@@ -1345,77 +1176,63 @@ const legendItemStyle: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 8,
-  fontSize: 14,
-  color: "#d4d4d8",
-  padding: "8px 12px",
+  padding: "10px 14px",
   borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.08)",
   background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "#d4d4d8",
+  fontWeight: 700,
 };
 
-const legendOnStyle: React.CSSProperties = {
+const legendDotStyle: React.CSSProperties = {
   width: 10,
   height: 10,
   borderRadius: 999,
-  background: "#f97316",
-  boxShadow: "0 0 12px rgba(249,115,22,0.45)",
 };
 
-const legendBenchStyle: React.CSSProperties = {
-  width: 10,
-  height: 10,
-  borderRadius: 999,
-  background: "#52525b",
-};
-
-const tableWrapStyle: React.CSSProperties = {
+const tableScrollStyle: React.CSSProperties = {
   width: "100%",
   overflowX: "auto",
 };
 
 const tableStyle: React.CSSProperties = {
   width: "100%",
-  minWidth: 1180,
+  minWidth: 1100,
   borderCollapse: "collapse",
-};
-
-const thStyle: React.CSSProperties = {
-  textAlign: "center",
-  padding: "16px 10px",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
-  color: "#a1a1aa",
-  fontSize: 15,
-  fontWeight: 900,
-  whiteSpace: "nowrap",
-  background: "rgba(255,255,255,0.03)",
 };
 
 const thNameStyle: React.CSSProperties = {
   textAlign: "left",
-  padding: "16px 14px",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  padding: "18px 16px",
   color: "#a1a1aa",
   fontSize: 15,
-  fontWeight: 900,
+  fontWeight: 800,
+  borderTop: "1px solid rgba(255,255,255,0.08)",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "18px 12px",
+  color: "#a1a1aa",
+  fontSize: 15,
+  fontWeight: 800,
+  borderTop: "1px solid rgba(255,255,255,0.08)",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
+};
+
+const tdNameStyle: React.CSSProperties = {
+  padding: "18px 16px",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
+  fontWeight: 800,
   whiteSpace: "nowrap",
-  background: "rgba(255,255,255,0.03)",
 };
 
 const tdStyle: React.CSSProperties = {
   textAlign: "center",
-  padding: "16px 10px",
-  borderBottom: "1px solid rgba(255,255,255,0.05)",
-  fontSize: 16,
-  color: "#f4f4f5",
-  whiteSpace: "nowrap",
-};
-
-const tdNameStyle: React.CSSProperties = {
-  textAlign: "left",
-  padding: "16px 14px",
-  borderBottom: "1px solid rgba(255,255,255,0.05)",
-  fontSize: 16,
-  color: "#f4f4f5",
+  padding: "18px 12px",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
+  fontWeight: 700,
   whiteSpace: "nowrap",
 };
 
@@ -1433,66 +1250,77 @@ const playerDotStyle: React.CSSProperties = {
 };
 
 const playerNameStyle: React.CSSProperties = {
+  fontSize: 16,
   fontWeight: 800,
 };
 
-const dividerCellStyle: React.CSSProperties = {
-  padding: "14px 12px",
-  background: "rgba(0,0,0,0.24)",
-  borderBottom: "1px solid rgba(255,255,255,0.05)",
-};
-
-const dividerWrapStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 12,
-};
-
-const dividerLineStyle: React.CSSProperties = {
-  flex: 1,
-  height: 1,
-  background: "rgba(255,255,255,0.10)",
-};
-
-const dividerLabelStyle: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 900,
-  color: "#71717a",
-  whiteSpace: "nowrap",
-  letterSpacing: "0.18em",
-};
-
 const teamTotalRowStyle: React.CSSProperties = {
-  background: "linear-gradient(180deg, rgba(249,115,22,0.10) 0%, rgba(255,255,255,0.03) 100%)",
+  background:
+    "linear-gradient(90deg, rgba(249,115,22,0.16), rgba(255,255,255,0.03))",
 };
 
 const teamTotalNameStyle: React.CSSProperties = {
-  textAlign: "left",
-  padding: "18px 14px",
-  borderTop: "1px solid rgba(249,115,22,0.22)",
-  borderBottom: "1px solid rgba(255,255,255,0.05)",
-  fontSize: 16,
-  color: "#fff7ed",
-  whiteSpace: "nowrap",
+  padding: "18px 16px",
   fontWeight: 900,
-  letterSpacing: "0.06em",
+  fontSize: 16,
 };
 
 const teamTotalTdStyle: React.CSSProperties = {
   textAlign: "center",
-  padding: "18px 10px",
-  borderTop: "1px solid rgba(249,115,22,0.22)",
-  borderBottom: "1px solid rgba(255,255,255,0.05)",
-  fontSize: 16,
-  color: "#fff7ed",
-  whiteSpace: "nowrap",
+  padding: "18px 12px",
   fontWeight: 800,
+  whiteSpace: "nowrap",
 };
 
-const msgStyle: React.CSSProperties = {
+const loadingCardStyle: React.CSSProperties = {
+  minHeight: "100vh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 24,
+  fontWeight: 900,
+  color: "#f4f4f5",
+};
+
+const errorStyle: React.CSSProperties = {
+  marginBottom: 14,
+  padding: "14px 16px",
+  borderRadius: 16,
+  border: "1px solid rgba(239,68,68,0.25)",
+  background: "rgba(127,29,29,0.22)",
   color: "#fecaca",
-  padding: "12px 14px",
-  borderRadius: 18,
-  background: "rgba(127,29,29,0.20)",
-  border: "1px solid rgba(248,113,113,0.18)",
+  fontWeight: 700,
+};
+
+const bgGlowTopStyle: React.CSSProperties = {
+  position: "absolute",
+  top: -180,
+  left: "10%",
+  width: 420,
+  height: 420,
+  borderRadius: "50%",
+  background: "rgba(249,115,22,0.14)",
+  filter: "blur(120px)",
+  zIndex: 0,
+};
+
+const bgGlowBottomStyle: React.CSSProperties = {
+  position: "absolute",
+  right: "-4%",
+  bottom: -220,
+  width: 460,
+  height: 460,
+  borderRadius: "50%",
+  background: "rgba(249,115,22,0.12)",
+  filter: "blur(130px)",
+  zIndex: 0,
+};
+
+const bgBallStyle: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  background:
+    "radial-gradient(circle at center, rgba(255,255,255,0.02) 0, transparent 52%)",
+  zIndex: 0,
+  pointerEvents: "none",
 };
