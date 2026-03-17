@@ -230,7 +230,7 @@ export default function NewGamePage() {
   return {
     game_id: game.id,
     player_id: playerId,
-    team_side: "teamA",
+    team_side: "A",
     is_starter: selectedStarterIds.includes(playerId),
     position: player?.position ?? null,
   };
@@ -267,6 +267,25 @@ export default function NewGamePage() {
         setLoading(false);
         return;
       }
+
+      const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
+  game_id: game.id,
+  player_id: playerId,
+  team_side: "A",
+  quarter: 1,
+  in_seconds_left: 600,
+  out_seconds_left: null,
+}));
+
+const { error: starterShiftsError } = await supabase
+  .from("player_shifts")
+  .insert(starterShiftsPayload);
+
+if (starterShiftsError) {
+  setError("寫入先發上場時間失敗：" + starterShiftsError.message);
+  setLoading(false);
+  return;
+}
 
       router.push(`/games/${game.id}/live`);
     } catch (err: any) {

@@ -551,40 +551,44 @@ export default function BoardPage() {
   }, [events]);
 
   const teamAPlayerIds = useMemo(() => {
-    const ids = gamePlayers
-      .filter((gp) => gp.team_side === "A")
-      .map((gp) => gp.player_id);
-
-    if (ids.length > 0) return ids;
-    return players.map((p) => p.id);
-  }, [gamePlayers, players]);
+  return gamePlayers
+    .filter((gp) => gp.team_side === "A")
+    .map((gp) => gp.player_id);
+}, [gamePlayers]);
 
   const teamAPlayers = useMemo(() => {
     return sortPlayers(players.filter((p) => teamAPlayerIds.includes(p.id)));
   }, [players, teamAPlayerIds]);
 
   const starterIds = useMemo(() => {
-    const ids = gamePlayers
-      .filter((gp) => gp.team_side === "A" && gp.is_starter)
-      .map((gp) => gp.player_id);
+  const ids = gamePlayers
+    .filter((gp) => gp.team_side === "A" && gp.is_starter)
+    .map((gp) => gp.player_id);
 
-    if (ids.length > 0) return ids;
-    return teamAPlayers.slice(0, 5).map((p) => p.id);
-  }, [gamePlayers, teamAPlayers]);
+  return ids.slice(0, 5);
+}, [gamePlayers]);
 
   const currentOnCourtIds = useMemo(() => {
-    const lineup = new Set<string>(starterIds);
+  const lineup = new Set<string>(starterIds.slice(0, 5));
 
-    for (const e of validEvents) {
-      if (e.team_side !== "A") continue;
-      if (!e.player_id) continue;
+  for (const e of validEvents) {
+    if (e.team_side !== "A") continue;
+    if (!e.player_id) continue;
 
-      if (e.event_type === "sub_in") lineup.add(e.player_id);
-      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+    if (e.event_type === "sub_out") {
+      lineup.delete(e.player_id);
+      continue;
     }
 
-    return Array.from(lineup);
-  }, [starterIds, validEvents]);
+    if (e.event_type === "sub_in") {
+      if (lineup.size < 5) {
+        lineup.add(e.player_id);
+      }
+    }
+  }
+
+  return Array.from(lineup).slice(0, 5);
+}, [starterIds, validEvents]);
 
   const statsMap = useMemo(() => {
     const map: Record<string, Stat> = {};

@@ -706,10 +706,9 @@ export default function LiveGamePage() {
   }, [clock, game, teamScore]);
 
   const teamAPlayerIds = useMemo(() => {
-  if (gamePlayers.length > 0) {
-    return gamePlayers.map((gp) => gp.player_id);
-  }
-  return [];
+  return gamePlayers
+    .filter((gp) => gp.team_side === "A")
+    .map((gp) => gp.player_id);
 }, [gamePlayers]);
 
   const teamAPlayers = useMemo(() => {
@@ -718,26 +717,33 @@ export default function LiveGamePage() {
 
   const starterIds = useMemo(() => {
   const starterFromDb = gamePlayers
-    .filter((gp) => gp.is_starter)
+    .filter((gp) => gp.team_side === "A" && gp.is_starter)
     .map((gp) => gp.player_id);
 
-  if (starterFromDb.length > 0) return starterFromDb;
-  return [];
+  return starterFromDb.slice(0, 5);
 }, [gamePlayers]);
 
   const currentOnCourtIds = useMemo(() => {
-    const lineup = new Set<string>(starterIds);
+  const lineup = new Set<string>(starterIds.slice(0, 5));
 
-    for (const e of validEvents) {
-      if (e.team_side !== "A") continue;
-      if (!e.player_id) continue;
+  for (const e of validEvents) {
+    if (e.team_side !== "A") continue;
+    if (!e.player_id) continue;
 
-      if (e.event_type === "sub_in") lineup.add(e.player_id);
-      if (e.event_type === "sub_out") lineup.delete(e.player_id);
+    if (e.event_type === "sub_out") {
+      lineup.delete(e.player_id);
+      continue;
     }
 
-    return Array.from(lineup);
-  }, [starterIds, validEvents]);
+    if (e.event_type === "sub_in") {
+      if (lineup.size < 5) {
+        lineup.add(e.player_id);
+      }
+    }
+  }
+
+  return Array.from(lineup).slice(0, 5);
+}, [starterIds, validEvents]);
 
   const onCourtPlayers = useMemo(() => {
     return sortByNumber(teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id))).slice(0, 5);
@@ -815,33 +821,34 @@ export default function LiveGamePage() {
   }
 
   async function makeSubstitution() {
-    if (!game || !clock) return;
-    if (inCooldown("substitution", 180)) return;
+  if (!game || !clock) return;
+  if (inCooldown("substitution", 180)) return;
 
-    if (game.status === "finished") {
-      setError("比賽已結束，不能換人");
-      return;
-    }
+  if (game.status === "finished") {
+    setError("比賽已結束，不能換人");
+    return;
+  }
 
-    if (subOutPlayerIds.length === 0) {
-      setError("請先選擇下場球員");
-      return;
-    }
+  if (subOutPlayerIds.length === 0) {
+    setError("請先選擇下場球員");
+    return;
+  }
 
-    if (subOutPlayerIds.length !== subInPlayerIds.length) {
-      setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
-      return;
-    }
+  if (subOutPlayerIds.length !== subInPlayerIds.length) {
+    setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
+    return;
+  }
 
-    const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
-    if (duplicated) {
-      setError("上場與下場名單不可重複");
-      return;
-    }
+  const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
+  if (duplicated) {
+    setError("上場與下場名單不可重複");
+    return;
+  }
 
-    setSubmittingSub(true);
-    setError("");
+  setSubmittingSub(true);
+  setError("");
 
+  try {
     const payload = [
       ...subOutPlayerIds.map((playerId) => ({
         game_id: game.id,
@@ -866,11 +873,49 @@ export default function LiveGamePage() {
         "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
       );
 
-    setSubmittingSub(false);
-
     if (error) {
       setError(`換人失敗：${error.message}`);
       return;
+    }
+
+    // 1. 先把下場球員目前這段 shift 關掉
+    for (const playerId of subOutPlayerIds) {
+      const { error: shiftOutError } = await supabase
+        .from("player_shifts")
+        .update({
+          out_seconds_left: clock.seconds_left,
+        })
+        .eq("game_id", game.id)
+        .eq("player_id", playerId)
+        .eq("quarter", clock.quarter)
+        .eq("team_side", "A")
+        .is("out_seconds_left", null);
+
+      if (shiftOutError) {
+        setError(`更新下場時間失敗：${shiftOutError.message}`);
+        return;
+      }
+    }
+
+    // 2. 再新增上場球員新的 shift
+    if (subInPlayerIds.length > 0) {
+      const shiftInRows = subInPlayerIds.map((playerId) => ({
+        game_id: game.id,
+        player_id: playerId,
+        team_side: "A",
+        quarter: clock.quarter,
+        in_seconds_left: clock.seconds_left,
+        out_seconds_left: null,
+      }));
+
+      const { error: shiftInError } = await supabase
+        .from("player_shifts")
+        .insert(shiftInRows);
+
+      if (shiftInError) {
+        setError(`新增上場時間失敗：${shiftInError.message}`);
+        return;
+      }
     }
 
     if (subOutPlayerIds.includes(selectedPlayerId)) {
@@ -886,7 +931,10 @@ export default function LiveGamePage() {
         return [...prev, ...nextItems];
       });
     }
+  } finally {
+    setSubmittingSub(false);
   }
+}
 
   const quarterScores = useMemo(() => {
     const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
