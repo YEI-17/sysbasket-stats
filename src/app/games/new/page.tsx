@@ -230,7 +230,7 @@ export default function NewGamePage() {
   return {
     game_id: game.id,
     player_id: playerId,
-    team_side: "A",
+    team_side: "teamA",
     is_starter: selectedStarterIds.includes(playerId),
     position: player?.position ?? null,
   };
