@@ -217,8 +217,8 @@ function initials(name?: string | null) {
 }
 
 export default function PlayerProfilePage() {
-  const params = useParams<{ id: string }>();
-  const playerId = String(params?.id || "");
+  const params = useParams();
+  const playerId = Array.isArray(params?.id) ? params.id[0] : params?.id ?? "";
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -229,6 +229,7 @@ export default function PlayerProfilePage() {
 
   const load = useCallback(async () => {
     if (!playerId) {
+      console.log("useParams() =", params);
       setError("抓不到 playerId，請確認路由是否為 /games/players/[id]");
       setLoading(false);
       return;
@@ -291,7 +292,7 @@ export default function PlayerProfilePage() {
     } finally {
       setLoading(false);
     }
-  }, [playerId]);
+  }, [playerId, params]);
 
   useEffect(() => {
     load();

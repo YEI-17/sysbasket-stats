@@ -47,11 +47,6 @@ type TrendItem = {
   value: number;
 };
 
-type TeamStatRow = {
-  name: string;
-  value: string;
-};
-
 function normalizeTeamSide(side?: string | null): "teamA" | "teamB" | null {
   if (!side) return null;
   const s = String(side).trim().toLowerCase();
@@ -334,30 +329,6 @@ export default function TeamStatsPage() {
       }));
   }, [summary.recentGames]);
 
-  const statRows: TeamStatRow[] = useMemo(
-    () => [
-      { name: "出賽場次", value: String(summary.gp) },
-      { name: "團隊場均得分", value: summary.avgPts },
-      { name: "團隊場均失分", value: summary.oppAvgPts },
-      { name: "團隊場均籃板", value: summary.avgReb },
-      { name: "團隊場均助攻", value: summary.avgAst },
-      { name: "團隊場均失誤", value: summary.avgTov },
-      {
-        name: "2分球",
-        value: `${summary.totalFg2m}/${summary.totalFg2a} (${summary.fg2Pct})`,
-      },
-      {
-        name: "3分球",
-        value: `${summary.totalFg3m}/${summary.totalFg3a} (${summary.fg3Pct})`,
-      },
-      {
-        name: "罰球",
-        value: `${summary.totalFtm}/${summary.totalFta} (${summary.ftPct})`,
-      },
-    ],
-    [summary]
-  );
-
   const maxPts = useMemo(() => {
     if (!summary.recentGames.length) return 0;
     return Math.max(...summary.recentGames.map((g) => g.myScore));
@@ -420,7 +391,8 @@ export default function TeamStatsPage() {
               width: 240,
               height: 240,
               borderRadius: "50%",
-              background: "radial-gradient(circle, rgba(255,145,56,0.22) 0%, rgba(255,145,56,0) 70%)",
+              background:
+                "radial-gradient(circle, rgba(255,145,56,0.22) 0%, rgba(255,145,56,0) 70%)",
               pointerEvents: "none",
             }}
           />
@@ -498,7 +470,26 @@ export default function TeamStatsPage() {
                 <option style={{ color: "#000" }}>最近10場</option>
               </select>
 
-              
+              <Link
+                href="/staff"
+                style={{
+                  height: 46,
+                  padding: "0 18px",
+                  borderRadius: 14,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  textDecoration: "none",
+                  color: "#fff5ef",
+                  background:
+                    "linear-gradient(180deg, rgba(255,146,54,0.18) 0%, rgba(255,146,54,0.08) 100%)",
+                  border: "1px solid rgba(255,170,90,0.18)",
+                  fontWeight: 800,
+                  boxShadow: "0 10px 24px rgba(255,120,40,0.12)",
+                }}
+              >
+                返回
+              </Link>
 
               <div
                 style={{
@@ -884,7 +875,7 @@ export default function TeamStatsPage() {
           className="team-bottom-grid"
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr",
+            gridTemplateColumns: "1.1fr 0.9fr 0.9fr",
             gap: 18,
           }}
         >
@@ -894,101 +885,219 @@ export default function TeamStatsPage() {
                 "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
               border: "1px solid rgba(255,170,90,0.12)",
               borderRadius: 28,
-              padding: 20,
+              padding: 22,
               boxShadow:
                 "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
+              display: "grid",
+              gap: 16,
             }}
           >
-            <div
-              style={{
-                fontSize: 12,
-                color: "rgba(255,186,127,0.58)",
-                letterSpacing: 1.2,
-                marginBottom: 4,
-                fontWeight: 800,
-              }}
-            >
-              TEAM SUMMARY
-            </div>
-            <div
-              style={{
-                fontSize: 22,
-                fontWeight: 900,
-                letterSpacing: -0.5,
-                marginBottom: 16,
-                color: "#fff7f0",
-              }}
-            >
-              團隊數據總表
-            </div>
-
-            <div
-              style={{
-                borderRadius: 22,
-                overflow: "hidden",
-                border: "1px solid rgba(255,170,90,0.10)",
-                background: "rgba(255,255,255,0.015)",
-              }}
-            >
+            <div>
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "1.4fr 0.6fr",
-                  padding: "14px 16px",
-                  background:
-                    "linear-gradient(180deg, rgba(255,145,56,0.12) 0%, rgba(255,145,56,0.05) 100%)",
-                  fontSize: 13,
-                  fontWeight: 900,
-                  color: "rgba(255,229,205,0.84)",
+                  fontSize: 12,
+                  color: "rgba(255,186,127,0.58)",
+                  letterSpacing: 1.2,
+                  marginBottom: 4,
+                  fontWeight: 800,
                 }}
               >
-                <div>項目</div>
-                <div style={{ textAlign: "right" }}>數值</div>
+                TEAM IDENTITY
               </div>
-
-              {statRows.map((row, idx) => (
-                <div
-                  key={row.name}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1.4fr 0.6fr",
-                    padding: "15px 16px",
-                    background:
-                      idx % 2 === 0
-                        ? "rgba(255,255,255,0.018)"
-                        : "rgba(255,145,56,0.025)",
-                    borderTop: "1px solid rgba(255,170,90,0.07)",
-                    alignItems: "center",
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 14,
-                      color: "rgba(255,240,228,0.80)",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {row.name}
-                  </div>
-
-                  <div
-                    style={{
-                      textAlign: "right",
-                      fontSize: 16,
-                      fontWeight: 900,
-                      color: "#ffe4cf",
-                    }}
-                  >
-                    {row.value}
-                  </div>
-                </div>
-              ))}
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 900,
+                  letterSpacing: -0.5,
+                  color: "#fff7f0",
+                }}
+              >
+                團隊表現重點
+              </div>
             </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <InsightRow
+                label="進攻輸出"
+                value={`${summary.avgPts} PPG`}
+                hint="整體得分能力"
+              />
+              <InsightRow
+                label="防守表現"
+                value={`${summary.oppAvgPts} Opp PPG`}
+                hint="對手平均得分"
+              />
+              <InsightRow
+                label="團隊連結"
+                value={`${summary.avgAst} APG`}
+                hint="助攻帶動進攻"
+              />
+              <InsightRow
+                label="失誤控制"
+                value={`${summary.avgTov} TOV`}
+                hint="球權穩定度"
+              />
+            </div>
+          </div>
+
+          <div
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.12)",
+              borderRadius: 28,
+              padding: 22,
+              boxShadow:
+                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
+              display: "grid",
+              gap: 16,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "rgba(255,186,127,0.58)",
+                  letterSpacing: 1.2,
+                  marginBottom: 4,
+                  fontWeight: 800,
+                }}
+              >
+                SHOOTING PROFILE
+              </div>
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 900,
+                  letterSpacing: -0.5,
+                  color: "#fff7f0",
+                }}
+              >
+                命中率概況
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <RateCard
+                title="2分命中率"
+                value={summary.fg2Pct}
+                sub={`${summary.totalFg2m}/${summary.totalFg2a}`}
+              />
+              <RateCard
+                title="3分命中率"
+                value={summary.fg3Pct}
+                sub={`${summary.totalFg3m}/${summary.totalFg3a}`}
+              />
+              <RateCard
+                title="罰球命中率"
+                value={summary.ftPct}
+                sub={`${summary.totalFtm}/${summary.totalFta}`}
+              />
+            </div>
+          </div>
+
+          <div
+            style={{
+              background:
+                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.12)",
+              borderRadius: 28,
+              padding: 22,
+              boxShadow:
+                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
+              display: "grid",
+              gap: 16,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "rgba(255,186,127,0.58)",
+                  letterSpacing: 1.2,
+                  marginBottom: 4,
+                  fontWeight: 800,
+                }}
+              >
+                FORM
+              </div>
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 900,
+                  letterSpacing: -0.5,
+                  color: "#fff7f0",
+                }}
+              >
+                近期狀態
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, 1fr)",
+                gap: 12,
+              }}
+            >
+              <MiniHighlight title="出賽" value={String(summary.gp)} />
+              <MiniHighlight title="最高得分" value={String(maxPts)} />
+              <MiniHighlight title="最低失分" value={String(minOppPts)} />
+              <MiniHighlight title="平均分差" value={avgDiff} />
+            </div>
+
+            <div
+              style={{
+                borderRadius: 18,
+                padding: 14,
+                background: "rgba(255,145,56,0.05)",
+                border: "1px solid rgba(255,170,90,0.10)",
+                color: "rgba(255,232,214,0.76)",
+                fontSize: 14,
+                lineHeight: 1.7,
+              }}
+            >
+              {Number(summary.avgPts) >= Number(summary.oppAvgPts)
+                ? "目前整體進攻輸出略高於失分，團隊表現偏正向。"
+                : "目前整體失分略高於得分，建議優先改善防守與失誤控制。"}
+            </div>
+          </div>
+
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              background:
+                "linear-gradient(180deg, rgba(16,11,9,0.92) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.10)",
+              borderRadius: 24,
+              padding: 16,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 10,
+              boxShadow:
+                "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,220,180,0.03)",
+            }}
+          >
+            <StatChip label="GP" value={String(summary.gp)} />
+            <StatChip label="PPG" value={summary.avgPts} />
+            <StatChip label="RPG" value={summary.avgReb} />
+            <StatChip label="APG" value={summary.avgAst} />
+            <StatChip label="TOV" value={summary.avgTov} />
+            <StatChip label="2PT%" value={summary.fg2Pct} />
+            <StatChip label="3PT%" value={summary.fg3Pct} />
+            <StatChip label="FT%" value={summary.ftPct} />
+            <StatChip label="Opp PPG" value={summary.oppAvgPts} />
           </div>
         </section>
       </div>
 
       <style jsx>{`
+        @media (max-width: 1100px) {
+          .team-bottom-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+
         @media (max-width: 980px) {
           .team-mid-grid {
             grid-template-columns: 1fr !important;
@@ -1057,6 +1166,192 @@ function MiniInfoCard({
       >
         {sub}
       </div>
+    </div>
+  );
+}
+
+function InsightRow({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr auto",
+        gap: 12,
+        alignItems: "center",
+        padding: 14,
+        borderRadius: 18,
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
+        border: "1px solid rgba(255,170,90,0.10)",
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13,
+            color: "rgba(255,210,170,0.56)",
+            fontWeight: 800,
+            marginBottom: 3,
+          }}
+        >
+          {label}
+        </div>
+        <div
+          style={{
+            fontSize: 13,
+            color: "rgba(255,236,220,0.54)",
+            fontWeight: 600,
+          }}
+        >
+          {hint}
+        </div>
+      </div>
+
+      <div
+        style={{
+          fontSize: 20,
+          fontWeight: 950,
+          color: "#ffe0c6",
+          letterSpacing: -0.5,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function RateCard({
+  title,
+  value,
+  sub,
+}: {
+  title: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div
+      style={{
+        borderRadius: 20,
+        padding: 16,
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
+        border: "1px solid rgba(255,170,90,0.10)",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 13,
+          color: "rgba(255,206,163,0.56)",
+          fontWeight: 800,
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          fontSize: 30,
+          fontWeight: 950,
+          letterSpacing: -1,
+          lineHeight: 1,
+          color: "#fff3e8",
+        }}
+      >
+        {value}
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          color: "rgba(255,186,127,0.46)",
+          fontWeight: 800,
+        }}
+      >
+        {sub}
+      </div>
+    </div>
+  );
+}
+
+function MiniHighlight({
+  title,
+  value,
+}: {
+  title: string;
+  value: string;
+}) {
+  return (
+    <div
+      style={{
+        borderRadius: 18,
+        padding: 14,
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
+        border: "1px solid rgba(255,170,90,0.10)",
+        display: "grid",
+        gap: 6,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 12,
+          color: "rgba(255,206,163,0.56)",
+          fontWeight: 800,
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 950,
+          letterSpacing: -0.7,
+          lineHeight: 1,
+          color: "#fff3e8",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function StatChip({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div
+      style={{
+        height: 40,
+        padding: "0 14px",
+        borderRadius: 999,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        background: "rgba(255,145,56,0.05)",
+        border: "1px solid rgba(255,170,90,0.10)",
+        color: "#ffe8d5",
+        fontWeight: 800,
+        fontSize: 13,
+      }}
+    >
+      <span style={{ color: "rgba(255,195,145,0.70)" }}>{label}</span>
+      <span>{value}</span>
     </div>
   );
 }
