@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  calcPlayerStats,
   groupPlayerStats,
   pct,
   type EventRow,
@@ -31,6 +30,12 @@ type EventWithGame = {
   event_type: EventRow["event_type"];
   team_side?: "A" | "B" | null;
   is_undone?: boolean;
+};
+
+type PlayerGameStatRow = {
+  game_id: string;
+  player_id: string;
+  minutes: number | null;
 };
 
 type PlayerRow = Player & {
@@ -88,6 +93,7 @@ function safeStat(): Stat {
 export default function BoxDashboardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventWithGame[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
@@ -95,16 +101,21 @@ export default function BoxDashboardPage() {
     setLoading(true);
     setMsg("");
 
-    const [playersRes, eventsRes] = await Promise.all([
+    const [playersRes, eventsRes, playerGameStatsRes] = await Promise.all([
       supabase
         .from("players")
         .select("id, name, number, active")
         .eq("active", true)
         .order("number", { ascending: true }),
+
       supabase
         .from("events")
         .select("game_id, player_id, event_type, team_side, is_undone")
         .order("created_at", { ascending: true }),
+
+      supabase
+        .from("player_game_stats")
+        .select("game_id, player_id, minutes"),
     ]);
 
     if (playersRes.error) {
@@ -115,6 +126,12 @@ export default function BoxDashboardPage() {
 
     if (eventsRes.error) {
       setMsg(`讀取事件失敗：${eventsRes.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (playerGameStatsRes.error) {
+      setMsg(`讀取球員單場數據失敗：${playerGameStatsRes.error.message}`);
       setLoading(false);
       return;
     }
@@ -132,6 +149,7 @@ export default function BoxDashboardPage() {
 
     setPlayers(playerRows);
     setEvents(eventRows);
+    setPlayerGameStats((playerGameStatsRes.data || []) as PlayerGameStatRow[]);
     setLoading(false);
   }, []);
 
@@ -148,6 +166,11 @@ export default function BoxDashboardPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "players" },
+        () => void loadAll()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "player_game_stats" },
         () => void loadAll()
       )
       .subscribe();
@@ -300,16 +323,38 @@ export default function BoxDashboardPage() {
   }, [teamPlayerEvents]);
 
   const playerAvgMinutesMap = useMemo(() => {
-    const result: Record<string, string> = {};
-    for (const player of players) {
-      result[player.id] = "--";
+    const totalMinutesMap: Record<string, number> = {};
+    const gamesMap: Record<string, Set<string>> = {};
+
+    for (const row of playerGameStats) {
+      if (!activePlayerIdSet.has(row.player_id)) continue;
+
+      if (!totalMinutesMap[row.player_id]) {
+        totalMinutesMap[row.player_id] = 0;
+      }
+      totalMinutesMap[row.player_id] += Number(row.minutes || 0);
+
+      if (!gamesMap[row.player_id]) {
+        gamesMap[row.player_id] = new Set<string>();
+      }
+      gamesMap[row.player_id].add(row.game_id);
     }
+
+    const result: Record<string, string> = {};
+
+    for (const player of players) {
+      const totalMinutes = totalMinutesMap[player.id] || 0;
+      const gamesPlayed = gamesMap[player.id]?.size || 0;
+      result[player.id] =
+        gamesPlayed > 0 ? (totalMinutes / gamesPlayed).toFixed(1) : "0.0";
+    }
+
     return result;
-  }, [players]);
+  }, [playerGameStats, players, activePlayerIdSet]);
 
   const playerRows = useMemo<PlayerRow[]>(() => {
     return players.map((player) => {
-      const stat = playerStatMap[player.id] || calcPlayerStats([]);
+      const stat = playerStatMap[player.id] || safeStat();
       const gamesPlayed = playerGameCountMap[player.id] || 0;
       const playerEff = eff(stat);
 
@@ -317,7 +362,7 @@ export default function BoxDashboardPage() {
         ...player,
         stat,
         gamesPlayed,
-        avgMin: playerAvgMinutesMap[player.id] || "--",
+        avgMin: playerAvgMinutesMap[player.id] || "0.0",
         eff: playerEff,
         avgPts: avg(stat.pts, gamesPlayed),
         avgReb: avg(stat.reb, gamesPlayed),
@@ -355,16 +400,9 @@ export default function BoxDashboardPage() {
       <div className="pointer-events-none absolute left-[-60px] top-[120px] h-[320px] w-[320px] rounded-full bg-orange-500/20 blur-[100px]" />
       <div className="pointer-events-none absolute bottom-[60px] right-[-60px] h-[320px] w-[320px] rounded-full bg-blue-400/15 blur-[100px]" />
 
-      <div className="pointer-events-none absolute right-[70px] top-[90px] hidden h-[210px] w-[210px] animate-[floatBall1_8s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
-      <div className="pointer-events-none absolute bottom-[90px] left-[60px] hidden h-[160px] w-[160px] animate-[floatBall2_10s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
-
       <div className="relative z-10 mx-auto max-w-7xl">
         <section className="relative mb-6 overflow-hidden rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-6 shadow-[0_30px_80px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,140,0,0.08)] backdrop-blur md:p-8">
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,140,0,0.12),transparent_28%,transparent_70%,rgba(255,140,0,0.08)),linear-gradient(180deg,rgba(255,255,255,0.04),transparent_18%)]" />
-          <div className="pointer-events-none absolute bottom-[-10px] right-[24px] text-[clamp(54px,10vw,120px)] font-black tracking-[-0.06em] text-white/[0.04]">
-            ANALYTICS
-          </div>
-
           <div className="relative z-10 flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
             <div className="max-w-3xl">
               <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-black tracking-[0.14em] text-orange-100">
@@ -391,11 +429,6 @@ export default function BoxDashboardPage() {
                 REFRESH
               </button>
             </div>
-          </div>
-
-          <div className="relative z-10 mt-6 flex items-center gap-3 border-t border-white/10 pt-4 text-xs font-extrabold tracking-[0.14em] text-orange-100/50">
-            <div className="h-2.5 w-2.5 rounded-full bg-[linear-gradient(135deg,#ffb347_0%,#f48c06_100%)] shadow-[0_0_16px_rgba(244,140,6,0.4)]" />
-            <span>COURTSIDE ANALYTICS DASHBOARD</span>
           </div>
         </section>
 
@@ -496,10 +529,6 @@ export default function BoxDashboardPage() {
                 </div>
               </div>
 
-              <div className="mb-4 rounded-2xl border border-yellow-400/15 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-100">
-                AVG MIN 目前先保留欄位。你現在的資料表沒有記錄換人當下的比賽秒數，所以還無法精準計算球員場均上場時間。
-              </div>
-
               <div className="overflow-x-auto rounded-3xl border border-white/10 bg-black/20">
                 <table className="min-w-[1480px] w-full text-sm">
                   <thead>
@@ -591,28 +620,6 @@ export default function BoxDashboardPage() {
                 </table>
               </div>
             </section>
-
-            <style jsx global>{`
-              @keyframes floatBall1 {
-                0%,
-                100% {
-                  transform: translateY(0px) rotate(-16deg);
-                }
-                50% {
-                  transform: translateY(-16px) rotate(-10deg);
-                }
-              }
-
-              @keyframes floatBall2 {
-                0%,
-                100% {
-                  transform: translateY(0px) rotate(18deg);
-                }
-                50% {
-                  transform: translateY(14px) rotate(24deg);
-                }
-              }
-            `}</style>
           </>
         )}
       </div>
