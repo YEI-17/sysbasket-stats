@@ -191,7 +191,7 @@ export default function ViewerGamesPage() {
   }
 
   function handleOpenPlayers() {
-    router.push("/players");
+    router.push("/games/players");
   }
 
   function handleOpenRankings() {
@@ -234,10 +234,6 @@ export default function ViewerGamesPage() {
               <h1>
                 歡迎回來，<span>{viewerName}</span>
               </h1>
-              <p>
-                從這裡快速進入比賽列表、團隊數據、球員列表與數據排行榜，
-                集中查看目前賽況與完整資料入口。
-              </p>
 
               <div className="hero-stats">
                 <div className="hero-stat">
