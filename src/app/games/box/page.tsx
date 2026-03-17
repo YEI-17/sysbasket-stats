@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import {
   groupPlayerStats,
   pct,
-  type EventRow,
+  type EventRow as StatEventRow,
   type Stat,
 } from "@/lib/stats";
 
@@ -16,26 +16,52 @@ type Player = {
   active?: boolean;
 };
 
+type GameRow = {
+  id: string;
+  teamA: string | null;
+  teamB: string | null;
+  is_live?: boolean | null;
+  ended_at?: string | null;
+  status?: string | null;
+};
+
 type EventDbRow = {
+  id: string;
   game_id: string;
   player_id: string | null;
-  event_type: EventRow["event_type"];
+  quarter: number;
+  event_type: StatEventRow["event_type"] | string;
+  created_at: string;
   team_side?: "A" | "B" | null;
   is_undone?: boolean | null;
+  undone_at?: string | null;
 };
 
 type EventWithGame = {
+  id: string;
   game_id: string;
   player_id: string | null;
-  event_type: EventRow["event_type"];
+  quarter: number;
+  event_type: StatEventRow["event_type"] | string;
+  created_at: string;
   team_side?: "A" | "B" | null;
   is_undone?: boolean;
 };
 
-type PlayerGameStatRow = {
+type ClockRow = {
+  game_id: string;
+  quarter: number;
+  seconds_left: number;
+  is_running: boolean;
+  updated_at?: string | null;
+};
+
+type GamePlayerRow = {
+  id: string;
   game_id: string;
   player_id: string;
-  minutes: number | null;
+  team_side: "A" | "B";
+  is_starter: boolean;
 };
 
 type PlayerRow = Player & {
@@ -52,6 +78,27 @@ type PlayerRow = Player & {
   avgPf: string;
   avgEff: string;
 };
+
+const CLOCK_TABLE = "game_clock";
+const REGULAR_SECONDS = 600;
+
+function safeStat(): Stat {
+  return {
+    pts: 0,
+    fg2m: 0,
+    fg2a: 0,
+    fg3m: 0,
+    fg3a: 0,
+    ftm: 0,
+    fta: 0,
+    reb: 0,
+    ast: 0,
+    stl: 0,
+    blk: 0,
+    tov: 0,
+    pf: 0,
+  };
+}
 
 function eff(stat: Stat) {
   return (
@@ -72,28 +119,156 @@ function avg(value: number, gamesPlayed: number) {
   return (value / gamesPlayed).toFixed(1);
 }
 
-function safeStat(): Stat {
-  return {
-    pts: 0,
-    fg2m: 0,
-    fg2a: 0,
-    fg3m: 0,
-    fg3a: 0,
-    ftm: 0,
-    fta: 0,
-    reb: 0,
-    ast: 0,
-    stl: 0,
-    blk: 0,
-    tov: 0,
-    pf: 0,
-  };
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function computeDisplaySeconds(clock: ClockRow | null) {
+  if (!clock) return REGULAR_SECONDS;
+
+  const base = Math.max(0, clock.seconds_left ?? 0);
+
+  if (!clock.is_running) return base;
+  if (!clock.updated_at) return base;
+
+  const updatedAtMs = new Date(clock.updated_at).getTime();
+  if (Number.isNaN(updatedAtMs)) return base;
+
+  const nowMs = Date.now();
+  const elapsedSeconds = Math.floor((nowMs - updatedAtMs) / 1000);
+
+  return Math.max(0, base - elapsedSeconds);
+}
+
+function sortPlayers(list: Player[]) {
+  return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+}
+
+function getQuarterPlayedSeconds(
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number
+) {
+  if (quarter < currentQuarter) return REGULAR_SECONDS;
+  if (quarter > currentQuarter) return 0;
+  return REGULAR_SECONDS - currentDisplaySeconds;
+}
+
+function getClockUpdatedAtMs(clockRow: ClockRow | null | undefined) {
+  if (!clockRow?.updated_at) return null;
+  const ms = new Date(clockRow.updated_at).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function getQuarterStartMsFromClock(clockRow: ClockRow | null | undefined) {
+  const updatedAtMs = getClockUpdatedAtMs(clockRow);
+  if (updatedAtMs == null) return null;
+
+  const secondsLeft = clamp(
+    clockRow?.seconds_left ?? REGULAR_SECONDS,
+    0,
+    REGULAR_SECONDS
+  );
+  const playedAtSnapshot = REGULAR_SECONDS - secondsLeft;
+
+  return updatedAtMs - playedAtSnapshot * 1000;
+}
+
+function getFallbackElapsedFromOrder(
+  eventId: string,
+  quarterEvents: EventWithGame[],
+  playedSecondsThisQuarter: number
+) {
+  const subEvents = quarterEvents.filter(
+    (e) => e.event_type === "sub_in" || e.event_type === "sub_out"
+  );
+
+  if (subEvents.length === 0) return playedSecondsThisQuarter;
+
+  const index = subEvents.findIndex((e) => e.id === eventId);
+  if (index === -1) return playedSecondsThisQuarter;
+
+  return Math.floor(
+    ((index + 1) / (subEvents.length + 1)) * playedSecondsThisQuarter
+  );
+}
+
+function getQuarterStartMs(
+  quarter: number,
+  currentQuarter: number,
+  clockRows: ClockRow[],
+  currentClock: ClockRow | null
+) {
+  const clockMap = new Map(clockRows.map((row) => [row.quarter, row]));
+
+  const ownClock = quarter === currentQuarter ? currentClock : clockMap.get(quarter);
+  const ownStartMs = getQuarterStartMsFromClock(ownClock);
+  if (ownStartMs != null) return ownStartMs;
+
+  const nextClock = clockMap.get(quarter + 1);
+  const nextStartMs = getQuarterStartMsFromClock(nextClock);
+  if (nextStartMs != null) {
+    return nextStartMs - REGULAR_SECONDS * 1000;
+  }
+
+  return null;
+}
+
+function getPreciseEventElapsedSeconds(
+  event: EventWithGame,
+  quarterEvents: EventWithGame[],
+  quarter: number,
+  currentQuarter: number,
+  currentDisplaySeconds: number,
+  clockRows: ClockRow[],
+  currentClock: ClockRow | null
+) {
+  const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+    quarter,
+    currentQuarter,
+    currentDisplaySeconds
+  );
+
+  if (playedSecondsThisQuarter <= 0) return 0;
+
+  const quarterStartMs = getQuarterStartMs(
+    quarter,
+    currentQuarter,
+    clockRows,
+    currentClock
+  );
+
+  const eventMs = new Date(event.created_at).getTime();
+
+  if (quarterStartMs != null && !Number.isNaN(eventMs)) {
+    return clamp(
+      Math.floor((eventMs - quarterStartMs) / 1000),
+      0,
+      playedSecondsThisQuarter
+    );
+  }
+
+  return getFallbackElapsedFromOrder(
+    event.id,
+    quarterEvents,
+    playedSecondsThisQuarter
+  );
+}
+
+function formatAverageSeconds(totalSeconds: number, gamesPlayed: number) {
+  if (!gamesPlayed) return "0:00";
+  const avgSeconds = Math.round(totalSeconds / gamesPlayed);
+  const mm = Math.floor(avgSeconds / 60);
+  const ss = avgSeconds % 60;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
 }
 
 export default function BoxDashboardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
+  const [games, setGames] = useState<GameRow[]>([]);
   const [events, setEvents] = useState<EventWithGame[]>([]);
-  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
+  const [clockRows, setClockRows] = useState<ClockRow[]>([]);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
@@ -101,25 +276,45 @@ export default function BoxDashboardPage() {
     setLoading(true);
     setMsg("");
 
-    const [playersRes, eventsRes, playerGameStatsRes] = await Promise.all([
-      supabase
-        .from("players")
-        .select("id, name, number, active")
-        .eq("active", true)
-        .order("number", { ascending: true }),
+    const [playersRes, gamesRes, eventsRes, clocksRes, gamePlayersRes] =
+      await Promise.all([
+        supabase
+          .from("players")
+          .select("id, name, number, active")
+          .eq("active", true)
+          .order("number", { ascending: true }),
 
-      supabase
-        .from("events")
-        .select("game_id, player_id, event_type, team_side, is_undone")
-        .order("created_at", { ascending: true }),
+        supabase
+          .from("games")
+          .select("id, teamA, teamB, is_live, ended_at, status")
+          .order("created_at", { ascending: true }),
 
-      supabase
-        .from("player_game_stats")
-        .select("game_id, player_id, minutes"),
-    ]);
+        supabase
+          .from("events")
+          .select(
+            "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+          )
+          .order("created_at", { ascending: true }),
+
+        supabase
+          .from(CLOCK_TABLE)
+          .select("game_id, quarter, seconds_left, is_running, updated_at")
+          .order("game_id", { ascending: true })
+          .order("quarter", { ascending: true }),
+
+        supabase
+          .from("game_players")
+          .select("id, game_id, player_id, team_side, is_starter"),
+      ]);
 
     if (playersRes.error) {
       setMsg(`讀取球員失敗：${playersRes.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (gamesRes.error) {
+      setMsg(`讀取比賽失敗：${gamesRes.error.message}`);
       setLoading(false);
       return;
     }
@@ -130,26 +325,37 @@ export default function BoxDashboardPage() {
       return;
     }
 
-    if (playerGameStatsRes.error) {
-      setMsg(`讀取球員單場數據失敗：${playerGameStatsRes.error.message}`);
+    if (clocksRes.error) {
+      setMsg(`讀取比賽時間失敗：${clocksRes.error.message}`);
       setLoading(false);
       return;
     }
 
-    const playerRows = (playersRes.data || []) as Player[];
-    const eventRows = ((eventsRes.data || []) as EventDbRow[]).map(
-      (event): EventWithGame => ({
-        game_id: event.game_id,
-        player_id: event.player_id,
-        event_type: event.event_type,
-        team_side: event.team_side ?? null,
-        is_undone: !!event.is_undone,
-      })
+    if (gamePlayersRes.error) {
+      setMsg(`讀取出賽名單失敗：${gamePlayersRes.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setPlayers((playersRes.data || []) as Player[]);
+    setGames((gamesRes.data || []) as GameRow[]);
+    setClockRows((clocksRes.data || []) as ClockRow[]);
+    setGamePlayers((gamePlayersRes.data || []) as GamePlayerRow[]);
+    setEvents(
+      ((eventsRes.data || []) as EventDbRow[]).map(
+        (event): EventWithGame => ({
+          id: event.id,
+          game_id: event.game_id,
+          player_id: event.player_id,
+          quarter: event.quarter,
+          event_type: event.event_type,
+          created_at: event.created_at,
+          team_side: event.team_side ?? null,
+          is_undone: !!event.is_undone,
+        })
+      )
     );
 
-    setPlayers(playerRows);
-    setEvents(eventRows);
-    setPlayerGameStats((playerGameStatsRes.data || []) as PlayerGameStatRow[]);
     setLoading(false);
   }, []);
 
@@ -170,7 +376,17 @@ export default function BoxDashboardPage() {
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "player_game_stats" },
+        { event: "*", schema: "public", table: "games" },
+        () => void loadAll()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: CLOCK_TABLE },
+        () => void loadAll()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "game_players" },
         () => void loadAll()
       )
       .subscribe();
@@ -189,14 +405,69 @@ export default function BoxDashboardPage() {
     return new Set(players.map((player) => player.id));
   }, [players]);
 
+  const clocksByGame = useMemo(() => {
+    const map: Record<string, ClockRow[]> = {};
+    for (const row of clockRows) {
+      if (!map[row.game_id]) map[row.game_id] = [];
+      map[row.game_id].push(row);
+    }
+    for (const gameId of Object.keys(map)) {
+      map[gameId].sort((a, b) => a.quarter - b.quarter);
+    }
+    return map;
+  }, [clockRows]);
+
+  const gamePlayersByGame = useMemo(() => {
+    const map: Record<string, GamePlayerRow[]> = {};
+    for (const row of gamePlayers) {
+      if (!map[row.game_id]) map[row.game_id] = [];
+      map[row.game_id].push(row);
+    }
+    return map;
+  }, [gamePlayers]);
+
+  const eventsByGame = useMemo(() => {
+    const map: Record<string, EventWithGame[]> = {};
+    for (const event of validEvents) {
+      if (!map[event.game_id]) map[event.game_id] = [];
+      map[event.game_id].push(event);
+    }
+    return map;
+  }, [validEvents]);
+
+  const gamesById = useMemo(() => {
+    const map: Record<string, GameRow> = {};
+    for (const game of games) {
+      map[game.id] = game;
+    }
+    return map;
+  }, [games]);
+
+  const relevantGameIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    for (const gp of gamePlayers) {
+      if (gp.team_side === "A") ids.add(gp.game_id);
+    }
+
+    for (const event of validEvents) {
+      if (event.team_side === "A") ids.add(event.game_id);
+    }
+
+    return Array.from(ids);
+  }, [gamePlayers, validEvents]);
+
   const teamPlayerEvents = useMemo(() => {
     return validEvents.filter(
-      (event) => !!event.player_id && activePlayerIdSet.has(event.player_id)
+      (event) =>
+        event.team_side === "A" &&
+        !!event.player_id &&
+        activePlayerIdSet.has(event.player_id)
     );
   }, [validEvents, activePlayerIdSet]);
 
   const playerStatMap = useMemo(() => {
-    return groupPlayerStats(teamPlayerEvents);
+    return groupPlayerStats(teamPlayerEvents as StatEventRow[]);
   }, [teamPlayerEvents]);
 
   const teamStatByGame = useMemo(() => {
@@ -304,53 +575,172 @@ export default function BoxDashboardPage() {
   const playerGameCountMap = useMemo(() => {
     const map: Record<string, Set<string>> = {};
 
-    for (const event of teamPlayerEvents) {
-      if (!event.player_id) continue;
+    for (const row of gamePlayers) {
+      if (row.team_side !== "A") continue;
+      if (!activePlayerIdSet.has(row.player_id)) continue;
 
-      if (!map[event.player_id]) {
-        map[event.player_id] = new Set<string>();
+      if (!map[row.player_id]) {
+        map[row.player_id] = new Set<string>();
       }
-
-      map[event.player_id].add(event.game_id);
+      map[row.player_id].add(row.game_id);
     }
 
     const result: Record<string, number> = {};
     for (const playerId of Object.keys(map)) {
       result[playerId] = map[playerId].size;
     }
-
     return result;
-  }, [teamPlayerEvents]);
+  }, [gamePlayers, activePlayerIdSet]);
 
-  const playerAvgMinutesMap = useMemo(() => {
-    const totalMinutesMap: Record<string, number> = {};
-    const gamesMap: Record<string, Set<string>> = {};
+  const playerTotalSecondsMap = useMemo(() => {
+    const secondsMap: Record<string, number> = {};
 
-    for (const row of playerGameStats) {
-      if (!activePlayerIdSet.has(row.player_id)) continue;
-
-      if (!totalMinutesMap[row.player_id]) {
-        totalMinutesMap[row.player_id] = 0;
-      }
-      totalMinutesMap[row.player_id] += Number(row.minutes || 0);
-
-      if (!gamesMap[row.player_id]) {
-        gamesMap[row.player_id] = new Set<string>();
-      }
-      gamesMap[row.player_id].add(row.game_id);
+    for (const player of players) {
+      secondsMap[player.id] = 0;
     }
 
+    for (const gameId of relevantGameIds) {
+      const game = gamesById[gameId] ?? null;
+      const gameEvents = (eventsByGame[gameId] || []).filter((e) => e.team_side === "A");
+      const rows = gamePlayersByGame[gameId] || [];
+      const gameClockRows = clocksByGame[gameId] || [];
+
+      const teamAIds = rows
+        .filter((gp) => gp.team_side === "A")
+        .map((gp) => gp.player_id);
+
+      const teamAPlayers = sortPlayers(
+        players.filter((p) =>
+          teamAIds.length > 0 ? teamAIds.includes(p.id) : activePlayerIdSet.has(p.id)
+        )
+      );
+
+      if (teamAPlayers.length === 0) continue;
+
+      const starterIds = rows
+        .filter((gp) => gp.team_side === "A" && gp.is_starter)
+        .map((gp) => gp.player_id);
+
+      const fallbackStarterIds =
+        starterIds.length > 0 ? starterIds : teamAPlayers.slice(0, 5).map((p) => p.id);
+
+      const currentClock =
+        gameClockRows.length > 0 ? gameClockRows[gameClockRows.length - 1] : null;
+
+      const currentQuarter =
+        game?.status === "finished"
+          ? Math.max(
+              currentClock?.quarter ?? 1,
+              ...gameEvents.map((e) => e.quarter),
+              1
+            )
+          : currentClock?.quarter ??
+            Math.max(...gameEvents.map((e) => e.quarter), 1);
+
+      const currentDisplaySeconds =
+        game?.status === "finished" ? 0 : computeDisplaySeconds(currentClock);
+
+      const maxQuarter = Math.max(
+        currentQuarter,
+        ...gameEvents.map((e) => e.quarter),
+        1
+      );
+
+      let lineup = new Set<string>(fallbackStarterIds);
+
+      for (let q = 1; q <= maxQuarter; q += 1) {
+        const playedSecondsThisQuarter = getQuarterPlayedSeconds(
+          q,
+          currentQuarter,
+          currentDisplaySeconds
+        );
+
+        if (playedSecondsThisQuarter <= 0) continue;
+
+        const activeStartMap: Record<string, number | null> = {};
+        for (const player of teamAPlayers) {
+          activeStartMap[player.id] = lineup.has(player.id) ? 0 : null;
+        }
+
+        const quarterSubEvents = gameEvents
+          .filter(
+            (e) =>
+              e.quarter === q &&
+              !!e.player_id &&
+              (e.event_type === "sub_in" || e.event_type === "sub_out")
+          )
+          .sort((a, b) => {
+            const diff =
+              new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+            if (diff !== 0) return diff;
+            return a.id.localeCompare(b.id);
+          });
+
+        for (const event of quarterSubEvents) {
+          const playerId = event.player_id!;
+          const eventElapsed = getPreciseEventElapsedSeconds(
+            event,
+            quarterSubEvents,
+            q,
+            currentQuarter,
+            currentDisplaySeconds,
+            gameClockRows,
+            currentClock
+          );
+
+          if (event.event_type === "sub_in") {
+            if (activeStartMap[playerId] == null) {
+              activeStartMap[playerId] = eventElapsed;
+              lineup.add(playerId);
+            }
+          }
+
+          if (event.event_type === "sub_out") {
+            const startedAt = activeStartMap[playerId];
+
+            if (startedAt != null) {
+              secondsMap[playerId] =
+                (secondsMap[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
+              activeStartMap[playerId] = null;
+            }
+
+            lineup.delete(playerId);
+          }
+        }
+
+        for (const player of teamAPlayers) {
+          const startedAt = activeStartMap[player.id];
+          if (startedAt != null) {
+            secondsMap[player.id] =
+              (secondsMap[player.id] || 0) +
+              Math.max(0, playedSecondsThisQuarter - startedAt);
+          }
+        }
+      }
+    }
+
+    return secondsMap;
+  }, [
+    players,
+    relevantGameIds,
+    gamesById,
+    eventsByGame,
+    gamePlayersByGame,
+    clocksByGame,
+    activePlayerIdSet,
+  ]);
+
+  const playerAvgMinutesMap = useMemo(() => {
     const result: Record<string, string> = {};
 
     for (const player of players) {
-      const totalMinutes = totalMinutesMap[player.id] || 0;
-      const gamesPlayed = gamesMap[player.id]?.size || 0;
-      result[player.id] =
-        gamesPlayed > 0 ? (totalMinutes / gamesPlayed).toFixed(1) : "0.0";
+      const totalSeconds = playerTotalSecondsMap[player.id] || 0;
+      const gamesPlayed = playerGameCountMap[player.id] || 0;
+      result[player.id] = formatAverageSeconds(totalSeconds, gamesPlayed);
     }
 
     return result;
-  }, [playerGameStats, players, activePlayerIdSet]);
+  }, [players, playerTotalSecondsMap, playerGameCountMap]);
 
   const playerRows = useMemo<PlayerRow[]>(() => {
     return players.map((player) => {
@@ -362,7 +752,7 @@ export default function BoxDashboardPage() {
         ...player,
         stat,
         gamesPlayed,
-        avgMin: playerAvgMinutesMap[player.id] || "0.0",
+        avgMin: playerAvgMinutesMap[player.id] || "0:00",
         eff: playerEff,
         avgPts: avg(stat.pts, gamesPlayed),
         avgReb: avg(stat.reb, gamesPlayed),
@@ -400,9 +790,16 @@ export default function BoxDashboardPage() {
       <div className="pointer-events-none absolute left-[-60px] top-[120px] h-[320px] w-[320px] rounded-full bg-orange-500/20 blur-[100px]" />
       <div className="pointer-events-none absolute bottom-[60px] right-[-60px] h-[320px] w-[320px] rounded-full bg-blue-400/15 blur-[100px]" />
 
+      <div className="pointer-events-none absolute right-[70px] top-[90px] hidden h-[210px] w-[210px] animate-[floatBall1_8s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
+      <div className="pointer-events-none absolute bottom-[90px] left-[60px] hidden h-[160px] w-[160px] animate-[floatBall2_10s_ease-in-out_infinite] rounded-full bg-[radial-gradient(circle_at_30%_30%,#ffb347_0%,#f48c06_38%,#d96a00_70%,#9a4d00_100%)] opacity-[0.12] shadow-[inset_-18px_-18px_40px_rgba(0,0,0,0.25),inset_10px_10px_20px_rgba(255,255,255,0.08),0_20px_50px_rgba(0,0,0,0.35)] lg:block" />
+
       <div className="relative z-10 mx-auto max-w-7xl">
         <section className="relative mb-6 overflow-hidden rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-6 shadow-[0_30px_80px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,140,0,0.08)] backdrop-blur md:p-8">
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,140,0,0.12),transparent_28%,transparent_70%,rgba(255,140,0,0.08)),linear-gradient(180deg,rgba(255,255,255,0.04),transparent_18%)]" />
+          <div className="pointer-events-none absolute bottom-[-10px] right-[24px] text-[clamp(54px,10vw,120px)] font-black tracking-[-0.06em] text-white/[0.04]">
+            ANALYTICS
+          </div>
+
           <div className="relative z-10 flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
             <div className="max-w-3xl">
               <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-black tracking-[0.14em] text-orange-100">
@@ -429,6 +826,11 @@ export default function BoxDashboardPage() {
                 REFRESH
               </button>
             </div>
+          </div>
+
+          <div className="relative z-10 mt-6 flex items-center gap-3 border-t border-white/10 pt-4 text-xs font-extrabold tracking-[0.14em] text-orange-100/50">
+            <div className="h-2.5 w-2.5 rounded-full bg-[linear-gradient(135deg,#ffb347_0%,#f48c06_100%)] shadow-[0_0_16px_rgba(244,140,6,0.4)]" />
+            <span>COURTSIDE ANALYTICS DASHBOARD</span>
           </div>
         </section>
 
@@ -529,6 +931,10 @@ export default function BoxDashboardPage() {
                 </div>
               </div>
 
+              <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-100">
+                AVG MIN 目前改為依據每場比賽的 events、game_clock、game_players 回推實際上場時間，並以 mm:ss 顯示平均值。
+              </div>
+
               <div className="overflow-x-auto rounded-3xl border border-white/10 bg-black/20">
                 <table className="min-w-[1480px] w-full text-sm">
                   <thead>
@@ -582,7 +988,9 @@ export default function BoxDashboardPage() {
                           <td className="px-3 py-4 text-center font-semibold">
                             {row.gamesPlayed}
                           </td>
-                          <td className="px-3 py-4 text-center">{row.avgMin}</td>
+                          <td className="px-3 py-4 text-center font-semibold text-emerald-300">
+                            {row.avgMin}
+                          </td>
                           <td className="px-3 py-4 text-center font-bold text-orange-300">
                             {row.avgPts}
                           </td>
@@ -620,6 +1028,28 @@ export default function BoxDashboardPage() {
                 </table>
               </div>
             </section>
+
+            <style jsx global>{`
+              @keyframes floatBall1 {
+                0%,
+                100% {
+                  transform: translateY(0px) rotate(-16deg);
+                }
+                50% {
+                  transform: translateY(-16px) rotate(-10deg);
+                }
+              }
+
+              @keyframes floatBall2 {
+                0%,
+                100% {
+                  transform: translateY(0px) rotate(18deg);
+                }
+                50% {
+                  transform: translateY(14px) rotate(24deg);
+                }
+              }
+            `}</style>
           </>
         )}
       </div>
@@ -656,7 +1086,8 @@ function StatCard({
   const accentMap: Record<"orange" | "blue" | "violet", string> = {
     orange:
       "from-orange-500/20 to-orange-300/5 text-orange-200 border-orange-400/20",
-    blue: "from-blue-500/20 to-blue-300/5 text-blue-200 border-blue-400/20",
+    blue:
+      "from-blue-500/20 to-blue-300/5 text-blue-200 border-blue-400/20",
     violet:
       "from-violet-500/20 to-violet-300/5 text-violet-200 border-violet-400/20",
   };
