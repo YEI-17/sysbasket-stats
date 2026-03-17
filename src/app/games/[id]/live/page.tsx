@@ -383,42 +383,39 @@ export default function LiveGamePage() {
   }, [gameId]);
 
   useEffect(() => {
-    if (!clock?.is_running) {
-      if (tickerRef.current) {
-        clearInterval(tickerRef.current);
-        tickerRef.current = null;
-      }
-      return;
+  if (!clock?.is_running || !game) {
+    if (tickerRef.current) {
+      clearInterval(tickerRef.current);
+      tickerRef.current = null;
     }
+    return;
+  }
 
-    if (tickerRef.current) clearInterval(tickerRef.current);
+  if (tickerRef.current) clearInterval(tickerRef.current);
 
-    tickerRef.current = setInterval(() => {
-      setClock((prev) => {
-        if (!prev) return prev;
+  tickerRef.current = setInterval(() => {
+    setClock((prev) => {
+      if (!prev) return prev;
 
-        if (prev.seconds_left <= 1) {
-          return {
-            ...prev,
-            seconds_left: 0,
-            is_running: false,
-          };
-        }
+      const nextSeconds = Math.max(0, prev.seconds_left - 1);
+      const nextClock: ClockRow = {
+        ...prev,
+        seconds_left: nextSeconds,
+        is_running: nextSeconds > 0,
+      };
 
-        return {
-          ...prev,
-          seconds_left: prev.seconds_left - 1,
-        };
-      });
-    }, 1000);
+      void persistClock(nextClock);
+      return nextClock;
+    });
+  }, 1000);
 
-    return () => {
-      if (tickerRef.current) {
-        clearInterval(tickerRef.current);
-        tickerRef.current = null;
-      }
-    };
-  }, [clock?.is_running]);
+  return () => {
+    if (tickerRef.current) {
+      clearInterval(tickerRef.current);
+      tickerRef.current = null;
+    }
+  };
+}, [clock?.is_running, game]);
 
   async function persistClock(next: ClockRow) {
     const { error } = await supabase.from("game_clock").upsert(

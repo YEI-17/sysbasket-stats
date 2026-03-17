@@ -49,6 +49,16 @@ type GamePlayerRow = {
   is_starter: boolean;
 };
 
+type PlayerShiftRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: "teamA" | "teamB";
+  quarter: number;
+  in_seconds_left: number;
+  out_seconds_left: number | null;
+};
+
 type Stat = {
   pts: number;
   fg2m: number;
@@ -98,6 +108,39 @@ function formatMinutesFromSeconds(totalSeconds: number) {
   const m = Math.floor(safe / 60);
   const s = safe % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function getQuarterSeconds(quarter: number) {
+  return quarter <= 4 ? 600 : 300;
+}
+
+function getLiveSecondsFromShifts(params: {
+  playerId: string;
+  shifts: PlayerShiftRow[];
+  clock: ClockRow | null;
+  displaySeconds: number;
+}) {
+  const { playerId, shifts, clock, displaySeconds } = params;
+
+  const playerShifts = shifts.filter((s) => s.player_id === playerId);
+  let total = 0;
+
+  for (const s of playerShifts) {
+    const maxSeconds = getQuarterSeconds(s.quarter);
+    const inSec = Math.max(0, Math.min(maxSeconds, s.in_seconds_left ?? maxSeconds));
+
+    if (s.out_seconds_left == null) {
+      // 只有目前這一節且仍在場上的 open shift 才要即時累加
+      if (clock && clock.quarter === s.quarter) {
+        total += Math.max(0, inSec - displaySeconds);
+      }
+    } else {
+      const outSec = Math.max(0, Math.min(maxSeconds, s.out_seconds_left));
+      total += Math.max(0, inSec - outSec);
+    }
+  }
+
+  return total;
 }
 
 function applyEvent(stat: Stat, eventType: string) {
@@ -309,6 +352,7 @@ export default function BoardPage() {
   const [clock, setClock] = useState<ClockRow | null>(null);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [displaySeconds, setDisplaySeconds] = useState(REGULAR_SECONDS);
+  const [playerShifts, setPlayerShifts] = useState<PlayerShiftRow[]>([]);
   const [viewerCount, setViewerCount] = useState(1);
 
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
@@ -356,6 +400,23 @@ export default function BoardPage() {
 
     setGamePlayers((data as GamePlayerRow[]) || []);
   }
+
+  async function loadPlayerShifts() {
+  const { data, error } = await supabase
+    .from("player_shifts")
+    .select(
+      "id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left"
+    )
+    .eq("game_id", gameId)
+    .eq("team_side", "teamA");
+
+  if (error) {
+    setMsg(`讀取 player_shifts 失敗：${error.message}`);
+    return;
+  }
+
+  setPlayerShifts((data as PlayerShiftRow[]) || []);
+}
 
   async function loadEvents() {
     const { data, error } = await supabase
@@ -419,12 +480,13 @@ export default function BoardPage() {
     setMsg("");
 
     await Promise.all([
-      loadGame(),
-      loadPlayers(),
-      loadGamePlayers(),
-      loadEvents(),
-      loadClock(),
-    ]);
+  loadGame(),
+  loadPlayers(),
+  loadGamePlayers(),
+  loadPlayerShifts(),
+  loadEvents(),
+  loadClock(),
+]);
 
     if (showLoading) setLoading(false);
   }
@@ -489,6 +551,7 @@ export default function BoardPage() {
           table: "games",
           filter: `id=eq.${gameId}`,
         },
+        
         (payload) => {
           const newRow = payload.new as GameRow | undefined;
           if (newRow && newRow.id) {
@@ -522,6 +585,20 @@ export default function BoardPage() {
           await loadGamePlayers();
         }
       )
+
+.on(
+  "postgres_changes",
+  {
+    event: "*",
+    schema: "public",
+    table: "player_shifts",
+    filter: `game_id=eq.${gameId}`,
+  },
+  async () => {
+    await loadPlayerShifts();
+  }
+)
+
       .on(
         "postgres_changes",
         {
@@ -643,105 +720,18 @@ export default function BoardPage() {
 
   const minutesMap = useMemo(() => {
   const map: Record<string, number> = {};
-  const currentQuarter = clock?.quarter ?? 1;
 
   for (const p of teamAPlayers) {
-    map[p.id] = 0;
-  }
-
-  for (let q = 1; q <= currentQuarter; q += 1) {
-    const playedSecondsThisQuarter = getQuarterPlayedSeconds(
-      q,
-      currentQuarter,
-      displaySeconds
-    );
-
-    const lineup = new Set<string>();
-
-    if (q === 1) {
-      starterIds.slice(0, 5).forEach((id) => lineup.add(id));
-    } else {
-      starterIds.slice(0, 5).forEach((id) => lineup.add(id));
-
-      for (const e of validEvents) {
-        if (e.team_side !== "teamA") continue;
-        if (!e.player_id) continue;
-        if (e.quarter >= q) break;
-
-        if (e.event_type === "sub_out") {
-          lineup.delete(e.player_id);
-          continue;
-        }
-
-        if (e.event_type === "sub_in") {
-          if (lineup.size < 5) {
-            lineup.add(e.player_id);
-          }
-        }
-      }
-    }
-
-    const activeStartMap: Record<string, number | null> = {};
-    for (const p of teamAPlayers) {
-      activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
-    }
-
-    const quarterSubEvents = validEvents
-      .filter(
-        (e) =>
-          e.team_side === "teamA" &&
-          e.quarter === q &&
-          !!e.player_id &&
-          (e.event_type === "sub_in" || e.event_type === "sub_out")
-      )
-      .sort(
-        (a, b) =>
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-
-    for (const e of quarterSubEvents) {
-      const playerId = e.player_id!;
-      const eventElapsed = getEventElapsedSeconds(
-        e,
-        quarterSubEvents,
-        q,
-        currentQuarter,
-        displaySeconds,
-        clock
-      );
-
-      if (e.event_type === "sub_out") {
-        const startedAt = activeStartMap[playerId];
-        if (startedAt != null) {
-          map[playerId] =
-            (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
-          activeStartMap[playerId] = null;
-        }
-        continue;
-      }
-
-      if (e.event_type === "sub_in") {
-        const currentOnFloorCount = Object.values(activeStartMap).filter(
-          (v) => v != null
-        ).length;
-
-        if (activeStartMap[playerId] == null && currentOnFloorCount < 5) {
-          activeStartMap[playerId] = eventElapsed;
-        }
-      }
-    }
-
-    for (const p of teamAPlayers) {
-      const startedAt = activeStartMap[p.id];
-      if (startedAt != null) {
-        map[p.id] =
-          (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
-      }
-    }
+    map[p.id] = getLiveSecondsFromShifts({
+      playerId: p.id,
+      shifts: playerShifts,
+      clock,
+      displaySeconds,
+    });
   }
 
   return map;
-}, [teamAPlayers, validEvents, starterIds, clock, displaySeconds]);
+}, [teamAPlayers, playerShifts, clock, displaySeconds]);
 
   const totalScore = useMemo(() => {
     let home = 0;
