@@ -27,7 +27,7 @@ type EventDbRow = {
   quarter: number;
   event_type: StatEventRow["event_type"] | string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean | null;
   undone_at?: string | null;
 };
@@ -39,7 +39,7 @@ type EventWithGame = {
   quarter: number;
   event_type: StatEventRow["event_type"] | string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean;
 };
 
@@ -55,7 +55,7 @@ type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: "A" | "B";
+  team_side: "teamA" | "teamB";
   is_starter: boolean;
 };
 
@@ -614,7 +614,7 @@ export default function BoxDashboardPage() {
   const teamAPlayerIdsByGame = useMemo(() => {
     const map: Record<string, Set<string>> = {};
     for (const row of gamePlayers) {
-      if (row.team_side !== "A") continue;
+      if (row.team_side !== "teamA") continue;
       if (!activePlayerIdSet.has(row.player_id)) continue;
       if (!map[row.game_id]) map[row.game_id] = new Set<string>();
       map[row.game_id].add(row.player_id);
@@ -627,8 +627,8 @@ export default function BoxDashboardPage() {
       if (!event.player_id) return false;
       if (!activePlayerIdSet.has(event.player_id)) return false;
 
-      if (event.team_side === "A") return true;
-      if (event.team_side === "B") return false;
+      if (event.team_side === "teamA") return true;
+      if (event.team_side === "teamB") return false;
 
       const knownTeamASet = teamAPlayerIdsByGame[event.game_id];
       if (knownTeamASet && knownTeamASet.size > 0) {
@@ -661,7 +661,7 @@ export default function BoxDashboardPage() {
     const ids = new Set<string>();
 
     for (const gp of gamePlayers) {
-      if (gp.team_side === "A" && activePlayerIdSet.has(gp.player_id)) {
+      if (gp.team_side === "teamA" && activePlayerIdSet.has(gp.player_id)) {
         ids.add(gp.game_id);
       }
     }
@@ -758,7 +758,7 @@ export default function BoxDashboardPage() {
     }
 
     for (const row of gamePlayers) {
-      if (row.team_side !== "A") continue;
+      if (row.team_side !== "teamA") continue;
       if (!activePlayerIdSet.has(row.player_id)) continue;
 
       if (!map[row.player_id]) map[row.player_id] = new Set<string>();
@@ -794,7 +794,7 @@ export default function BoxDashboardPage() {
       const gameClockRows = clocksByGame[gameId] || [];
 
       const teamAIdsFromGamePlayers = rows
-        .filter((gp) => gp.team_side === "A" && activePlayerIdSet.has(gp.player_id))
+        .filter((gp) => gp.team_side === "teamA" && activePlayerIdSet.has(gp.player_id))
         .map((gp) => gp.player_id);
 
       const teamAIdsFromEvents = Array.from(
@@ -819,7 +819,7 @@ export default function BoxDashboardPage() {
       const starterIds = rows
         .filter(
           (gp) =>
-            gp.team_side === "A" &&
+            gp.team_side === "teamA" &&
             gp.is_starter &&
             activePlayerIdSet.has(gp.player_id)
         )

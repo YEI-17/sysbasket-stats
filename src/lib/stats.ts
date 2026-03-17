@@ -17,7 +17,7 @@ export type EventType =
 export type EventRow = {
   player_id: string | null;
   event_type: EventType;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean;
 };
 
@@ -91,7 +91,7 @@ export function calcPlayerStats(events: EventRow[]): Stat {
   };
 }
 
-export function calcTeamStats(events: EventRow[], teamSide: "A" | "B"): Stat {
+export function calcTeamStats(events: EventRow[], teamSide: "teamA" | "teamB"): Stat {
   const teamEvents = events.filter(
     (e) => e.team_side === teamSide && !e.is_undone
   );

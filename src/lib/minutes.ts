@@ -5,7 +5,7 @@ export type MinuteEventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean;
 };
 
@@ -27,7 +27,7 @@ export type MinuteGamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: "A" | "B";
+  team_side: "teamA" | "teamB";
   is_starter: boolean;
 };
 
@@ -173,7 +173,7 @@ export function calcMinutesMapForGame(params: {
   const validEvents = events.filter((e) => !e.is_undone);
 
   const teamAPlayerIds = gamePlayers
-    .filter((gp) => gp.team_side === "A")
+    .filter((gp) => gp.team_side === "teamA")
     .map((gp) => gp.player_id);
 
   const teamAPlayers =
@@ -182,7 +182,7 @@ export function calcMinutesMapForGame(params: {
       : players;
 
   const starterIds = gamePlayers
-    .filter((gp) => gp.team_side === "A" && gp.is_starter)
+    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
     .map((gp) => gp.player_id);
 
   const resolvedStarterIds =
@@ -225,7 +225,7 @@ export function calcMinutesMapForGame(params: {
     const quarterSubEvents = validEvents
       .filter(
         (e) =>
-          e.team_side === "A" &&
+          e.team_side === "teamA" &&
           e.quarter === q &&
           !!e.player_id &&
           (e.event_type === "sub_in" || e.event_type === "sub_out")

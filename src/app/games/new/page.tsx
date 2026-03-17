@@ -230,7 +230,7 @@ export default function NewGamePage() {
   return {
     game_id: game.id,
     player_id: playerId,
-    team_side: "A",
+    team_side: "teamA",
     is_starter: selectedStarterIds.includes(playerId),
     position: player?.position ?? null,
   };
@@ -251,7 +251,7 @@ export default function NewGamePage() {
         player_id: playerId,
         quarter: 1,
         event_type: "sub_in",
-        team_side: "A",
+        team_side: "teamA",
         clock_seconds_left: 600,
         points_delta: 0,
         note: "starter",
@@ -271,7 +271,7 @@ export default function NewGamePage() {
       const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
   game_id: game.id,
   player_id: playerId,
-  team_side: "A",
+  team_side: "teamA",
   quarter: 1,
   in_seconds_left: 600,
   out_seconds_left: null,

@@ -28,7 +28,7 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -551,7 +551,7 @@ export default function LiveGamePage() {
     setGame((prev) => (prev ? { ...prev, teamA: trimmed } : prev));
   }
 
-  async function addEvent(eventType: string, teamSide: "A" | "B" = "A") {
+  async function addEvent(eventType: string, teamSide: "teamA" | "teamB" = "teamA") {
     if (!game || !clock) return;
     if (inCooldown(`event:${eventType}:${teamSide}`, 120)) return;
 
@@ -565,7 +565,7 @@ export default function LiveGamePage() {
       player_id?: string | null;
       quarter: number;
       event_type: string;
-      team_side: "A" | "B";
+      team_side: "teamA" | "teamB";
     } = {
       game_id: game.id,
       quarter: clock.quarter,
@@ -573,7 +573,7 @@ export default function LiveGamePage() {
       team_side: teamSide,
     };
 
-    if (teamSide === "A") {
+    if (teamSide === "teamA") {
       if (!selectedPlayerId) {
         setError("請先點選場上球員");
         return;
@@ -655,8 +655,8 @@ export default function LiveGamePage() {
 
     for (const e of validEvents) {
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") scoreA += pts;
-      if (e.team_side === "B") scoreB += pts;
+      if (e.team_side === "teamA") scoreA += pts;
+      if (e.team_side === "teamB") scoreB += pts;
     }
 
     return { scoreA, scoreB };
@@ -727,7 +727,7 @@ export default function LiveGamePage() {
   const lineup = new Set<string>(starterIds.slice(0, 5));
 
   for (const e of validEvents) {
-    if (e.team_side !== "A") continue;
+    if (e.team_side !== "teamA") continue;
     if (!e.player_id) continue;
 
     if (e.event_type === "sub_out") {
@@ -902,7 +902,7 @@ export default function LiveGamePage() {
       const shiftInRows = subInPlayerIds.map((playerId) => ({
         game_id: game.id,
         player_id: playerId,
-        team_side: "A",
+        team_side: "teamA",
         quarter: clock.quarter,
         in_seconds_left: clock.seconds_left,
         out_seconds_left: null,
@@ -947,8 +947,8 @@ export default function LiveGamePage() {
     for (const e of validEvents) {
       if (!result[e.quarter]) result[e.quarter] = { home: 0, away: 0 };
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") result[e.quarter].home += pts;
-      if (e.team_side === "B") result[e.quarter].away += pts;
+      if (e.team_side === "teamA") result[e.quarter].home += pts;
+      if (e.team_side === "teamB") result[e.quarter].away += pts;
     }
 
     return result;
@@ -1077,21 +1077,21 @@ export default function LiveGamePage() {
 
                 <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => addEvent("fg2_made", "A")}
+                    onClick={() => addEvent("fg2_made", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("score")}
                   >
                     2分進
                   </button>
                   <button
-                    onClick={() => addEvent("fg2_miss", "A")}
+                    onClick={() => addEvent("fg2_miss", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
                     2分不進
                   </button>
                   <button
-                    onClick={() => addEvent("reb", "A")}
+                    onClick={() => addEvent("reb", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("ghost")}
                   >
@@ -1099,21 +1099,21 @@ export default function LiveGamePage() {
                   </button>
 
                   <button
-                    onClick={() => addEvent("fg3_made", "A")}
+                    onClick={() => addEvent("fg3_made", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("score")}
                   >
                     3分進
                   </button>
                   <button
-                    onClick={() => addEvent("fg3_miss", "A")}
+                    onClick={() => addEvent("fg3_miss", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
                     3分不進
                   </button>
                   <button
-                    onClick={() => addEvent("ast", "A")}
+                    onClick={() => addEvent("ast", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("def")}
                   >
@@ -1121,21 +1121,21 @@ export default function LiveGamePage() {
                   </button>
 
                   <button
-                    onClick={() => addEvent("ft_made", "A")}
+                    onClick={() => addEvent("ft_made", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("score")}
                   >
                     罰進
                   </button>
                   <button
-                    onClick={() => addEvent("ft_miss", "A")}
+                    onClick={() => addEvent("ft_miss", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
                     罰球不進
                   </button>
                   <button
-                    onClick={() => addEvent("stl", "A")}
+                    onClick={() => addEvent("stl", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("def")}
                   >
@@ -1143,21 +1143,21 @@ export default function LiveGamePage() {
                   </button>
 
                   <button
-                    onClick={() => addEvent("blk", "A")}
+                    onClick={() => addEvent("blk", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("def")}
                   >
                     阻攻
                   </button>
                   <button
-                    onClick={() => addEvent("pf", "A")}
+                    onClick={() => addEvent("pf", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("warn")}
                   >
                     犯規
                   </button>
                   <button
-                    onClick={() => addEvent("tov", "A")}
+                    onClick={() => addEvent("tov", "teamA")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("warn")}
                   >
@@ -1172,21 +1172,21 @@ export default function LiveGamePage() {
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       <button
-                        onClick={() => addEvent("ft_made", "B")}
+                        onClick={() => addEvent("ft_made", "teamB")}
                         disabled={game?.status === "finished"}
                         className={actionBtnClass("ghost")}
                       >
                         對手 +1
                       </button>
                       <button
-                        onClick={() => addEvent("fg2_made", "B")}
+                        onClick={() => addEvent("fg2_made", "teamB")}
                         disabled={game?.status === "finished"}
                         className={actionBtnClass("ghost")}
                       >
                         對手 +2
                       </button>
                       <button
-                        onClick={() => addEvent("fg3_made", "B")}
+                        onClick={() => addEvent("fg3_made", "teamB")}
                         disabled={game?.status === "finished"}
                         className={actionBtnClass("ghost")}
                       >

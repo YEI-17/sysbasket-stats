@@ -12,7 +12,7 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: "teamA" | "teamB" | null;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -45,7 +45,7 @@ type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: "A" | "B";
+  team_side: "teamA" | "teamB";
   is_starter: boolean;
 };
 
@@ -552,7 +552,7 @@ export default function BoardPage() {
 
   const teamAPlayerIds = useMemo(() => {
   return gamePlayers
-    .filter((gp) => gp.team_side === "A")
+    .filter((gp) => gp.team_side === "teamA")
     .map((gp) => gp.player_id);
 }, [gamePlayers]);
 
@@ -562,7 +562,7 @@ export default function BoardPage() {
 
   const starterIds = useMemo(() => {
   const ids = gamePlayers
-    .filter((gp) => gp.team_side === "A" && gp.is_starter)
+    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
     .map((gp) => gp.player_id);
 
   return ids.slice(0, 5);
@@ -572,7 +572,7 @@ export default function BoardPage() {
   const lineup = new Set<string>(starterIds.slice(0, 5));
 
   for (const e of validEvents) {
-    if (e.team_side !== "A") continue;
+    if (e.team_side !== "teamA") continue;
     if (!e.player_id) continue;
 
     if (e.event_type === "sub_out") {
@@ -600,11 +600,11 @@ export default function BoardPage() {
   const lineup = new Set<string>(starterIds.slice(0, 5));
 
   for (const e of validEvents) {
-    if (e.team_side === "A" && e.player_id && !map[e.player_id]) {
+    if (e.team_side === "teamA" && e.player_id && !map[e.player_id]) {
       map[e.player_id] = emptyStat();
     }
 
-    if (e.team_side === "A" && e.player_id) {
+    if (e.team_side === "teamA" && e.player_id) {
       if (e.event_type === "sub_out") {
         lineup.delete(e.player_id);
         continue;
@@ -618,7 +618,7 @@ export default function BoardPage() {
       }
     }
 
-    if (e.team_side === "A" && e.player_id) {
+    if (e.team_side === "teamA" && e.player_id) {
       applyEvent(map[e.player_id], e.event_type);
     }
 
@@ -628,9 +628,9 @@ export default function BoardPage() {
         for (const playerId of Array.from(lineup).slice(0, 5)) {
           if (!map[playerId]) map[playerId] = emptyStat();
 
-          if (e.team_side === "A") {
+          if (e.team_side === "teamA") {
             map[playerId].plusMinus += pts;
-          } else if (e.team_side === "B") {
+          } else if (e.team_side === "teamB") {
             map[playerId].plusMinus -= pts;
           }
         }
@@ -664,7 +664,7 @@ export default function BoardPage() {
       starterIds.slice(0, 5).forEach((id) => lineup.add(id));
 
       for (const e of validEvents) {
-        if (e.team_side !== "A") continue;
+        if (e.team_side !== "teamA") continue;
         if (!e.player_id) continue;
         if (e.quarter >= q) break;
 
@@ -689,7 +689,7 @@ export default function BoardPage() {
     const quarterSubEvents = validEvents
       .filter(
         (e) =>
-          e.team_side === "A" &&
+          e.team_side === "teamA" &&
           e.quarter === q &&
           !!e.player_id &&
           (e.event_type === "sub_in" || e.event_type === "sub_out")
@@ -749,8 +749,8 @@ export default function BoardPage() {
 
     for (const e of validEvents) {
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") home += pts;
-      if (e.team_side === "B") away += pts;
+      if (e.team_side === "teamA") home += pts;
+      if (e.team_side === "teamB") away += pts;
     }
 
     return { home, away };
@@ -770,8 +770,8 @@ export default function BoardPage() {
       }
 
       const pts = getPoints(e.event_type);
-      if (e.team_side === "A") byQuarter[e.quarter].home += pts;
-      if (e.team_side === "B") byQuarter[e.quarter].away += pts;
+      if (e.team_side === "teamA") byQuarter[e.quarter].home += pts;
+      if (e.team_side === "teamB") byQuarter[e.quarter].away += pts;
     }
 
     return byQuarter;

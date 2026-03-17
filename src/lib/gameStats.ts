@@ -1,3 +1,5 @@
+export type TeamSide = "teamA" | "teamB";
+
 export type EventRow = {
   id: string;
   game_id: string;
@@ -5,7 +7,7 @@ export type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  team_side?: "A" | "B" | null;
+  team_side?: TeamSide | null;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -14,7 +16,7 @@ export type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: "A" | "B";
+  team_side: TeamSide;
   is_starter: boolean;
 };
 
@@ -67,9 +69,9 @@ export function getPointsFromEvent(eventType: string): number {
 }
 
 export function buildInitialLineups(gamePlayers: GamePlayerRow[]) {
-  const lineups = {
-    A: new Set<string>(),
-    B: new Set<string>(),
+  const lineups: Record<TeamSide, Set<string>> = {
+    teamA: new Set<string>(),
+    teamB: new Set<string>(),
   };
 
   for (const gp of gamePlayers) {
@@ -102,17 +104,16 @@ export function computeStatsWithPlusMinus(
     const pid = e.player_id ?? "";
     const side = e.team_side;
 
-    // 換人邏輯
     if (e.event_type === "sub_in" && pid && side) {
       lineups[side].add(pid);
       continue;
     }
+
     if (e.event_type === "sub_out" && pid && side) {
       lineups[side].delete(pid);
       continue;
     }
 
-    // 個人數據
     if (pid && statsMap[pid]) {
       switch (e.event_type) {
         case "fg2_made":
@@ -160,15 +161,15 @@ export function computeStatsWithPlusMinus(
       }
     }
 
-    // 正負值
     const pts = getPointsFromEvent(e.event_type);
     if (pts > 0 && side) {
-      const own = side;
-      const opp = side === "A" ? "B" : "A";
+      const own: TeamSide = side;
+      const opp: TeamSide = side === "teamA" ? "teamB" : "teamA";
 
       for (const onId of lineups[own]) {
         if (statsMap[onId]) statsMap[onId].plusMinus += pts;
       }
+
       for (const onId of lineups[opp]) {
         if (statsMap[onId]) statsMap[onId].plusMinus -= pts;
       }
@@ -181,7 +182,7 @@ export function computeStatsWithPlusMinus(
 export function getCurrentLineup(
   gamePlayers: GamePlayerRow[],
   events: EventRow[],
-  side: "A" | "B"
+  side: TeamSide
 ) {
   const lineup = new Set(
     gamePlayers
