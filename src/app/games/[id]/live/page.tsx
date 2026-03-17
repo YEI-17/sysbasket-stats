@@ -45,7 +45,7 @@ type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: "A" | "B";
+  team_side: string;
   is_starter: boolean;
 };
 
@@ -706,26 +706,24 @@ export default function LiveGamePage() {
   }, [clock, game, teamScore]);
 
   const teamAPlayerIds = useMemo(() => {
-    const ids = gamePlayers
-      .filter((gp) => gp.team_side === "A")
-      .map((gp) => gp.player_id);
-
-    if (ids.length > 0) return ids;
-    return players.map((p) => p.id);
-  }, [gamePlayers, players]);
+  if (gamePlayers.length > 0) {
+    return gamePlayers.map((gp) => gp.player_id);
+  }
+  return [];
+}, [gamePlayers]);
 
   const teamAPlayers = useMemo(() => {
     return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
   }, [players, teamAPlayerIds]);
 
   const starterIds = useMemo(() => {
-    const starterFromDb = gamePlayers
-      .filter((gp) => gp.team_side === "A" && gp.is_starter)
-      .map((gp) => gp.player_id);
+  const starterFromDb = gamePlayers
+    .filter((gp) => gp.is_starter)
+    .map((gp) => gp.player_id);
 
-    if (starterFromDb.length > 0) return starterFromDb;
-    return teamAPlayers.slice(0, 5).map((p) => p.id);
-  }, [gamePlayers, teamAPlayers]);
+  if (starterFromDb.length > 0) return starterFromDb;
+  return [];
+}, [gamePlayers]);
 
   const currentOnCourtIds = useMemo(() => {
     const lineup = new Set<string>(starterIds);
@@ -1284,6 +1282,9 @@ export default function LiveGamePage() {
                         >
                           <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
                           <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
+<div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
+  {p.position || "未設定"}
+</div>
                           <div className="mt-1 text-[10px] font-bold text-white/45">
                             {selectedOut ? "已選下場" : selected ? "目前紀錄" : shortName(p.name)}
                           </div>
@@ -1340,6 +1341,9 @@ export default function LiveGamePage() {
                         >
                           <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
                           <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
+<div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
+  {p.position || "未設定"}
+</div>
                           <div className="mt-1 text-[10px] font-bold text-white/45">
                             {selectedIn ? "已選上場" : selectable ? "可上場" : "待命"}
                           </div>
