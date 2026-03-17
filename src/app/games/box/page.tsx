@@ -60,10 +60,6 @@ function normalizeTeamSide(side?: string | null): "teamA" | "teamB" | null {
   return null;
 }
 
-function safeNum(n: number) {
-  return Number.isFinite(n) ? n : 0;
-}
-
 function pct(made: number, att: number) {
   if (!att) return "0.0%";
   return `${((made / att) * 100).toFixed(1)}%`;
@@ -284,7 +280,9 @@ export default function TeamStatsPage() {
 
     const { data: eventsData, error: eventsError } = await supabase
       .from("events")
-      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone")
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
+      )
       .in("game_id", gameIds)
       .order("created_at", { ascending: true });
 
@@ -384,14 +382,17 @@ export default function TeamStatsPage() {
       style={{
         minHeight: "100vh",
         color: "#fff",
-        background:
-          "radial-gradient(circle at top, rgba(255,255,255,0.06) 0%, rgba(18,23,35,1) 26%, rgba(7,10,18,1) 100%)",
+        background: `
+          radial-gradient(circle at top, rgba(255,152,67,0.16) 0%, rgba(255,152,67,0.06) 18%, rgba(0,0,0,0) 36%),
+          radial-gradient(circle at 20% 0%, rgba(255,120,40,0.10) 0%, rgba(0,0,0,0) 28%),
+          linear-gradient(180deg, #090909 0%, #050505 100%)
+        `,
         padding: 20,
       }}
     >
       <div
         style={{
-          maxWidth: 1400,
+          maxWidth: 1420,
           margin: "0 auto",
           display: "grid",
           gap: 18,
@@ -399,14 +400,30 @@ export default function TeamStatsPage() {
       >
         <section
           style={{
-            background: "rgba(10,14,24,0.86)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: 28,
-            padding: 22,
-            boxShadow: "0 20px 50px rgba(0,0,0,0.28)",
+            position: "relative",
+            overflow: "hidden",
+            background:
+              "linear-gradient(180deg, rgba(20,14,10,0.96) 0%, rgba(10,8,7,0.98) 100%)",
+            border: "1px solid rgba(255,170,90,0.14)",
+            borderRadius: 30,
+            padding: 24,
+            boxShadow:
+              "0 24px 60px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,200,140,0.06)",
             backdropFilter: "blur(14px)",
           }}
         >
+          <div
+            style={{
+              position: "absolute",
+              right: -60,
+              top: -60,
+              width: 240,
+              height: 240,
+              borderRadius: "50%",
+              background: "radial-gradient(circle, rgba(255,145,56,0.22) 0%, rgba(255,145,56,0) 70%)",
+              pointerEvents: "none",
+            }}
+          />
           <div
             style={{
               display: "flex",
@@ -414,14 +431,17 @@ export default function TeamStatsPage() {
               justifyContent: "space-between",
               alignItems: "center",
               flexWrap: "wrap",
+              position: "relative",
+              zIndex: 1,
             }}
           >
             <div style={{ display: "grid", gap: 6 }}>
               <div
                 style={{
-                  fontSize: 14,
-                  letterSpacing: 1.2,
-                  color: "rgba(255,255,255,0.55)",
+                  fontSize: 12,
+                  letterSpacing: 1.8,
+                  color: "rgba(255,189,125,0.72)",
+                  fontWeight: 800,
                 }}
               >
                 TEAM PERFORMANCE
@@ -429,10 +449,12 @@ export default function TeamStatsPage() {
               <h1
                 style={{
                   margin: 0,
-                  fontSize: "clamp(28px, 4vw, 42px)",
-                  lineHeight: 1.05,
-                  fontWeight: 900,
-                  letterSpacing: -1,
+                  fontSize: "clamp(30px, 4vw, 46px)",
+                  lineHeight: 1.02,
+                  fontWeight: 950,
+                  letterSpacing: -1.2,
+                  color: "#fff7f0",
+                  textShadow: "0 0 24px rgba(255,145,56,0.12)",
                 }}
               >
                 團隊數據
@@ -440,7 +462,7 @@ export default function TeamStatsPage() {
               <div
                 style={{
                   fontSize: 14,
-                  color: "rgba(255,255,255,0.62)",
+                  color: "rgba(255,232,214,0.64)",
                 }}
               >
                 檢視整體進攻、防守與命中率表現
@@ -459,14 +481,16 @@ export default function TeamStatsPage() {
                 value={selectedRange}
                 onChange={(e) => setSelectedRange(e.target.value)}
                 style={{
-                  height: 44,
+                  height: 46,
                   borderRadius: 14,
-                  padding: "0 14px",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "#fff",
-                  border: "1px solid rgba(255,255,255,0.1)",
+                  padding: "0 15px",
+                  background: "rgba(255,255,255,0.04)",
+                  color: "#fff3ea",
+                  border: "1px solid rgba(255,170,90,0.16)",
                   outline: "none",
                   fontSize: 14,
+                  fontWeight: 700,
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
                 }}
               >
                 <option style={{ color: "#000" }}>全部比賽</option>
@@ -477,23 +501,32 @@ export default function TeamStatsPage() {
               <Link
                 href="/staff"
                 style={{
-                  height: 44,
-                  padding: "0 16px",
+                  height: 46,
+                  padding: "0 18px",
                   borderRadius: 14,
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
                   textDecoration: "none",
-                  color: "#fff",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  fontWeight: 700,
+                  color: "#fff5ef",
+                  background:
+                    "linear-gradient(180deg, rgba(255,146,54,0.18) 0%, rgba(255,146,54,0.08) 100%)",
+                  border: "1px solid rgba(255,170,90,0.18)",
+                  fontWeight: 800,
+                  boxShadow: "0 10px 24px rgba(255,120,40,0.12)",
                 }}
               >
                 返回
               </Link>
 
-              <LogoutButton />
+              <div
+                style={{
+                  transform: "scale(1.02)",
+                  transformOrigin: "center",
+                }}
+              >
+                <LogoutButton />
+              </div>
             </div>
           </div>
         </section>
@@ -516,34 +549,56 @@ export default function TeamStatsPage() {
         <section
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
             gap: 14,
           }}
         >
-          {overviewStats.map((item) => (
+          {overviewStats.map((item, idx) => (
             <div
               key={item.sub}
               style={{
+                position: "relative",
+                overflow: "hidden",
                 background: item.highlight
-                  ? "linear-gradient(180deg, rgba(51,94,255,0.22) 0%, rgba(14,19,31,0.96) 100%)"
-                  : "rgba(12,16,27,0.9)",
+                  ? "linear-gradient(180deg, rgba(255,150,64,0.22) 0%, rgba(26,15,10,0.98) 100%)"
+                  : "linear-gradient(180deg, rgba(18,13,10,0.96) 0%, rgba(10,8,7,0.98) 100%)",
                 border: item.highlight
-                  ? "1px solid rgba(88,130,255,0.35)"
-                  : "1px solid rgba(255,255,255,0.07)",
+                  ? "1px solid rgba(255,170,90,0.30)"
+                  : "1px solid rgba(255,170,90,0.12)",
                 borderRadius: 24,
                 padding: 18,
-                minHeight: 138,
+                minHeight: 142,
                 display: "flex",
                 flexDirection: "column",
                 justifyContent: "space-between",
-                boxShadow: "0 14px 30px rgba(0,0,0,0.22)",
+                boxShadow:
+                  item.highlight
+                    ? "0 18px 36px rgba(255,120,40,0.15), inset 0 1px 0 rgba(255,230,200,0.06)"
+                    : "0 14px 30px rgba(0,0,0,0.28)",
               }}
             >
+              {idx === 0 ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: -24,
+                    right: -24,
+                    width: 88,
+                    height: 88,
+                    borderRadius: "50%",
+                    background:
+                      "radial-gradient(circle, rgba(255,160,70,0.20) 0%, rgba(255,160,70,0) 72%)",
+                  }}
+                />
+              ) : null}
+
               <div
                 style={{
                   fontSize: 13,
-                  color: "rgba(255,255,255,0.66)",
-                  fontWeight: 600,
+                  color: "rgba(255,224,198,0.70)",
+                  fontWeight: 700,
+                  position: "relative",
+                  zIndex: 1,
                 }}
               >
                 {item.label}
@@ -551,10 +606,13 @@ export default function TeamStatsPage() {
 
               <div
                 style={{
-                  fontSize: "clamp(28px, 4vw, 38px)",
-                  fontWeight: 900,
-                  letterSpacing: -1,
+                  fontSize: "clamp(29px, 4vw, 40px)",
+                  fontWeight: 950,
+                  letterSpacing: -1.1,
                   lineHeight: 1,
+                  color: item.highlight ? "#ffd6b2" : "#fff8f2",
+                  position: "relative",
+                  zIndex: 1,
                 }}
               >
                 {loading ? "..." : item.value}
@@ -565,10 +623,12 @@ export default function TeamStatsPage() {
                   fontSize: 12,
                   color:
                     item.sub === "Opp PPG"
-                      ? "rgba(255,180,180,0.95)"
-                      : "rgba(255,255,255,0.48)",
-                  fontWeight: 700,
-                  letterSpacing: 1,
+                      ? "rgba(255,170,170,0.96)"
+                      : "rgba(255,190,135,0.62)",
+                  fontWeight: 800,
+                  letterSpacing: 1.1,
+                  position: "relative",
+                  zIndex: 1,
                 }}
               >
                 {item.sub}
@@ -581,25 +641,28 @@ export default function TeamStatsPage() {
           className="team-mid-grid"
           style={{
             display: "grid",
-            gridTemplateColumns: "1.05fr 0.95fr",
+            gridTemplateColumns: "1.06fr 0.94fr",
             gap: 18,
           }}
         >
           <div
             style={{
-              background: "rgba(10,14,24,0.88)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background:
+                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.12)",
               borderRadius: 28,
               padding: 20,
-              boxShadow: "0 18px 40px rgba(0,0,0,0.24)",
+              boxShadow:
+                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
             }}
           >
             <div
               style={{
                 fontSize: 12,
-                color: "rgba(255,255,255,0.48)",
-                letterSpacing: 1,
+                color: "rgba(255,186,127,0.58)",
+                letterSpacing: 1.2,
                 marginBottom: 4,
+                fontWeight: 800,
               }}
             >
               RECENT GAMES
@@ -607,9 +670,10 @@ export default function TeamStatsPage() {
             <div
               style={{
                 fontSize: 22,
-                fontWeight: 800,
-                letterSpacing: -0.4,
+                fontWeight: 900,
+                letterSpacing: -0.5,
                 marginBottom: 16,
+                color: "#fff7f0",
               }}
             >
               最近比賽
@@ -623,18 +687,20 @@ export default function TeamStatsPage() {
                   style={{
                     borderRadius: 18,
                     padding: 14,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
+                    background:
+                      "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
+                    border: "1px solid rgba(255,170,90,0.10)",
                     display: "grid",
                     gridTemplateColumns: "84px 1fr 90px 70px",
                     alignItems: "center",
                     gap: 10,
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
                   }}
                 >
                   <div
                     style={{
                       fontSize: 13,
-                      color: "rgba(255,255,255,0.56)",
+                      color: "rgba(255,218,190,0.54)",
                       fontWeight: 700,
                     }}
                   >
@@ -644,7 +710,8 @@ export default function TeamStatsPage() {
                   <div
                     style={{
                       fontSize: 16,
-                      fontWeight: 700,
+                      fontWeight: 800,
+                      color: "#fff8f3",
                     }}
                   >
                     vs {game.opponent}
@@ -653,7 +720,8 @@ export default function TeamStatsPage() {
                   <div
                     style={{
                       textAlign: "center",
-                      fontWeight: 800,
+                      fontWeight: 900,
+                      color: "#ffe7d3",
                     }}
                   >
                     {game.score}
@@ -669,15 +737,15 @@ export default function TeamStatsPage() {
                       alignItems: "center",
                       justifyContent: "center",
                       fontSize: 13,
-                      fontWeight: 800,
+                      fontWeight: 900,
                       background:
                         game.result === "W"
-                          ? "rgba(51, 214, 121, 0.16)"
-                          : "rgba(255, 92, 92, 0.14)",
+                          ? "rgba(60, 210, 125, 0.16)"
+                          : "rgba(255, 102, 102, 0.14)",
                       color:
                         game.result === "W"
-                          ? "rgba(123,255,173,0.96)"
-                          : "rgba(255,146,146,0.96)",
+                          ? "rgba(138,255,186,0.96)"
+                          : "rgba(255,162,162,0.96)",
                       border:
                         game.result === "W"
                           ? "1px solid rgba(90,255,154,0.18)"
@@ -693,22 +761,41 @@ export default function TeamStatsPage() {
 
           <div
             style={{
-              background: "rgba(10,14,24,0.88)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              position: "relative",
+              overflow: "hidden",
+              background:
+                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.12)",
               borderRadius: 28,
               padding: 20,
-              boxShadow: "0 18px 40px rgba(0,0,0,0.24)",
+              boxShadow:
+                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
               display: "grid",
               gap: 18,
             }}
           >
-            <div>
+            <div
+              style={{
+                position: "absolute",
+                left: -30,
+                bottom: -40,
+                width: 180,
+                height: 180,
+                borderRadius: "50%",
+                background:
+                  "radial-gradient(circle, rgba(255,145,56,0.12) 0%, rgba(255,145,56,0) 72%)",
+                pointerEvents: "none",
+              }}
+            />
+
+            <div style={{ position: "relative", zIndex: 1 }}>
               <div
                 style={{
                   fontSize: 12,
-                  color: "rgba(255,255,255,0.48)",
-                  letterSpacing: 1,
+                  color: "rgba(255,186,127,0.58)",
+                  letterSpacing: 1.2,
                   marginBottom: 4,
+                  fontWeight: 800,
                 }}
               >
                 TREND
@@ -716,8 +803,9 @@ export default function TeamStatsPage() {
               <div
                 style={{
                   fontSize: 22,
-                  fontWeight: 800,
-                  letterSpacing: -0.4,
+                  fontWeight: 900,
+                  letterSpacing: -0.5,
+                  color: "#fff7f0",
                 }}
               >
                 團隊得分趨勢
@@ -726,19 +814,24 @@ export default function TeamStatsPage() {
 
             <div
               style={{
+                position: "relative",
+                zIndex: 1,
                 height: 220,
                 borderRadius: 22,
                 padding: "18px 16px 14px",
                 background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)",
-                border: "1px solid rgba(255,255,255,0.06)",
+                  "linear-gradient(180deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.01) 100%)",
+                border: "1px solid rgba(255,170,90,0.10)",
                 display: "flex",
                 alignItems: "end",
                 gap: 14,
               }}
             >
               {trendData.map((item) => {
-                const height = maxPts ? Math.max(26, (item.value / maxPts) * 150) : 26;
+                const height = maxPts
+                  ? Math.max(26, (item.value / maxPts) * 150)
+                  : 26;
+
                 return (
                   <div
                     key={item.label}
@@ -755,8 +848,8 @@ export default function TeamStatsPage() {
                     <div
                       style={{
                         fontSize: 12,
-                        color: "rgba(255,255,255,0.75)",
-                        fontWeight: 700,
+                        color: "rgba(255,232,214,0.82)",
+                        fontWeight: 800,
                       }}
                     >
                       {item.value}
@@ -765,21 +858,22 @@ export default function TeamStatsPage() {
                     <div
                       style={{
                         width: "100%",
-                        maxWidth: 56,
+                        maxWidth: 58,
                         height,
                         minHeight: 26,
                         borderRadius: "16px 16px 8px 8px",
                         background:
-                          "linear-gradient(180deg, rgba(82,126,255,0.95) 0%, rgba(34,68,170,0.82) 100%)",
-                        boxShadow: "0 10px 20px rgba(36,76,190,0.25)",
+                          "linear-gradient(180deg, rgba(255,182,92,0.98) 0%, rgba(255,126,38,0.92) 60%, rgba(191,79,18,0.92) 100%)",
+                        boxShadow:
+                          "0 12px 22px rgba(255,120,40,0.22), inset 0 1px 0 rgba(255,236,212,0.28)",
                       }}
                     />
 
                     <div
                       style={{
                         fontSize: 12,
-                        color: "rgba(255,255,255,0.46)",
-                        fontWeight: 700,
+                        color: "rgba(255,202,160,0.48)",
+                        fontWeight: 800,
                       }}
                     >
                       {item.label}
@@ -791,6 +885,8 @@ export default function TeamStatsPage() {
 
             <div
               style={{
+                position: "relative",
+                zIndex: 1,
                 display: "grid",
                 gridTemplateColumns: "repeat(3, 1fr)",
                 gap: 10,
@@ -813,19 +909,22 @@ export default function TeamStatsPage() {
         >
           <div
             style={{
-              background: "rgba(10,14,24,0.88)",
-              border: "1px solid rgba(255,255,255,0.08)",
+              background:
+                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
+              border: "1px solid rgba(255,170,90,0.12)",
               borderRadius: 28,
               padding: 20,
-              boxShadow: "0 18px 40px rgba(0,0,0,0.24)",
+              boxShadow:
+                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
             }}
           >
             <div
               style={{
                 fontSize: 12,
-                color: "rgba(255,255,255,0.48)",
-                letterSpacing: 1,
+                color: "rgba(255,186,127,0.58)",
+                letterSpacing: 1.2,
                 marginBottom: 4,
+                fontWeight: 800,
               }}
             >
               TEAM SUMMARY
@@ -833,9 +932,10 @@ export default function TeamStatsPage() {
             <div
               style={{
                 fontSize: 22,
-                fontWeight: 800,
-                letterSpacing: -0.4,
+                fontWeight: 900,
+                letterSpacing: -0.5,
                 marginBottom: 16,
+                color: "#fff7f0",
               }}
             >
               團隊數據總表
@@ -843,9 +943,10 @@ export default function TeamStatsPage() {
 
             <div
               style={{
-                borderRadius: 20,
+                borderRadius: 22,
                 overflow: "hidden",
-                border: "1px solid rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,170,90,0.10)",
+                background: "rgba(255,255,255,0.015)",
               }}
             >
               <div
@@ -853,10 +954,11 @@ export default function TeamStatsPage() {
                   display: "grid",
                   gridTemplateColumns: "1.4fr 0.6fr",
                   padding: "14px 16px",
-                  background: "rgba(255,255,255,0.05)",
+                  background:
+                    "linear-gradient(180deg, rgba(255,145,56,0.12) 0%, rgba(255,145,56,0.05) 100%)",
                   fontSize: 13,
-                  fontWeight: 800,
-                  color: "rgba(255,255,255,0.72)",
+                  fontWeight: 900,
+                  color: "rgba(255,229,205,0.84)",
                 }}
               >
                 <div>項目</div>
@@ -873,16 +975,16 @@ export default function TeamStatsPage() {
                     background:
                       idx % 2 === 0
                         ? "rgba(255,255,255,0.018)"
-                        : "rgba(255,255,255,0.035)",
-                    borderTop: "1px solid rgba(255,255,255,0.04)",
+                        : "rgba(255,145,56,0.025)",
+                    borderTop: "1px solid rgba(255,170,90,0.07)",
                     alignItems: "center",
                   }}
                 >
                   <div
                     style={{
                       fontSize: 14,
-                      color: "rgba(255,255,255,0.78)",
-                      fontWeight: 600,
+                      color: "rgba(255,240,228,0.80)",
+                      fontWeight: 700,
                     }}
                   >
                     {row.name}
@@ -892,7 +994,8 @@ export default function TeamStatsPage() {
                     style={{
                       textAlign: "right",
                       fontSize: 16,
-                      fontWeight: 800,
+                      fontWeight: 900,
+                      color: "#ffe4cf",
                     }}
                   >
                     {row.value}
@@ -935,17 +1038,19 @@ function MiniInfoCard({
       style={{
         borderRadius: 18,
         padding: 14,
-        background: "rgba(255,255,255,0.035)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
+        border: "1px solid rgba(255,170,90,0.10)",
         display: "grid",
         gap: 6,
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
       }}
     >
       <div
         style={{
           fontSize: 12,
-          color: "rgba(255,255,255,0.52)",
-          fontWeight: 700,
+          color: "rgba(255,206,163,0.56)",
+          fontWeight: 800,
         }}
       >
         {title}
@@ -953,9 +1058,10 @@ function MiniInfoCard({
       <div
         style={{
           fontSize: 26,
-          fontWeight: 900,
-          letterSpacing: -0.8,
+          fontWeight: 950,
+          letterSpacing: -0.9,
           lineHeight: 1,
+          color: "#fff3e8",
         }}
       >
         {value}
@@ -963,9 +1069,9 @@ function MiniInfoCard({
       <div
         style={{
           fontSize: 12,
-          color: "rgba(255,255,255,0.42)",
-          fontWeight: 700,
-          letterSpacing: 0.8,
+          color: "rgba(255,186,127,0.44)",
+          fontWeight: 800,
+          letterSpacing: 0.9,
         }}
       >
         {sub}
