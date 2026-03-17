@@ -682,42 +682,6 @@ export default function ViewerGamesPage() {
           z-index: 1;
         }
 
-        .refresh-btn,
-        .back-btn {
-          border: none;
-          border-radius: 16px;
-          padding: 14px 18px;
-          cursor: pointer;
-          font-size: 13px;
-          font-weight: 900;
-          letter-spacing: 0.14em;
-          transition: all 0.22s ease;
-        }
-
-        .refresh-btn {
-          background: linear-gradient(135deg, #ffb347 0%, #f48c06 55%, #d96a00 100%);
-          color: white;
-          box-shadow:
-            0 18px 34px rgba(244, 140, 6, 0.28),
-            inset 0 1px 0 rgba(255,255,255,0.24);
-        }
-
-        .back-btn {
-          background: linear-gradient(180deg, rgba(36,36,40,0.96) 0%, rgba(15,15,18,0.98) 100%);
-          color: #fff;
-          border: 1px solid rgba(255,255,255,0.08);
-          box-shadow: 0 14px 28px rgba(0,0,0,0.24);
-        }
-
-        .refresh-btn:hover:not(:disabled),
-        .back-btn:hover {
-          transform: translateY(-2px);
-        }
-
-        .refresh-btn:disabled {
-          opacity: 0.7;
-          cursor: not-allowed;
-        }
 
         .hero-strip {
           position: relative;
