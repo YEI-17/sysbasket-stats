@@ -478,50 +478,110 @@ export default function LiveGamePage() {
   }
 
   async function nextQuarter() {
-    if (!clock || !game) return;
-    if (inCooldown("clock:nextQuarter", 180)) return;
+  if (!clock || !game) return;
+  if (inCooldown("clock:nextQuarter", 180)) return;
 
-    const nextQuarterNum = clock.quarter + 1;
-    const next: ClockRow = {
-      game_id: game.id,
-      quarter: nextQuarterNum,
-      seconds_left: getQuarterSeconds(nextQuarterNum),
-      is_running: false,
-    };
+  const onCourtIds = currentOnCourtIds;
 
-    setClock(next);
-    await persistClock(next);
-  }
+  // 1. 把本節仍在場上的球員 shift 關掉
+  if (onCourtIds.length > 0) {
+    const { error: closeShiftError } = await supabase
+      .from("player_shifts")
+      .update({ out_seconds_left: 0 })
+      .eq("game_id", game.id)
+      .eq("team_side", "teamA")
+      .eq("quarter", clock.quarter)
+      .is("out_seconds_left", null)
+      .in("player_id", onCourtIds);
 
-  async function endGame() {
-    if (!game || endingGame) return;
-    if (inCooldown("game:end", 300)) return;
-
-    setEndingGame(true);
-    setError("");
-
-    try {
-      if (clock) {
-        const pausedClock = { ...clock, is_running: false };
-        setClock(pausedClock);
-        await persistClock(pausedClock);
-      }
-
-      const { error } = await supabase
-        .from("games")
-        .update({ status: "finished" })
-        .eq("id", game.id);
-
-      if (error) {
-        setError(`結束比賽失敗：${error.message}`);
-        return;
-      }
-
-      setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
-    } finally {
-      setEndingGame(false);
+    if (closeShiftError) {
+      setError(`換節收尾失敗：${closeShiftError.message}`);
+      return;
     }
   }
+
+  const nextQuarterNum = clock.quarter + 1;
+
+  // 2. 幫下一節仍在場上的球員建立新 shift
+  if (onCourtIds.length > 0) {
+    const nextShiftRows = onCourtIds.map((playerId) => ({
+      game_id: game.id,
+      player_id: playerId,
+      team_side: "teamA",
+      quarter: nextQuarterNum,
+      in_seconds_left: getQuarterSeconds(nextQuarterNum),
+      out_seconds_left: null,
+    }));
+
+    const { error: createShiftError } = await supabase
+      .from("player_shifts")
+      .insert(nextShiftRows);
+
+    if (createShiftError) {
+      setError(`建立下一節上場時間失敗：${createShiftError.message}`);
+      return;
+    }
+  }
+
+  const next: ClockRow = {
+    game_id: game.id,
+    quarter: nextQuarterNum,
+    seconds_left: getQuarterSeconds(nextQuarterNum),
+    is_running: false,
+  };
+
+  setClock(next);
+  await persistClock(next);
+}
+
+  async function endGame() {
+  if (!game || endingGame) return;
+  if (inCooldown("game:end", 300)) return;
+
+  setEndingGame(true);
+  setError("");
+
+  try {
+    if (clock) {
+      const pausedClock = { ...clock, is_running: false };
+      setClock(pausedClock);
+      await persistClock(pausedClock);
+
+      // 把目前還在場上的球員 shift 關掉
+      if (currentOnCourtIds.length > 0) {
+        const { error: closeShiftError } = await supabase
+          .from("player_shifts")
+          .update({
+            out_seconds_left: pausedClock.seconds_left,
+          })
+          .eq("game_id", game.id)
+          .eq("team_side", "teamA")
+          .eq("quarter", pausedClock.quarter)
+          .is("out_seconds_left", null)
+          .in("player_id", currentOnCourtIds);
+
+        if (closeShiftError) {
+          setError(`結束比賽收尾失敗：${closeShiftError.message}`);
+          return;
+        }
+      }
+    }
+
+    const { error } = await supabase
+      .from("games")
+      .update({ status: "finished" })
+      .eq("id", game.id);
+
+    if (error) {
+      setError(`結束比賽失敗：${error.message}`);
+      return;
+    }
+
+    setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
+  } finally {
+    setEndingGame(false);
+  }
+}
 
   async function saveTeamAName() {
     if (!game) return;
