@@ -139,32 +139,137 @@ export default function BoxDashboardPage() {
     [events]
   );
 
-  const totalTeamStat = useMemo(() => calcPlayerStats(validEvents), [validEvents]);
-  const playerStatMap = useMemo(() => groupPlayerStats(validEvents), [validEvents]);
+  const activePlayerIdSet = useMemo(() => {
+    return new Set(players.map((p) => p.id));
+  }, [players]);
+
+  /**
+   * 只保留本隊球員名單內的事件
+   * 這樣不會把對手事件或沒有 player_id 的事件算進團隊平均
+   */
+  const teamPlayerEvents = useMemo(() => {
+    return validEvents.filter(
+      (e) => e.player_id && activePlayerIdSet.has(e.player_id)
+    );
+  }, [validEvents, activePlayerIdSet]);
+
+  /**
+   * 球員個人總數據
+   */
+  const playerStatMap = useMemo(() => {
+    return groupPlayerStats(teamPlayerEvents);
+  }, [teamPlayerEvents]);
+
+  /**
+   * 團隊每場數據
+   * 用每場比賽分開累計，再算平均，避免算法被混雜事件影響
+   */
+  const teamStatByGame = useMemo(() => {
+    const map: Record<string, Stat> = {};
+
+    for (const event of teamPlayerEvents) {
+      if (!map[event.game_id]) {
+        map[event.game_id] = safeStat();
+      }
+
+      const gameEvents = map[event.game_id];
+
+      switch (event.event_type) {
+        case "fg2_made":
+          gameEvents.pts += 2;
+          gameEvents.fg2m += 1;
+          gameEvents.fg2a += 1;
+          break;
+        case "fg2_miss":
+          gameEvents.fg2a += 1;
+          break;
+        case "fg3_made":
+          gameEvents.pts += 3;
+          gameEvents.fg3m += 1;
+          gameEvents.fg3a += 1;
+          break;
+        case "fg3_miss":
+          gameEvents.fg3a += 1;
+          break;
+        case "ft_made":
+          gameEvents.pts += 1;
+          gameEvents.ftm += 1;
+          gameEvents.fta += 1;
+          break;
+        case "ft_miss":
+          gameEvents.fta += 1;
+          break;
+        case "reb":
+          gameEvents.reb += 1;
+          break;
+        case "ast":
+          gameEvents.ast += 1;
+          break;
+        case "stl":
+          gameEvents.stl += 1;
+          break;
+        case "blk":
+          gameEvents.blk += 1;
+          break;
+        case "tov":
+          gameEvents.tov += 1;
+          break;
+        case "pf":
+          gameEvents.pf += 1;
+          break;
+        default:
+          break;
+      }
+    }
+
+    return map;
+  }, [teamPlayerEvents]);
 
   const teamGamesCount = useMemo(() => {
-    return new Set(validEvents.map((e) => e.game_id)).size;
-  }, [validEvents]);
+    return Object.keys(teamStatByGame).length;
+  }, [teamStatByGame]);
+
+  const teamTotals = useMemo(() => {
+    const total = safeStat();
+
+    for (const stat of Object.values(teamStatByGame)) {
+      total.pts += stat.pts;
+      total.fg2m += stat.fg2m;
+      total.fg2a += stat.fg2a;
+      total.fg3m += stat.fg3m;
+      total.fg3a += stat.fg3a;
+      total.ftm += stat.ftm;
+      total.fta += stat.fta;
+      total.reb += stat.reb;
+      total.ast += stat.ast;
+      total.stl += stat.stl;
+      total.blk += stat.blk;
+      total.tov += stat.tov;
+      total.pf += stat.pf;
+    }
+
+    return total;
+  }, [teamStatByGame]);
 
   const avgTeamPts = useMemo(
-    () => avg(totalTeamStat.pts, teamGamesCount),
-    [totalTeamStat.pts, teamGamesCount]
+    () => avg(teamTotals.pts, teamGamesCount),
+    [teamTotals.pts, teamGamesCount]
   );
 
   const avgTeamReb = useMemo(
-    () => avg(totalTeamStat.reb, teamGamesCount),
-    [totalTeamStat.reb, teamGamesCount]
+    () => avg(teamTotals.reb, teamGamesCount),
+    [teamTotals.reb, teamGamesCount]
   );
 
   const avgTeamAst = useMemo(
-    () => avg(totalTeamStat.ast, teamGamesCount),
-    [totalTeamStat.ast, teamGamesCount]
+    () => avg(teamTotals.ast, teamGamesCount),
+    [teamTotals.ast, teamGamesCount]
   );
 
   const playerGameCountMap = useMemo(() => {
     const map: Record<string, Set<string>> = {};
 
-    for (const e of validEvents) {
+    for (const e of teamPlayerEvents) {
       if (!e.player_id) continue;
       if (!map[e.player_id]) {
         map[e.player_id] = new Set<string>();
@@ -177,7 +282,21 @@ export default function BoxDashboardPage() {
       result[playerId] = map[playerId].size;
     }
     return result;
-  }, [validEvents]);
+  }, [teamPlayerEvents]);
+
+  /**
+   * 目前資料表無法精準算場均上場時間
+   * 先保留欄位，等 events 有「當下比賽秒數 / 節數 / 換人時間」後再補完整算法
+   */
+  const playerAvgMinutesMap = useMemo(() => {
+    const result: Record<string, string> = {};
+
+    for (const player of players) {
+      result[player.id] = "--";
+    }
+
+    return result;
+  }, [players]);
 
   const playerRows = useMemo(() => {
     return players.map((player) => {
@@ -189,6 +308,7 @@ export default function BoxDashboardPage() {
         ...player,
         stat,
         gamesPlayed,
+        avgMin: playerAvgMinutesMap[player.id] || "--",
         eff: playerEff,
         avgPts: avg(stat.pts, gamesPlayed),
         avgReb: avg(stat.reb, gamesPlayed),
@@ -200,7 +320,7 @@ export default function BoxDashboardPage() {
         avgEff: avg(playerEff, gamesPlayed),
       };
     });
-  }, [players, playerStatMap, playerGameCountMap]);
+  }, [players, playerStatMap, playerGameCountMap, playerAvgMinutesMap]);
 
   const sortedPlayerRows = useMemo(() => {
     return [...playerRows].sort((a, b) => {
@@ -251,7 +371,6 @@ export default function BoxDashboardPage() {
               <div className="mt-5 flex flex-wrap gap-3">
                 <HeroChip label="ACTIVE PLAYERS" value={players.length} />
                 <HeroChip label="GAMES" value={teamGamesCount} />
-                <HeroChip label="EVENTS" value={validEvents.length} />
               </div>
             </div>
 
@@ -300,20 +419,20 @@ export default function BoxDashboardPage() {
               <div className="grid gap-4 md:grid-cols-3">
                 <RateCard
                   label="2分球"
-                  made={totalTeamStat.fg2m}
-                  attempt={totalTeamStat.fg2a}
+                  made={teamTotals.fg2m}
+                  attempt={teamTotals.fg2a}
                   accent="orange"
                 />
                 <RateCard
                   label="3分球"
-                  made={totalTeamStat.fg3m}
-                  attempt={totalTeamStat.fg3a}
+                  made={teamTotals.fg3m}
+                  attempt={teamTotals.fg3a}
                   accent="blue"
                 />
                 <RateCard
                   label="罰球"
-                  made={totalTeamStat.ftm}
-                  attempt={totalTeamStat.fta}
+                  made={teamTotals.ftm}
+                  attempt={teamTotals.fta}
                   accent="violet"
                 />
               </div>
@@ -343,11 +462,18 @@ export default function BoxDashboardPage() {
               </div>
             </section>
 
+            <section className="mb-3 rounded-[24px] border border-cyan-400/15 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-100">
+              <span className="font-black">AVG EFF 算法：</span>
+              (PTS + REB + AST + STL + BLK - TOV - 未進2分 - 未進3分 - 未進罰球) ÷ GP
+            </section>
+
             <section className="mb-6 rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-5 shadow-[0_30px_80px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,140,0,0.05)] backdrop-blur">
               <div className="mb-5 flex items-end justify-between gap-4">
                 <div>
                   <h2 className="text-2xl font-black tracking-tight">球員場均數據列表</h2>
-                  <p className="mt-1 text-sm text-zinc-400">完整排行與命中率表現</p>
+                  <p className="mt-1 text-sm text-zinc-400">
+                    完整排行、命中率表現與效率值
+                  </p>
                 </div>
 
                 <div className="hidden rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-black tracking-[0.12em] text-zinc-300 md:inline-flex">
@@ -355,12 +481,17 @@ export default function BoxDashboardPage() {
                 </div>
               </div>
 
+              <div className="mb-4 rounded-2xl border border-yellow-400/15 bg-yellow-500/5 px-4 py-3 text-sm text-yellow-100">
+                AVG MIN 目前先保留欄位。你現在的資料表沒有記錄換人當下的比賽秒數，所以還無法精準計算球員場均上場時間。
+              </div>
+
               <div className="overflow-x-auto rounded-3xl border border-white/10 bg-black/20">
-                <table className="min-w-[1400px] w-full text-sm">
+                <table className="min-w-[1500px] w-full text-sm">
                   <thead>
                     <tr className="border-b border-white/10 bg-white/[0.03] text-zinc-400">
                       <th className="px-3 py-4 text-left">球員</th>
                       <th className="px-3 py-4 text-center">GP</th>
+                      <th className="px-3 py-4 text-center">AVG MIN</th>
                       <th className="px-3 py-4 text-center">AVG PTS</th>
                       <th className="px-3 py-4 text-center">AVG REB</th>
                       <th className="px-3 py-4 text-center">AVG AST</th>
@@ -405,6 +536,7 @@ export default function BoxDashboardPage() {
                         <td className="px-3 py-4 text-center font-semibold">
                           {row.gamesPlayed}
                         </td>
+                        <td className="px-3 py-4 text-center">{row.avgMin}</td>
                         <td className="px-3 py-4 text-center font-bold text-orange-300">
                           {row.avgPts}
                         </td>
@@ -435,7 +567,8 @@ export default function BoxDashboardPage() {
 
             <style jsx global>{`
               @keyframes floatBall1 {
-                0%, 100% {
+                0%,
+                100% {
                   transform: translateY(0px) rotate(-16deg);
                 }
                 50% {
@@ -444,7 +577,8 @@ export default function BoxDashboardPage() {
               }
 
               @keyframes floatBall2 {
-                0%, 100% {
+                0%,
+                100% {
                   transform: translateY(0px) rotate(18deg);
                 }
                 50% {
