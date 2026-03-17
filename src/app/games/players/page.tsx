@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -216,14 +217,6 @@ function initials(name?: string | null) {
   return name.trim().slice(0, 1).toUpperCase();
 }
 
-function hueFromString(input: string) {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = input.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return Math.abs(hash) % 360;
-}
-
 export default function PlayerProfilePage() {
   const params = useParams();
   const playerId = Array.isArray(params?.id) ? params.id[0] : params?.id ?? "";
@@ -235,13 +228,9 @@ export default function PlayerProfilePage() {
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
 
-  useEffect(() => {
-    console.log("params =", params);
-    console.log("playerId =", playerId);
-  }, [params, playerId]);
-
   const load = useCallback(async () => {
     if (!playerId) {
+      console.log("useParams() =", params);
       setError("抓不到 playerId，請確認路由是否為 /games/players/[id]");
       setLoading(false);
       return;
@@ -270,28 +259,11 @@ export default function PlayerProfilePage() {
       const safeGamePlayers = (gpData || []) as GamePlayerRow[];
       setGamePlayers(safeGamePlayers);
 
-      const { data: eventData, error: eventError } = await supabase
-        .from("events")
-        .select(
-          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-        )
-        .eq("player_id", playerId)
-        .order("created_at", { ascending: true });
-
-      if (eventError) throw eventError;
-
-      const safeEvents = (eventData || []) as EventRow[];
-      setEvents(safeEvents);
-
-      const gameIds = [
-        ...new Set([
-          ...safeGamePlayers.map((row) => row.game_id),
-          ...safeEvents.map((row) => row.game_id),
-        ]),
-      ];
+      const gameIds = [...new Set(safeGamePlayers.map((row) => row.game_id))];
 
       if (gameIds.length === 0) {
         setGames([]);
+        setEvents([]);
         return;
       }
 
@@ -302,14 +274,26 @@ export default function PlayerProfilePage() {
 
       if (gameError) throw gameError;
 
+      const { data: eventData, error: eventError } = await supabase
+        .from("events")
+        .select(
+          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+        )
+        .eq("player_id", playerId)
+        .in("game_id", gameIds)
+        .order("created_at", { ascending: true });
+
+      if (eventError) throw eventError;
+
       setGames((gameData || []) as GameRow[]);
+      setEvents((eventData || []) as EventRow[]);
     } catch (err: any) {
       console.error("PlayerProfilePage load error:", err);
       setError(err?.message || "載入資料失敗");
     } finally {
       setLoading(false);
     }
-  }, [playerId]);
+  }, [playerId, params]);
 
   useEffect(() => {
     load();
@@ -317,36 +301,23 @@ export default function PlayerProfilePage() {
 
   const perGameStats = useMemo(() => {
     const gameMap = new Map(games.map((g) => [g.id, g]));
-    const gpMap = new Map(gamePlayers.map((gp) => [gp.game_id, gp]));
     const bucket = new Map<string, PerGameStat>();
 
-    for (const ev of events) {
-      if (!ev.player_id) continue;
-      if (ev.is_undone) continue;
-
-      const game = gameMap.get(ev.game_id);
+    for (const gp of gamePlayers) {
+      const game = gameMap.get(gp.game_id);
       if (!game) continue;
 
-      if (!bucket.has(ev.game_id)) {
-        const gp = gpMap.get(ev.game_id);
+      const opponent =
+        gp.team_side === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
 
-        const teamSide =
-          (gp?.team_side || ev.team_side || "teamA") as "teamA" | "teamB";
-
-        const opponent =
-          teamSide === "teamA"
-            ? game.teamB || "對手未設定"
-            : game.teamA || "對手未設定";
-
-        bucket.set(ev.game_id, {
-          gameId: ev.game_id,
-          dateLabel: formatDate(game.game_date || game.created_at),
-          opponent,
-          teamSide,
-          isStarter: !!gp?.is_starter,
-          stat: emptyGameStat(),
-        });
-      }
+      bucket.set(gp.game_id, {
+        gameId: gp.game_id,
+        dateLabel: formatDate(game.game_date || game.created_at),
+        opponent,
+        teamSide: gp.team_side,
+        isStarter: !!gp.is_starter,
+        stat: emptyGameStat(),
+      });
     }
 
     for (const ev of events) {
@@ -390,8 +361,6 @@ export default function PlayerProfilePage() {
       totalEff,
     };
   }, [perGameStats, total]);
-
-  const hue = hueFromString(player?.id || player?.name || "player");
 
   if (loading) {
     return (
@@ -543,41 +512,21 @@ export default function PlayerProfilePage() {
             <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
               <div
                 style={{
-                  position: "relative",
-                  width: 88,
-                  height: 88,
+                  width: 82,
+                  height: 82,
                   borderRadius: "50%",
                   display: "grid",
                   placeItems: "center",
-                  fontSize: 30,
+                  fontSize: 28,
                   fontWeight: 900,
-                  background: `linear-gradient(135deg, hsla(${hue}, 90%, 56%, 1), hsla(${(hue + 35) % 360}, 92%, 48%, 1))`,
+                  background:
+                    "linear-gradient(135deg, rgba(245,158,11,0.95), rgba(234,88,12,0.95))",
                   color: "#111",
-                  boxShadow: `0 12px 30px hsla(${hue}, 90%, 50%, 0.22)`,
+                  boxShadow: "0 12px 30px rgba(245,158,11,0.28)",
                   flexShrink: 0,
                 }}
               >
                 {initials(player.name)}
-                <div
-                  style={{
-                    position: "absolute",
-                    right: -6,
-                    bottom: -4,
-                    minWidth: 34,
-                    height: 34,
-                    padding: "0 10px",
-                    borderRadius: 999,
-                    display: "grid",
-                    placeItems: "center",
-                    background: "#111",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    color: "#fff",
-                    fontSize: 12,
-                    fontWeight: 900,
-                  }}
-                >
-                  #{player.number ?? "-"}
-                </div>
               </div>
 
               <div style={{ minWidth: 0 }}>
@@ -594,7 +543,7 @@ export default function PlayerProfilePage() {
                     wordBreak: "break-word",
                   }}
                 >
-                  {player.name}
+                  #{player.number ?? "-"} {player.name}
                 </div>
 
                 <div
@@ -622,14 +571,18 @@ export default function PlayerProfilePage() {
                     style={{
                       padding: "7px 10px",
                       borderRadius: 999,
-                      background: "rgba(255,255,255,0.05)",
-                      border: "1px solid rgba(255,255,255,0.08)",
+                      background: player.active === false
+                        ? "rgba(120,120,120,0.15)"
+                        : "rgba(34,197,94,0.14)",
+                      border: player.active === false
+                        ? "1px solid rgba(255,255,255,0.08)"
+                        : "1px solid rgba(34,197,94,0.28)",
+                      color: player.active === false ? "#d4d4d8" : "#bbf7d0",
                       fontSize: 12,
-                      color: "rgba(255,255,255,0.72)",
                       fontWeight: 800,
                     }}
                   >
-                    GP {summary.gp}
+                    {player.active === false ? "未啟用" : "現役球員"}
                   </span>
                 </div>
               </div>
@@ -723,7 +676,7 @@ export default function PlayerProfilePage() {
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 22, fontWeight: 900 }}>詳細數據</div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                從 events 與 games 自動統計
+                從資料庫 events 累計而來
               </div>
             </div>
 
