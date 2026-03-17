@@ -15,9 +15,15 @@ type PlayerRow = {
 
 type EventRow = {
   id: string;
+  game_id: string;
   player_id: string | null;
   event_type: string;
   is_undone?: boolean | null;
+};
+
+type GamePlayerRow = {
+  player_id: string;
+  game_id: string;
 };
 
 type PreviewStat = {
@@ -45,25 +51,12 @@ function avg(total: number, gp: number) {
   return (total / gp).toFixed(1);
 }
 
-function initials(name?: string | null) {
-  if (!name) return "P";
-  return name.trim().slice(0, 1).toUpperCase();
-}
-
-function hueFromString(input: string) {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = input.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return Math.abs(hash) % 360;
-}
-
 export default function PlayersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [gamePlayers, setGamePlayers] = useState<{ player_id: string; game_id: string }[]>([]);
+  const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
 
   useEffect(() => {
     async function load() {
@@ -71,28 +64,29 @@ export default function PlayersPage() {
       setError("");
 
       try {
-        const { data: playerData, error: playerError } = await supabase
-          .from("players")
-          .select("id, name, number, position, active")
-          .order("number", { ascending: true });
+        const [{ data: playerData, error: playerError }, { data: eventData, error: eventError }, { data: gpData, error: gpError }] =
+          await Promise.all([
+            supabase
+              .from("players")
+              .select("id, name, number, position, active")
+              .order("number", { ascending: true, nullsFirst: false }),
+
+            supabase
+              .from("events")
+              .select("id, game_id, player_id, event_type, is_undone"),
+
+            supabase
+              .from("game_players")
+              .select("player_id, game_id"),
+          ]);
 
         if (playerError) throw playerError;
-
-        const { data: eventData, error: eventError } = await supabase
-          .from("events")
-          .select("id, player_id, event_type, is_undone");
-
         if (eventError) throw eventError;
-
-        const { data: gpData, error: gpError } = await supabase
-          .from("game_players")
-          .select("player_id, game_id");
-
         if (gpError) throw gpError;
 
         setPlayers((playerData || []) as PlayerRow[]);
         setEvents((eventData || []) as EventRow[]);
-        setGamePlayers((gpData || []) as { player_id: string; game_id: string }[]);
+        setGamePlayers((gpData || []) as GamePlayerRow[]);
       } catch (err: any) {
         console.error("PlayersPage load error:", err);
         setError(err?.message || "載入球員資料失敗");
@@ -111,22 +105,29 @@ export default function PlayersPage() {
       map.set(player.id, emptyPreviewStat());
     }
 
-    const gpBucket = new Map<string, Set<string>>();
-    for (const row of gamePlayers) {
-      if (!row.player_id) continue;
-      if (!gpBucket.has(row.player_id)) gpBucket.set(row.player_id, new Set());
-      gpBucket.get(row.player_id)!.add(row.game_id);
-    }
+    const playedGameSetMap = new Map<string, Set<string>>();
 
-    for (const [playerId, gameIdSet] of gpBucket.entries()) {
-      if (!map.has(playerId)) map.set(playerId, emptyPreviewStat());
-      map.get(playerId)!.gp = gameIdSet.size;
+    const ensurePlayedSet = (playerId: string) => {
+      if (!playedGameSetMap.has(playerId)) {
+        playedGameSetMap.set(playerId, new Set<string>());
+      }
+      return playedGameSetMap.get(playerId)!;
+    };
+
+    for (const row of gamePlayers) {
+      if (!row.player_id || !row.game_id) continue;
+      ensurePlayedSet(row.player_id).add(row.game_id);
     }
 
     for (const ev of events) {
-      if (!ev.player_id) continue;
+      if (!ev.player_id || !ev.game_id) continue;
       if (ev.is_undone) continue;
-      if (!map.has(ev.player_id)) map.set(ev.player_id, emptyPreviewStat());
+
+      ensurePlayedSet(ev.player_id).add(ev.game_id);
+
+      if (!map.has(ev.player_id)) {
+        map.set(ev.player_id, emptyPreviewStat());
+      }
 
       const stat = map.get(ev.player_id)!;
 
@@ -157,6 +158,13 @@ export default function PlayersPage() {
       }
     }
 
+    for (const [playerId, gameSet] of playedGameSetMap.entries()) {
+      if (!map.has(playerId)) {
+        map.set(playerId, emptyPreviewStat());
+      }
+      map.get(playerId)!.gp = gameSet.size;
+    }
+
     return map;
   }, [players, events, gamePlayers]);
 
@@ -165,7 +173,7 @@ export default function PlayersPage() {
       style={{
         minHeight: "100vh",
         background:
-          "radial-gradient(circle at top, rgba(245,158,11,0.18) 0%, rgba(120,53,15,0.18) 12%, #050505 30%, #000 100%)",
+          "radial-gradient(circle at top, rgba(245,158,11,0.16) 0%, rgba(120,53,15,0.14) 14%, #050505 34%, #000 100%)",
         color: "#fff",
         padding: 20,
       }}
@@ -188,10 +196,20 @@ export default function PlayersPage() {
           }}
         >
           <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.58)", fontWeight: 700 }}>
+            <div
+              style={{
+                fontSize: 14,
+                color: "rgba(255,255,255,0.58)",
+                fontWeight: 700,
+                letterSpacing: 0.6,
+              }}
+            >
               TEAM ROSTER
             </div>
             <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>球員列表</h1>
+            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 600 }}>
+              預覽每位球員本季場均數據
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -244,7 +262,6 @@ export default function PlayersPage() {
           <div className="gridWrap">
             {players.map((player) => {
               const stat = statMap.get(player.id) || emptyPreviewStat();
-              const hue = hueFromString(player.id || player.name || "player");
 
               return (
                 <Link
@@ -252,89 +269,76 @@ export default function PlayersPage() {
                   href={`/games/players/${player.id}`}
                   style={{ textDecoration: "none", color: "#fff" }}
                 >
-                  <article
-                    style={{
-                      height: "100%",
-                      borderRadius: 28,
-                      padding: 20,
-                      background: "linear-gradient(180deg, rgba(18,18,18,0.98), rgba(10,10,10,0.98))",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      boxShadow: "0 20px 50px rgba(0,0,0,0.3)",
-                      display: "grid",
-                      gap: 16,
-                      transition: "transform .18s ease, border-color .18s ease",
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                  <article className="playerCard">
+                    <div style={{ display: "grid", gap: 12 }}>
                       <div
                         style={{
-                          position: "relative",
-                          width: 72,
-                          height: 72,
-                          borderRadius: "50%",
-                          display: "grid",
-                          placeItems: "center",
-                          fontSize: 26,
-                          fontWeight: 900,
-                          background: `linear-gradient(135deg, hsla(${hue}, 90%, 56%, 1), hsla(${(hue + 35) % 360}, 92%, 48%, 1))`,
-                          color: "#111",
-                          boxShadow: `0 12px 30px hsla(${hue}, 90%, 50%, 0.22)`,
-                          flexShrink: 0,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "flex-start",
+                          gap: 12,
                         }}
                       >
-                        {initials(player.name)}
-                      </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: 16,
+                              color: "rgba(255,255,255,0.55)",
+                              fontWeight: 800,
+                              letterSpacing: 0.3,
+                            }}
+                          >
+                            #{player.number ?? "-"}
+                          </div>
 
-                      <div style={{ minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: 24,
-                            lineHeight: 1.1,
-                            fontWeight: 900,
-                            wordBreak: "break-word",
-                          }}
-                        >
-                          #{player.number ?? "-"} {player.name}
+                          <div
+                            style={{
+                              marginTop: 4,
+                              fontSize: 22,
+                              lineHeight: 1.15,
+                              fontWeight: 900,
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {player.name}
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 10,
+                              display: "flex",
+                              gap: 8,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <span
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: 999,
+                                background: "rgba(255,255,255,0.07)",
+                                border: "1px solid rgba(255,255,255,0.08)",
+                                fontSize: 12,
+                                fontWeight: 800,
+                              }}
+                            >
+                              {player.position || "未設定位置"}
+                            </span>
+                          </div>
                         </div>
 
                         <div
                           style={{
-                            marginTop: 8,
-                            display: "flex",
-                            gap: 8,
-                            flexWrap: "wrap",
+                            flexShrink: 0,
+                            padding: "8px 12px",
+                            borderRadius: 999,
+                            background: "rgba(245,158,11,0.14)",
+                            border: "1px solid rgba(245,158,11,0.22)",
+                            color: "#fbbf24",
+                            fontSize: 12,
+                            fontWeight: 900,
                           }}
                         >
-                          <span
-                            style={{
-                              padding: "6px 10px",
-                              borderRadius: 999,
-                              background: "rgba(255,255,255,0.07)",
-                              border: "1px solid rgba(255,255,255,0.08)",
-                              fontSize: 12,
-                              fontWeight: 800,
-                            }}
-                          >
-                            {player.position || "未設定位置"}
-                          </span>
-
-                          <span
-                            style={{
-                              padding: "6px 10px",
-                              borderRadius: 999,
-                              background: player.active === false
-                                ? "rgba(120,120,120,0.15)"
-                                : "rgba(34,197,94,0.14)",
-                              border: player.active === false
-                                ? "1px solid rgba(255,255,255,0.08)"
-                                : "1px solid rgba(34,197,94,0.28)",
-                              color: player.active === false ? "#d4d4d8" : "#bbf7d0",
-                              fontSize: 12,
-                              fontWeight: 800,
-                            }}
-                          >
-                            {player.active === false ? "未啟用" : "現役"}
-                          </span>
+                          球員頁 →
                         </div>
                       </div>
                     </div>
@@ -342,7 +346,7 @@ export default function PlayersPage() {
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                         gap: 10,
                       }}
                     >
@@ -351,20 +355,27 @@ export default function PlayersPage() {
                         { label: "AVG PTS", value: avg(stat.pts, stat.gp) },
                         { label: "AVG REB", value: avg(stat.reb, stat.gp) },
                         { label: "AVG AST", value: avg(stat.ast, stat.gp) },
+                        { label: "AVG STL", value: avg(stat.stl, stat.gp) },
+                        { label: "AVG BLK", value: avg(stat.blk, stat.gp) },
                       ].map((item) => (
-                        <div
-                          key={item.label}
-                          style={{
-                            borderRadius: 16,
-                            padding: 12,
-                            background: "rgba(255,255,255,0.035)",
-                            border: "1px solid rgba(255,255,255,0.06)",
-                          }}
-                        >
-                          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.56)", fontWeight: 800 }}>
+                        <div key={item.label} className="statBox">
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "rgba(255,255,255,0.56)",
+                              fontWeight: 800,
+                            }}
+                          >
                             {item.label}
                           </div>
-                          <div style={{ marginTop: 6, fontSize: 20, fontWeight: 900 }}>
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontSize: 22,
+                              fontWeight: 900,
+                              lineHeight: 1,
+                            }}
+                          >
                             {item.value}
                           </div>
                         </div>
@@ -380,9 +391,16 @@ export default function PlayersPage() {
                         paddingTop: 4,
                       }}
                     >
-                      <div style={{ fontSize: 13, color: "rgba(255,255,255,0.62)", fontWeight: 700 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "rgba(255,255,255,0.62)",
+                          fontWeight: 700,
+                        }}
+                      >
                         點擊查看完整球員頁
                       </div>
+
                       <div
                         style={{
                           borderRadius: 999,
@@ -411,6 +429,40 @@ export default function PlayersPage() {
           gap: 16px;
         }
 
+        .playerCard {
+          height: 100%;
+          border-radius: 28px;
+          padding: 20px;
+          background: linear-gradient(
+            180deg,
+            rgba(18, 18, 18, 0.98),
+            rgba(10, 10, 10, 0.98)
+          );
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+          display: grid;
+          gap: 16px;
+          transition: transform 0.18s ease, border-color 0.18s ease,
+            box-shadow 0.18s ease;
+        }
+
+        .playerCard:hover {
+          transform: translateY(-4px);
+          border-color: rgba(245, 158, 11, 0.28);
+          box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+        }
+
+        .statBox {
+          border-radius: 16px;
+          padding: 12px;
+          background: rgba(255, 255, 255, 0.035);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          min-height: 78px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+
         @media (max-width: 1100px) {
           .gridWrap {
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -420,6 +472,10 @@ export default function PlayersPage() {
         @media (max-width: 700px) {
           .gridWrap {
             grid-template-columns: 1fr;
+          }
+
+          .statBox {
+            min-height: 72px;
           }
         }
       `}</style>
