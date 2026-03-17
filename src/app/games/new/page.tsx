@@ -225,15 +225,16 @@ export default function NewGamePage() {
       }
 
       const gamePlayersPayload = selectedRosterIds.map((playerId) => {
-        const player = players.find((p) => p.id === playerId);
+  const player = players.find((p) => p.id === playerId);
 
-        return {
-          game_id: game.id,
-          player_id: playerId,
-          is_starter: selectedStarterIds.includes(playerId),
-          position: player?.position ?? null,
-        };
-      });
+  return {
+    game_id: game.id,
+    player_id: playerId,
+    team_side: "A",
+    is_starter: selectedStarterIds.includes(playerId),
+    position: player?.position ?? null,
+  };
+});
 
       const { error: gamePlayersError } = await supabase
         .from("game_players")
