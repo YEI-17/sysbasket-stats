@@ -225,8 +225,8 @@ function hueFromString(input: string) {
 }
 
 export default function PlayerProfilePage() {
-  const params = useParams<{ id: string }>();
-  const playerId = String(params?.id || "");
+  const params = useParams();
+  const playerId = Array.isArray(params?.id) ? params.id[0] : params?.id ?? "";
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
