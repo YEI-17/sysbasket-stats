@@ -45,7 +45,7 @@ type GamePlayerRow = {
   id: string;
   game_id: string;
   player_id: string;
-  team_side: string;
+  team_side: "teamA" | "teamB";
   is_starter: boolean;
 };
 
@@ -707,7 +707,7 @@ export default function LiveGamePage() {
 
   const teamAPlayerIds = useMemo(() => {
   return gamePlayers
-    .filter((gp) => gp.team_side === "A")
+    .filter((gp) => gp.team_side === "teamA")
     .map((gp) => gp.player_id);
 }, [gamePlayers]);
 
@@ -717,7 +717,7 @@ export default function LiveGamePage() {
 
   const starterIds = useMemo(() => {
   const starterFromDb = gamePlayers
-    .filter((gp) => gp.team_side === "A" && gp.is_starter)
+    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
     .map((gp) => gp.player_id);
 
   return starterFromDb.slice(0, 5);
@@ -855,14 +855,14 @@ export default function LiveGamePage() {
         player_id: playerId,
         quarter: clock.quarter,
         event_type: "sub_out",
-        team_side: "A" as const,
+        team_side: "teamA" as const,
       })),
       ...subInPlayerIds.map((playerId) => ({
         game_id: game.id,
         player_id: playerId,
         quarter: clock.quarter,
         event_type: "sub_in",
-        team_side: "A" as const,
+        team_side: "temaA" as const,
       })),
     ];
 
@@ -888,7 +888,7 @@ export default function LiveGamePage() {
         .eq("game_id", game.id)
         .eq("player_id", playerId)
         .eq("quarter", clock.quarter)
-        .eq("team_side", "A")
+        .eq("team_side", "teamA")
         .is("out_seconds_left", null);
 
       if (shiftOutError) {
