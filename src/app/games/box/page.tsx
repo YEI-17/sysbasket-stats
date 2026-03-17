@@ -470,26 +470,7 @@ export default function TeamStatsPage() {
                 <option style={{ color: "#000" }}>最近10場</option>
               </select>
 
-              <Link
-                href="/staff"
-                style={{
-                  height: 46,
-                  padding: "0 18px",
-                  borderRadius: 14,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  textDecoration: "none",
-                  color: "#fff5ef",
-                  background:
-                    "linear-gradient(180deg, rgba(255,146,54,0.18) 0%, rgba(255,146,54,0.08) 100%)",
-                  border: "1px solid rgba(255,170,90,0.18)",
-                  fontWeight: 800,
-                  boxShadow: "0 10px 24px rgba(255,120,40,0.12)",
-                }}
-              >
-                返回
-              </Link>
+              
 
               <div
                 style={{
