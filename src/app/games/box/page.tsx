@@ -59,11 +59,31 @@ type GamePlayerRow = {
   is_starter: boolean;
 };
 
+type SortKey =
+  | "gp"
+  | "avgMin"
+  | "avgPts"
+  | "avgReb"
+  | "avgAst"
+  | "avgStl"
+  | "avgBlk"
+  | "avgTov"
+  | "avgPf"
+  | "fg2Pct"
+  | "fg3Pct"
+  | "ftPct"
+  | "avgEff";
+
+type SortDirection = "desc" | "asc";
+
 type PlayerRow = Player & {
   stat: Stat;
   gamesPlayed: number;
   avgMin: string;
+  totalSeconds: number;
+  avgMinSeconds: number;
   eff: number;
+
   avgPts: string;
   avgReb: string;
   avgAst: string;
@@ -72,6 +92,19 @@ type PlayerRow = Player & {
   avgTov: string;
   avgPf: string;
   avgEff: string;
+
+  avgPtsValue: number;
+  avgRebValue: number;
+  avgAstValue: number;
+  avgStlValue: number;
+  avgBlkValue: number;
+  avgTovValue: number;
+  avgPfValue: number;
+  avgEffValue: number;
+
+  fg2PctValue: number;
+  fg3PctValue: number;
+  ftPctValue: number;
 };
 
 const CLOCK_TABLE = "game_clock";
@@ -109,9 +142,13 @@ function eff(stat: Stat) {
   );
 }
 
-function avg(value: number, gamesPlayed: number) {
-  if (!gamesPlayed) return "0.0";
-  return (value / gamesPlayed).toFixed(1);
+function avgValue(value: number, gamesPlayed: number) {
+  if (!gamesPlayed) return 0;
+  return value / gamesPlayed;
+}
+
+function avgText(value: number, gamesPlayed: number) {
+  return avgValue(value, gamesPlayed).toFixed(1);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -261,7 +298,15 @@ function formatAverageSeconds(totalSeconds: number, gamesPlayed: number) {
 
 function normalizeEventType(
   raw: string
-): StatEventRow["event_type"] | "reb" | "ast" | "stl" | "blk" | "tov" | "pf" | null {
+):
+  | StatEventRow["event_type"]
+  | "reb"
+  | "ast"
+  | "stl"
+  | "blk"
+  | "tov"
+  | "pf"
+  | null {
   switch (raw) {
     case "fg2_made":
     case "fg2_miss":
@@ -279,7 +324,6 @@ function normalizeEventType(
     case "sub_out":
       return raw;
 
-    // 舊資料相容
     case "assist":
       return "ast";
     case "rebound":
@@ -353,6 +397,44 @@ function applyEventToStat(stat: Stat, rawEventType: string) {
   }
 }
 
+function pctValue(made: number, attempt: number) {
+  if (!attempt) return 0;
+  return (made / attempt) * 100;
+}
+
+function getSortValue(row: PlayerRow, key: SortKey) {
+  switch (key) {
+    case "gp":
+      return row.gamesPlayed;
+    case "avgMin":
+      return row.avgMinSeconds;
+    case "avgPts":
+      return row.avgPtsValue;
+    case "avgReb":
+      return row.avgRebValue;
+    case "avgAst":
+      return row.avgAstValue;
+    case "avgStl":
+      return row.avgStlValue;
+    case "avgBlk":
+      return row.avgBlkValue;
+    case "avgTov":
+      return row.avgTovValue;
+    case "avgPf":
+      return row.avgPfValue;
+    case "fg2Pct":
+      return row.fg2PctValue;
+    case "fg3Pct":
+      return row.fg3PctValue;
+    case "ftPct":
+      return row.ftPctValue;
+    case "avgEff":
+      return row.avgEffValue;
+    default:
+      return 0;
+  }
+}
+
 export default function BoxDashboardPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);
@@ -361,6 +443,19 @@ export default function BoxDashboardPage() {
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("avgPts");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+
+  const handleSort = useCallback((key: SortKey) => {
+    setSortKey((prevKey) => {
+      if (prevKey === key) {
+        setSortDirection((prevDir) => (prevDir === "desc" ? "asc" : "desc"));
+        return prevKey;
+      }
+      setSortDirection("desc");
+      return key;
+    });
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -540,7 +635,6 @@ export default function BoxDashboardPage() {
         return knownTeamASet.has(event.player_id);
       }
 
-      // 舊資料沒寫 team_side / game_players 時，player_id 只要是本隊球員就算進來
       return true;
     },
     [activePlayerIdSet, teamAPlayerIdsByGame]
@@ -642,17 +736,17 @@ export default function BoxDashboardPage() {
   }, [teamStatByGame]);
 
   const avgTeamPts = useMemo(
-    () => avg(teamTotals.pts, teamGamesCount),
+    () => avgText(teamTotals.pts, teamGamesCount),
     [teamTotals.pts, teamGamesCount]
   );
 
   const avgTeamReb = useMemo(
-    () => avg(teamTotals.reb, teamGamesCount),
+    () => avgText(teamTotals.reb, teamGamesCount),
     [teamTotals.reb, teamGamesCount]
   );
 
   const avgTeamAst = useMemo(
-    () => avg(teamTotals.ast, teamGamesCount),
+    () => avgText(teamTotals.ast, teamGamesCount),
     [teamTotals.ast, teamGamesCount]
   );
 
@@ -663,7 +757,6 @@ export default function BoxDashboardPage() {
       map[player.id] = new Set<string>();
     }
 
-    // 來源1：game_players
     for (const row of gamePlayers) {
       if (row.team_side !== "A") continue;
       if (!activePlayerIdSet.has(row.player_id)) continue;
@@ -672,7 +765,6 @@ export default function BoxDashboardPage() {
       map[row.player_id].add(row.game_id);
     }
 
-    // 來源2：events（補舊資料）
     for (const event of teamPlayerEvents) {
       if (!event.player_id) continue;
       if (!map[event.player_id]) map[event.player_id] = new Set<string>();
@@ -862,38 +954,83 @@ export default function BoxDashboardPage() {
     return players.map((player) => {
       const stat = playerStatMap[player.id] || safeStat();
       const gamesPlayed = playerGameCountMap[player.id] || 0;
+      const totalSeconds = playerTotalSecondsMap[player.id] || 0;
+      const avgMinSeconds = gamesPlayed ? Math.round(totalSeconds / gamesPlayed) : 0;
       const playerEff = eff(stat);
+
+      const avgPtsValue = avgValue(stat.pts, gamesPlayed);
+      const avgRebValue = avgValue(stat.reb, gamesPlayed);
+      const avgAstValue = avgValue(stat.ast, gamesPlayed);
+      const avgStlValue = avgValue(stat.stl, gamesPlayed);
+      const avgBlkValue = avgValue(stat.blk, gamesPlayed);
+      const avgTovValue = avgValue(stat.tov, gamesPlayed);
+      const avgPfValue = avgValue(stat.pf, gamesPlayed);
+      const avgEffValue = avgValue(playerEff, gamesPlayed);
 
       return {
         ...player,
         stat,
         gamesPlayed,
+        totalSeconds,
+        avgMinSeconds,
         avgMin: playerAvgMinutesMap[player.id] || "0:00",
         eff: playerEff,
-        avgPts: avg(stat.pts, gamesPlayed),
-        avgReb: avg(stat.reb, gamesPlayed),
-        avgAst: avg(stat.ast, gamesPlayed),
-        avgStl: avg(stat.stl, gamesPlayed),
-        avgBlk: avg(stat.blk, gamesPlayed),
-        avgTov: avg(stat.tov, gamesPlayed),
-        avgPf: avg(stat.pf, gamesPlayed),
-        avgEff: avg(playerEff, gamesPlayed),
+
+        avgPts: avgPtsValue.toFixed(1),
+        avgReb: avgRebValue.toFixed(1),
+        avgAst: avgAstValue.toFixed(1),
+        avgStl: avgStlValue.toFixed(1),
+        avgBlk: avgBlkValue.toFixed(1),
+        avgTov: avgTovValue.toFixed(1),
+        avgPf: avgPfValue.toFixed(1),
+        avgEff: avgEffValue.toFixed(1),
+
+        avgPtsValue,
+        avgRebValue,
+        avgAstValue,
+        avgStlValue,
+        avgBlkValue,
+        avgTovValue,
+        avgPfValue,
+        avgEffValue,
+
+        fg2PctValue: pctValue(stat.fg2m, stat.fg2a),
+        fg3PctValue: pctValue(stat.fg3m, stat.fg3a),
+        ftPctValue: pctValue(stat.ftm, stat.fta),
       };
     });
-  }, [players, playerStatMap, playerGameCountMap, playerAvgMinutesMap]);
+  }, [
+    players,
+    playerStatMap,
+    playerGameCountMap,
+    playerAvgMinutesMap,
+    playerTotalSecondsMap,
+  ]);
 
   const sortedPlayerRows = useMemo(() => {
     return [...playerRows].sort((a, b) => {
-      const bAvgPts = Number(b.avgPts);
-      const aAvgPts = Number(a.avgPts);
+      const aValue = getSortValue(a, sortKey);
+      const bValue = getSortValue(b, sortKey);
 
-      if (bAvgPts !== aAvgPts) return bAvgPts - aAvgPts;
-      if (b.eff !== a.eff) return b.eff - a.eff;
+      if (aValue !== bValue) {
+        return sortDirection === "desc" ? bValue - aValue : aValue - bValue;
+      }
+
+      if (b.avgPtsValue !== a.avgPtsValue) return b.avgPtsValue - a.avgPtsValue;
+      if (b.avgEffValue !== a.avgEffValue) return b.avgEffValue - a.avgEffValue;
       return (a.number ?? 999) - (b.number ?? 999);
     });
-  }, [playerRows]);
+  }, [playerRows, sortKey, sortDirection]);
 
-  const topThree = useMemo(() => sortedPlayerRows.slice(0, 3), [sortedPlayerRows]);
+  const topThree = useMemo(() => {
+    return [...playerRows]
+      .sort((a, b) => {
+        if (b.avgPtsValue !== a.avgPtsValue) return b.avgPtsValue - a.avgPtsValue;
+        if (b.avgEffValue !== a.avgEffValue) return b.avgEffValue - a.avgEffValue;
+        return (a.number ?? 999) - (b.number ?? 999);
+      })
+      .slice(0, 3);
+  }, [playerRows]);
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_50%_0%,rgba(255,140,0,0.18),transparent_30%),radial-gradient(circle_at_0%_100%,rgba(255,98,0,0.12),transparent_30%),radial-gradient(circle_at_100%_100%,rgba(96,165,250,0.08),transparent_28%),linear-gradient(180deg,#0b0b0d_0%,#101014_55%,#060606_100%)] px-4 py-6 text-white md:px-8">
@@ -1028,11 +1165,6 @@ export default function BoxDashboardPage() {
               </div>
             </section>
 
-            <section className="mb-3 rounded-[24px] border border-cyan-400/15 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-100">
-              <span className="font-black">AVG EFF 算法：</span>
-              (PTS + REB + AST + STL + BLK - TOV - 未進2分 - 未進3分 - 未進罰球) ÷ GP
-            </section>
-
             <section className="mb-6 rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(24,24,28,0.96)_0%,rgba(10,10,12,0.98)_100%)] p-5 shadow-[0_30px_80px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,140,0,0.05)] backdrop-blur">
               <div className="mb-5 flex items-end justify-between gap-4">
                 <div>
@@ -1041,14 +1173,6 @@ export default function BoxDashboardPage() {
                     完整排行、命中率表現與效率值
                   </p>
                 </div>
-
-                <div className="hidden rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-black tracking-[0.12em] text-zinc-300 md:inline-flex">
-                  SORTED BY AVG PTS
-                </div>
-              </div>
-
-              <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-100">
-                AVG MIN 目前改為依據每場比賽的 events、game_clock、game_players 回推實際上場時間，並以 mm:ss 顯示平均值。
               </div>
 
               <div className="overflow-x-auto rounded-3xl border border-white/10 bg-black/20">
@@ -1056,19 +1180,110 @@ export default function BoxDashboardPage() {
                   <thead>
                     <tr className="border-b border-white/10 bg-white/[0.03] text-zinc-400">
                       <th className="px-3 py-4 text-left">球員</th>
-                      <th className="px-3 py-4 text-center">GP</th>
-                      <th className="px-3 py-4 text-center">AVG MIN</th>
-                      <th className="px-3 py-4 text-center">AVG PTS</th>
-                      <th className="px-3 py-4 text-center">AVG REB</th>
-                      <th className="px-3 py-4 text-center">AVG AST</th>
-                      <th className="px-3 py-4 text-center">AVG STL</th>
-                      <th className="px-3 py-4 text-center">AVG BLK</th>
-                      <th className="px-3 py-4 text-center">AVG TOV</th>
-                      <th className="px-3 py-4 text-center">AVG PF</th>
-                      <th className="px-3 py-4 text-center">2PT%</th>
-                      <th className="px-3 py-4 text-center">3PT%</th>
-                      <th className="px-3 py-4 text-center">FT%</th>
-                      <th className="px-3 py-4 text-center">AVG EFF</th>
+                      <SortableTh
+                        label="GP"
+                        sortKeyName="gp"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG MIN"
+                        sortKeyName="avgMin"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG PTS"
+                        sortKeyName="avgPts"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG REB"
+                        sortKeyName="avgReb"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG AST"
+                        sortKeyName="avgAst"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG STL"
+                        sortKeyName="avgStl"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG BLK"
+                        sortKeyName="avgBlk"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG TOV"
+                        sortKeyName="avgTov"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG PF"
+                        sortKeyName="avgPf"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="2PT%"
+                        sortKeyName="fg2Pct"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="3PT%"
+                        sortKeyName="fg3Pct"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="FT%"
+                        sortKeyName="ftPct"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
+                      <SortableTh
+                        label="AVG EFF"
+                        sortKeyName="avgEff"
+                        activeKey={sortKey}
+                        direction={sortDirection}
+                        onClick={handleSort}
+                        align="center"
+                      />
                     </tr>
                   </thead>
                   <tbody>
@@ -1358,5 +1573,41 @@ function MiniValue({
       </div>
       <div className="mt-1 text-lg font-black text-white">{value}</div>
     </div>
+  );
+}
+
+function SortableTh({
+  label,
+  sortKeyName,
+  activeKey,
+  direction,
+  onClick,
+  align = "left",
+}: {
+  label: string;
+  sortKeyName: SortKey;
+  activeKey: SortKey;
+  direction: SortDirection;
+  onClick: (key: SortKey) => void;
+  align?: "left" | "center";
+}) {
+  const active = activeKey === sortKeyName;
+  const arrow = active ? (direction === "desc" ? "↓" : "↑") : "↕";
+
+  return (
+    <th
+      className={`px-3 py-4 ${align === "center" ? "text-center" : "text-left"}`}
+    >
+      <button
+        type="button"
+        onClick={() => onClick(sortKeyName)}
+        className={`inline-flex items-center gap-1 font-semibold transition ${
+          active ? "text-white" : "text-zinc-400 hover:text-zinc-200"
+        }`}
+      >
+        <span>{label}</span>
+        <span className="text-[11px]">{arrow}</span>
+      </button>
+    </th>
   );
 }

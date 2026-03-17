@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
@@ -64,7 +63,7 @@ type Stat = {
   stl: number;
   blk: number;
   pf: number;
-  plusMinus: number | null;
+  plusMinus: number;
 };
 
 const CLOCK_TABLE = "game_clock";
@@ -84,7 +83,7 @@ const emptyStat = (): Stat => ({
   stl: 0,
   blk: 0,
   pf: 0,
-  plusMinus: null,
+  plusMinus: 0,
 });
 
 function formatClock(secondsLeft: number) {
@@ -155,6 +154,10 @@ function getPoints(eventType: string) {
   if (eventType === "fg3_made") return 3;
   if (eventType === "ft_made") return 1;
   return 0;
+}
+
+function isScoringEvent(eventType: string) {
+  return eventType === "fg2_made" || eventType === "fg3_made" || eventType === "ft_made";
 }
 
 function computeDisplaySeconds(clock: ClockRow | null) {
@@ -590,109 +593,134 @@ export default function BoardPage() {
       map[p.id] = emptyStat();
     }
 
-    for (const e of validEvents) {
-      if (e.team_side !== "A") continue;
-      if (!e.player_id) continue;
-      if (e.event_type === "sub_in" || e.event_type === "sub_out") continue;
+    const lineup = new Set<string>(starterIds);
 
-      if (!map[e.player_id]) {
+    for (const e of validEvents) {
+      if (e.team_side === "A" && e.player_id && !map[e.player_id]) {
         map[e.player_id] = emptyStat();
       }
 
-      applyEvent(map[e.player_id], e.event_type);
+      if (e.team_side === "A" && e.player_id) {
+        if (e.event_type === "sub_in") {
+          lineup.add(e.player_id);
+          continue;
+        }
+        if (e.event_type === "sub_out") {
+          lineup.delete(e.player_id);
+          continue;
+        }
+      }
+
+      if (e.team_side === "A" && e.player_id) {
+        applyEvent(map[e.player_id], e.event_type);
+      }
+
+      if (isScoringEvent(e.event_type)) {
+        const pts = getPoints(e.event_type);
+        if (pts > 0) {
+          for (const playerId of lineup) {
+            if (!map[playerId]) map[playerId] = emptyStat();
+            if (e.team_side === "A") {
+              map[playerId].plusMinus += pts;
+            } else if (e.team_side === "B") {
+              map[playerId].plusMinus -= pts;
+            }
+          }
+        }
+      }
     }
 
     return map;
-  }, [teamAPlayers, validEvents]);
+  }, [teamAPlayers, validEvents, starterIds]);
 
   const minutesMap = useMemo(() => {
-  const map: Record<string, number> = {};
-  const currentQuarter = clock?.quarter ?? 1;
+    const map: Record<string, number> = {};
+    const currentQuarter = clock?.quarter ?? 1;
 
-  for (const p of teamAPlayers) {
-    map[p.id] = 0;
-  }
-
-  for (let q = 1; q <= currentQuarter; q += 1) {
-    const playedSecondsThisQuarter = getQuarterPlayedSeconds(
-      q,
-      currentQuarter,
-      displaySeconds
-    );
-
-    const lineup = new Set<string>();
-
-    if (q === 1) {
-      starterIds.forEach((id) => lineup.add(id));
-    } else {
-      starterIds.forEach((id) => lineup.add(id));
-
-      for (const e of validEvents) {
-        if (e.team_side !== "A") continue;
-        if (!e.player_id) continue;
-        if (e.quarter >= q) break;
-
-        if (e.event_type === "sub_in") lineup.add(e.player_id);
-        if (e.event_type === "sub_out") lineup.delete(e.player_id);
-      }
-    }
-
-    const activeStartMap: Record<string, number | null> = {};
     for (const p of teamAPlayers) {
-      activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
+      map[p.id] = 0;
     }
 
-    const quarterSubEvents = validEvents
-      .filter(
-        (e) =>
-          e.team_side === "A" &&
-          e.quarter === q &&
-          !!e.player_id &&
-          (e.event_type === "sub_in" || e.event_type === "sub_out")
-      )
-      .sort(
-        (a, b) =>
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-
-    for (const e of quarterSubEvents) {
-      const playerId = e.player_id!;
-      const eventElapsed = getEventElapsedSeconds(
-        e,
-        quarterSubEvents,
+    for (let q = 1; q <= currentQuarter; q += 1) {
+      const playedSecondsThisQuarter = getQuarterPlayedSeconds(
         q,
         currentQuarter,
-        displaySeconds,
-        clock
+        displaySeconds
       );
 
-      if (e.event_type === "sub_in") {
-        if (activeStartMap[playerId] == null) {
-          activeStartMap[playerId] = eventElapsed;
+      const lineup = new Set<string>();
+
+      if (q === 1) {
+        starterIds.forEach((id) => lineup.add(id));
+      } else {
+        starterIds.forEach((id) => lineup.add(id));
+
+        for (const e of validEvents) {
+          if (e.team_side !== "A") continue;
+          if (!e.player_id) continue;
+          if (e.quarter >= q) break;
+
+          if (e.event_type === "sub_in") lineup.add(e.player_id);
+          if (e.event_type === "sub_out") lineup.delete(e.player_id);
         }
       }
 
-      if (e.event_type === "sub_out") {
-        const startedAt = activeStartMap[playerId];
+      const activeStartMap: Record<string, number | null> = {};
+      for (const p of teamAPlayers) {
+        activeStartMap[p.id] = lineup.has(p.id) ? 0 : null;
+      }
+
+      const quarterSubEvents = validEvents
+        .filter(
+          (e) =>
+            e.team_side === "A" &&
+            e.quarter === q &&
+            !!e.player_id &&
+            (e.event_type === "sub_in" || e.event_type === "sub_out")
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+
+      for (const e of quarterSubEvents) {
+        const playerId = e.player_id!;
+        const eventElapsed = getEventElapsedSeconds(
+          e,
+          quarterSubEvents,
+          q,
+          currentQuarter,
+          displaySeconds,
+          clock
+        );
+
+        if (e.event_type === "sub_in") {
+          if (activeStartMap[playerId] == null) {
+            activeStartMap[playerId] = eventElapsed;
+          }
+        }
+
+        if (e.event_type === "sub_out") {
+          const startedAt = activeStartMap[playerId];
+          if (startedAt != null) {
+            map[playerId] =
+              (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
+            activeStartMap[playerId] = null;
+          }
+        }
+      }
+
+      for (const p of teamAPlayers) {
+        const startedAt = activeStartMap[p.id];
         if (startedAt != null) {
-          map[playerId] =
-            (map[playerId] || 0) + Math.max(0, eventElapsed - startedAt);
-          activeStartMap[playerId] = null;
+          map[p.id] =
+            (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
         }
       }
     }
 
-    for (const p of teamAPlayers) {
-      const startedAt = activeStartMap[p.id];
-      if (startedAt != null) {
-        map[p.id] =
-          (map[p.id] || 0) + Math.max(0, playedSecondsThisQuarter - startedAt);
-      }
-    }
-  }
-
-  return map;
-}, [teamAPlayers, validEvents, starterIds, clock, displaySeconds]);
+    return map;
+  }, [teamAPlayers, validEvents, starterIds, clock, displaySeconds]);
 
   const totalScore = useMemo(() => {
     let home = 0;
@@ -735,6 +763,36 @@ export default function BoardPage() {
   const benchPlayers = useMemo(() => {
     return teamAPlayers.filter((p) => !currentOnCourtIds.includes(p.id));
   }, [teamAPlayers, currentOnCourtIds]);
+
+  const teamTotals = useMemo(() => {
+    const total = emptyStat();
+    let totalSeconds = 0;
+
+    for (const p of teamAPlayers) {
+      const s = statsMap[p.id] || emptyStat();
+      total.pts += s.pts;
+      total.fg2m += s.fg2m;
+      total.fg2a += s.fg2a;
+      total.fg3m += s.fg3m;
+      total.fg3a += s.fg3a;
+      total.ftm += s.ftm;
+      total.fta += s.fta;
+      total.reb += s.reb;
+      total.ast += s.ast;
+      total.tov += s.tov;
+      total.stl += s.stl;
+      total.blk += s.blk;
+      total.pf += s.pf;
+      totalSeconds += minutesMap[p.id] || 0;
+    }
+
+    total.plusMinus = totalScore.home - totalScore.away;
+
+    return {
+      stat: total,
+      totalSeconds,
+    };
+  }, [teamAPlayers, statsMap, minutesMap, totalScore]);
 
   const statusColors = getGameStatusColors(game, clock);
 
@@ -791,7 +849,52 @@ export default function BoardPage() {
         <td style={tdStyle}>{s.stl}</td>
         <td style={tdStyle}>{s.blk}</td>
         <td style={tdStyle}>{s.pf}</td>
-        <td style={tdStyle}>{s.plusMinus ?? "—"}</td>
+        <td
+          style={{
+            ...tdStyle,
+            fontWeight: 800,
+            color: s.plusMinus > 0 ? "#86efac" : s.plusMinus < 0 ? "#fca5a5" : "#f4f4f5",
+          }}
+        >
+          {s.plusMinus > 0 ? `+${s.plusMinus}` : s.plusMinus}
+        </td>
+      </tr>
+    );
+  }
+
+  function renderTeamRow() {
+    const s = teamTotals.stat;
+    const min = formatMinutesFromSeconds(teamTotals.totalSeconds);
+
+    return (
+      <tr style={teamTotalRowStyle}>
+        <td style={teamTotalNameStyle}>TEAM</td>
+        <td style={teamTotalTdStyle}>{min}</td>
+        <td style={{ ...teamTotalTdStyle, color: "#fdba74", fontWeight: 900 }}>{s.pts}</td>
+        <td style={teamTotalTdStyle}>
+          {s.fg2m}/{s.fg2a}
+        </td>
+        <td style={teamTotalTdStyle}>
+          {s.fg3m}/{s.fg3a}
+        </td>
+        <td style={teamTotalTdStyle}>
+          {s.ftm}/{s.fta}
+        </td>
+        <td style={teamTotalTdStyle}>{s.reb}</td>
+        <td style={teamTotalTdStyle}>{s.ast}</td>
+        <td style={teamTotalTdStyle}>{s.tov}</td>
+        <td style={teamTotalTdStyle}>{s.stl}</td>
+        <td style={teamTotalTdStyle}>{s.blk}</td>
+        <td style={teamTotalTdStyle}>{s.pf}</td>
+        <td
+          style={{
+            ...teamTotalTdStyle,
+            fontWeight: 900,
+            color: s.plusMinus > 0 ? "#86efac" : s.plusMinus < 0 ? "#fca5a5" : "#f4f4f5",
+          }}
+        >
+          {s.plusMinus > 0 ? `+${s.plusMinus}` : s.plusMinus}
+        </td>
       </tr>
     );
   }
@@ -806,11 +909,6 @@ export default function BoardPage() {
         <div style={topBarStyle}>
           <div style={topLeftStyle}>
             <div style={eyebrowStyle}>COURTSIDE LIVE BOARD</div>
-            <div style={topButtonRowStyle}>
-              <Link href={`/games/${gameId}/box`} style={linkButtonStyle}>
-                Box Score
-              </Link>
-            </div>
           </div>
           <LogoutButton />
         </div>
@@ -928,6 +1026,7 @@ export default function BoardPage() {
                 )}
 
                 {benchPlayers.map((p) => renderPlayerRow(p, false))}
+                {renderTeamRow()}
               </tbody>
             </table>
           </div>
@@ -1038,25 +1137,6 @@ const eyebrowStyle: React.CSSProperties = {
   fontWeight: 900,
   letterSpacing: "0.14em",
   width: "fit-content",
-};
-
-const topButtonRowStyle: React.CSSProperties = {
-  display: "flex",
-  gap: 10,
-  flexWrap: "wrap",
-};
-
-const linkButtonStyle: React.CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 14,
-  background:
-    "linear-gradient(135deg, #ffb347 0%, #f48c06 55%, #d96a00 100%)",
-  color: "#fff",
-  textDecoration: "none",
-  fontSize: 14,
-  fontWeight: 800,
-  boxShadow:
-    "0 14px 30px rgba(244,140,6,0.28), inset 0 1px 0 rgba(255,255,255,0.22)",
 };
 
 const scoreCardStyle: React.CSSProperties = {
@@ -1369,6 +1449,33 @@ const dividerLabelStyle: React.CSSProperties = {
   color: "#71717a",
   whiteSpace: "nowrap",
   letterSpacing: "0.18em",
+};
+
+const teamTotalRowStyle: React.CSSProperties = {
+  background: "linear-gradient(180deg, rgba(249,115,22,0.10) 0%, rgba(255,255,255,0.03) 100%)",
+};
+
+const teamTotalNameStyle: React.CSSProperties = {
+  textAlign: "left",
+  padding: "18px 14px",
+  borderTop: "1px solid rgba(249,115,22,0.22)",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+  fontSize: 16,
+  color: "#fff7ed",
+  whiteSpace: "nowrap",
+  fontWeight: 900,
+  letterSpacing: "0.06em",
+};
+
+const teamTotalTdStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "18px 10px",
+  borderTop: "1px solid rgba(249,115,22,0.22)",
+  borderBottom: "1px solid rgba(255,255,255,0.05)",
+  fontSize: 16,
+  color: "#fff7ed",
+  whiteSpace: "nowrap",
+  fontWeight: 800,
 };
 
 const msgStyle: React.CSSProperties = {

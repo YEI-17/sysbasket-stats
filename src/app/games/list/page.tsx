@@ -248,7 +248,7 @@ export default function GamesPage() {
           </Link>
 
           <Link
-            href={`/games/${game.id}/box`}
+            href={`/games/${game.id}/board`}
             className="rounded-xl bg-zinc-700 px-4 py-3 text-center font-semibold text-white hover:bg-zinc-600 transition"
           >
             完整數據

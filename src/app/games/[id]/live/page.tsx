@@ -139,6 +139,7 @@ export default function LiveGamePage() {
 
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
+  const autoQuarterAdvanceLockRef = useRef(false);
 
   const cooldownRef = useRef<Record<string, number>>({});
   const eventsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -395,10 +396,19 @@ export default function LiveGamePage() {
     tickerRef.current = setInterval(() => {
       setClock((prev) => {
         if (!prev) return prev;
-        if (prev.seconds_left <= 0) {
-          return { ...prev, is_running: false, seconds_left: 0 };
+
+        if (prev.seconds_left <= 1) {
+          return {
+            ...prev,
+            seconds_left: 0,
+            is_running: false,
+          };
         }
-        return { ...prev, seconds_left: prev.seconds_left - 1 };
+
+        return {
+          ...prev,
+          seconds_left: prev.seconds_left - 1,
+        };
       });
     }, 1000);
 
@@ -639,6 +649,62 @@ export default function LiveGamePage() {
     return events.filter((e) => !e.is_undone);
   }, [events]);
 
+  const teamScore = useMemo(() => {
+    let scoreA = 0;
+    let scoreB = 0;
+
+    for (const e of validEvents) {
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "A") scoreA += pts;
+      if (e.team_side === "B") scoreB += pts;
+    }
+
+    return { scoreA, scoreB };
+  }, [validEvents]);
+
+  useEffect(() => {
+    async function handleQuarterEndAuto() {
+      if (!clock || !game || game.status === "finished") return;
+
+      const isEndOfRegularQ1toQ3 = clock.quarter < 4;
+      const isTieGame = teamScore.scoreA === teamScore.scoreB;
+      const shouldAdvance = isEndOfRegularQ1toQ3 || isTieGame;
+
+      if (!shouldAdvance) {
+        const pausedClock = {
+          ...clock,
+          seconds_left: 0,
+          is_running: false,
+        };
+        setClock(pausedClock);
+        await persistClock(pausedClock);
+        return;
+      }
+
+      const nextQuarterNum = clock.quarter + 1;
+      const next: ClockRow = {
+        game_id: game.id,
+        quarter: nextQuarterNum,
+        seconds_left: getQuarterSeconds(nextQuarterNum),
+        is_running: false,
+      };
+
+      setClock(next);
+      await persistClock(next);
+    }
+
+    if (!clock || !game || game.status === "finished") return;
+
+    if (clock.seconds_left === 0 && !clock.is_running) {
+      if (autoQuarterAdvanceLockRef.current) return;
+      autoQuarterAdvanceLockRef.current = true;
+      void handleQuarterEndAuto();
+      return;
+    }
+
+    autoQuarterAdvanceLockRef.current = false;
+  }, [clock, game, teamScore]);
+
   const teamAPlayerIds = useMemo(() => {
     const ids = gamePlayers
       .filter((gp) => gp.team_side === "A")
@@ -824,19 +890,6 @@ export default function LiveGamePage() {
     }
   }
 
-  const teamScore = useMemo(() => {
-    let scoreA = 0;
-    let scoreB = 0;
-
-    for (const e of validEvents) {
-      const pts = getPoints(e.event_type);
-      if (e.team_side === "A") scoreA += pts;
-      if (e.team_side === "B") scoreB += pts;
-    }
-
-    return { scoreA, scoreB };
-  }, [validEvents]);
-
   const quarterScores = useMemo(() => {
     const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
     const result: Record<number, { home: number; away: number }> = {};
@@ -867,7 +920,6 @@ export default function LiveGamePage() {
     <div className="min-h-screen bg-[#030303] text-white">
       <div className="mx-auto max-w-[1800px] p-2 md:p-3">
         <div className="flex min-h-[calc(100vh-16px)] flex-col gap-2 md:gap-3">
-          {/* 上方：精簡控制列 */}
           <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] px-3 py-2.5 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
             <div className="flex flex-wrap items-center gap-2">
               <div className="min-w-0 flex-1">
@@ -949,10 +1001,7 @@ export default function LiveGamePage() {
             </div>
           </div>
 
-
-                    {/* 主內容 */}
           <div className="grid flex-1 gap-2 md:gap-3 lg:grid-cols-[1.08fr_0.92fr]">
-            {/* 左：快速紀錄 + 比賽控制 */}
             <div className="flex flex-col gap-2 md:gap-3">
               <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -993,7 +1042,7 @@ export default function LiveGamePage() {
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
-                    2分鐵
+                    2分不進
                   </button>
                   <button
                     onClick={() => addEvent("reb", "A")}
@@ -1015,7 +1064,7 @@ export default function LiveGamePage() {
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
-                    3分鐵
+                    3分不進
                   </button>
                   <button
                     onClick={() => addEvent("ast", "A")}
@@ -1037,16 +1086,8 @@ export default function LiveGamePage() {
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("miss")}
                   >
-                    罰鐵
+                    罰球不進
                   </button>
-                  <button
-                    onClick={() => addEvent("pf", "A")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("warn")}
-                  >
-                    犯規
-                  </button>
-
                   <button
                     onClick={() => addEvent("stl", "A")}
                     disabled={game?.status === "finished"}
@@ -1054,12 +1095,20 @@ export default function LiveGamePage() {
                   >
                     抄截
                   </button>
+
                   <button
                     onClick={() => addEvent("blk", "A")}
                     disabled={game?.status === "finished"}
                     className={actionBtnClass("def")}
                   >
                     阻攻
+                  </button>
+                  <button
+                    onClick={() => addEvent("pf", "A")}
+                    disabled={game?.status === "finished"}
+                    className={actionBtnClass("warn")}
+                  >
+                    犯規
                   </button>
                   <button
                     onClick={() => addEvent("tov", "A")}
@@ -1208,7 +1257,6 @@ export default function LiveGamePage() {
               </div>
             </div>
 
-            {/* 右：球員 / 換人 */}
             <div className="flex flex-col gap-2 md:gap-3">
               <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
                 <div className="mb-2 text-sm font-black">場上五人</div>
