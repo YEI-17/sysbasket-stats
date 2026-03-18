@@ -78,6 +78,7 @@ type Stat = {
 
 const CLOCK_TABLE = "game_clock";
 const REGULAR_SECONDS = 600;
+const OT_SECONDS = 300;
 
 const emptyStat = (): Stat => ({
   pts: 0,
@@ -111,38 +112,12 @@ function formatMinutesFromSeconds(totalSeconds: number) {
 }
 
 function getQuarterSeconds(quarter: number) {
-  return quarter <= 4 ? 600 : 300;
+  return quarter <= 4 ? REGULAR_SECONDS : OT_SECONDS;
 }
 
-function getLiveSecondsFromShifts(params: {
-  playerId: string;
-  shifts: PlayerShiftRow[];
-  clock: ClockRow | null;
-  displaySeconds: number;
-}) {
-  const { playerId, shifts, clock, displaySeconds } = params;
-
-  const playerShifts = shifts.filter((s) => s.player_id === playerId);
-  let total = 0;
-
-  for (const s of playerShifts) {
-    const maxSeconds = getQuarterSeconds(s.quarter);
-    const inSec = Math.max(0, Math.min(maxSeconds, s.in_seconds_left ?? maxSeconds));
-
-    if (s.out_seconds_left == null) {
-      if (clock && clock.quarter === s.quarter) {
-        total += Math.max(0, inSec - displaySeconds);
-      }
-    } else {
-      const outSec = Math.max(0, Math.min(maxSeconds, s.out_seconds_left));
-      total += Math.max(0, inSec - outSec);
-    }
-  }
-
-  return total;
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
-
-
 
 function applyEvent(stat: Stat, eventType: string) {
   switch (eventType) {
@@ -201,13 +176,18 @@ function getPoints(eventType: string) {
 }
 
 function isScoringEvent(eventType: string) {
-  return eventType === "fg2_made" || eventType === "fg3_made" || eventType === "ft_made";
+  return (
+    eventType === "fg2_made" ||
+    eventType === "fg3_made" ||
+    eventType === "ft_made"
+  );
 }
 
 function computeDisplaySeconds(clock: ClockRow | null) {
   if (!clock) return REGULAR_SECONDS;
 
-  const base = Math.max(0, clock.seconds_left ?? 0);
+  const quarterMax = getQuarterSeconds(clock.quarter);
+  const base = clamp(clock.seconds_left ?? quarterMax, 0, quarterMax);
 
   if (!clock.is_running) return base;
   if (!clock.updated_at) return base;
@@ -227,7 +207,12 @@ function getQuarterLabel(quarter: number) {
 }
 
 function sortPlayers(list: Player[]) {
-  return [...list].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+  return [...list].sort((a, b) => {
+    const aNum = a.number ?? 999;
+    const bNum = b.number ?? 999;
+    if (aNum !== bNum) return aNum - bNum;
+    return a.name.localeCompare(b.name, "zh-Hant");
+  });
 }
 
 function getGameStatusText(game: GameRow | null, clock: ClockRow | null) {
@@ -261,6 +246,205 @@ function getGameStatusColors(game: GameRow | null, clock: ClockRow | null) {
     borderColor: "rgba(245,158,11,0.28)",
     dot: "#f59e0b",
   };
+}
+
+function getSecondsPlayedFromShiftRows(params: {
+  playerId: string;
+  shifts: PlayerShiftRow[];
+  clock: ClockRow | null;
+  displaySeconds: number;
+}) {
+  const { playerId, shifts, clock, displaySeconds } = params;
+
+  const playerShifts = shifts.filter((s) => s.player_id === playerId);
+  let total = 0;
+
+  for (const s of playerShifts) {
+    const maxSeconds = getQuarterSeconds(s.quarter);
+    const inSec = clamp(s.in_seconds_left ?? maxSeconds, 0, maxSeconds);
+
+    if (s.out_seconds_left == null) {
+      if (clock && clock.quarter === s.quarter) {
+        total += Math.max(0, inSec - clamp(displaySeconds, 0, maxSeconds));
+      } else {
+        total += inSec;
+      }
+    } else {
+      const outSec = clamp(s.out_seconds_left, 0, maxSeconds);
+      total += Math.max(0, inSec - outSec);
+    }
+  }
+
+  return total;
+}
+
+function getMaxQuarterFromData(events: EventRow[], clock: ClockRow | null) {
+  return Math.max(clock?.quarter ?? 1, ...events.map((e) => e.quarter || 1), 1);
+}
+
+function getLineupFromEvents(params: {
+  starterIds: string[];
+  events: EventRow[];
+  throughEventIndex?: number;
+}) {
+  const { starterIds, events, throughEventIndex } = params;
+  const lineup = new Set<string>(starterIds);
+
+  const endIndex =
+    typeof throughEventIndex === "number" ? throughEventIndex : events.length - 1;
+
+  for (let i = 0; i <= endIndex; i += 1) {
+    const e = events[i];
+    if (!e) continue;
+    if (e.team_side !== "teamA") continue;
+    if (!e.player_id) continue;
+
+    if (e.event_type === "sub_out") {
+      lineup.delete(e.player_id);
+    } else if (e.event_type === "sub_in") {
+      lineup.add(e.player_id);
+    }
+  }
+
+  return lineup;
+}
+
+function getStarterIdsFallback(params: {
+  gamePlayers: GamePlayerRow[];
+  events: EventRow[];
+}) {
+  const { gamePlayers, events } = params;
+
+  const startersFromGamePlayers = gamePlayers
+    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
+    .map((gp) => gp.player_id)
+    .slice(0, 5);
+
+  if (startersFromGamePlayers.length > 0) {
+    return startersFromGamePlayers;
+  }
+
+  const firstQuarterEvents = events.filter(
+    (e) => e.team_side === "teamA" && e.quarter === 1 && !!e.player_id
+  );
+
+  const firstSubInIds: string[] = [];
+  for (const e of firstQuarterEvents) {
+    if (
+      e.event_type === "sub_in" &&
+      e.player_id &&
+      !firstSubInIds.includes(e.player_id)
+    ) {
+      firstSubInIds.push(e.player_id);
+    }
+    if (firstSubInIds.length >= 5) break;
+  }
+
+  if (firstSubInIds.length > 0) {
+    return firstSubInIds.slice(0, 5);
+  }
+
+  const firstSeenIds: string[] = [];
+  for (const e of firstQuarterEvents) {
+    if (e.player_id && !firstSeenIds.includes(e.player_id)) {
+      firstSeenIds.push(e.player_id);
+    }
+    if (firstSeenIds.length >= 5) break;
+  }
+
+  return firstSeenIds.slice(0, 5);
+}
+
+function computeMinutesFromEvents(params: {
+  playerIds: string[];
+  events: EventRow[];
+  starterIds: string[];
+  clock: ClockRow | null;
+  displaySeconds: number;
+}) {
+  const { playerIds, events, starterIds, clock, displaySeconds } = params;
+
+  const playerIdSet = new Set(playerIds);
+  const totals: Record<string, number> = {};
+  const openIntervals: Record<
+    string,
+    { quarter: number; inSecondsLeft: number } | null
+  > = {};
+
+  for (const id of playerIds) {
+    totals[id] = 0;
+    openIntervals[id] = null;
+  }
+
+  const maxQuarter = getMaxQuarterFromData(events, clock);
+
+  for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
+    const quarterMax = getQuarterSeconds(quarter);
+    const quarterEvents = events.filter(
+      (e) => e.team_side === "teamA" && e.quarter === quarter && !!e.player_id
+    );
+
+    const initialLineup =
+      quarter === 1
+        ? new Set(starterIds)
+        : getLineupFromEvents({
+            starterIds,
+            events,
+            throughEventIndex: events.findIndex((e) => e.quarter === quarter) - 1,
+          });
+
+    for (const playerId of Array.from(initialLineup)) {
+      if (!playerIdSet.has(playerId)) continue;
+      openIntervals[playerId] = {
+        quarter,
+        inSecondsLeft: quarterMax,
+      };
+    }
+
+    for (const e of quarterEvents) {
+      const playerId = e.player_id;
+      if (!playerId || !playerIdSet.has(playerId)) continue;
+
+      if (e.event_type !== "sub_in" && e.event_type !== "sub_out") continue;
+
+      const eventSec = (() => {
+        const raw = (e as EventRow & { clock_seconds_left?: number | null })
+          .clock_seconds_left;
+        if (typeof raw === "number") return clamp(raw, 0, quarterMax);
+        return null;
+      })();
+
+      if (e.event_type === "sub_out") {
+        const interval = openIntervals[playerId];
+        if (interval && interval.quarter === quarter) {
+          const outSec = eventSec ?? 0;
+          totals[playerId] += Math.max(0, interval.inSecondsLeft - outSec);
+          openIntervals[playerId] = null;
+        }
+      }
+
+      if (e.event_type === "sub_in") {
+        const inSec = eventSec ?? quarterMax;
+        openIntervals[playerId] = {
+          quarter,
+          inSecondsLeft: inSec,
+        };
+      }
+    }
+
+    const quarterEndSec =
+      clock && clock.quarter === quarter ? clamp(displaySeconds, 0, quarterMax) : 0;
+
+    for (const playerId of playerIds) {
+      const interval = openIntervals[playerId];
+      if (!interval || interval.quarter !== quarter) continue;
+
+      totals[playerId] += Math.max(0, interval.inSecondsLeft - quarterEndSec);
+      openIntervals[playerId] = null;
+    }
+  }
+
+  return totals;
 }
 
 export default function BoardPage() {
@@ -327,7 +511,9 @@ export default function BoardPage() {
   async function loadPlayerShifts() {
     const { data, error } = await supabase
       .from("player_shifts")
-      .select("id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left")
+      .select(
+        "id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left"
+      )
       .eq("game_id", gameId)
       .eq("team_side", "teamA");
 
@@ -342,7 +528,9 @@ export default function BoardPage() {
   async function loadEvents() {
     const { data, error } = await supabase
       .from("events")
-      .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+      )
       .eq("game_id", gameId)
       .order("created_at", { ascending: true });
 
@@ -555,9 +743,36 @@ export default function BoardPage() {
     return gamePlayers.filter((gp) => gp.team_side === "teamA");
   }, [gamePlayers]);
 
+  const starterIds = useMemo(() => {
+    return getStarterIdsFallback({
+      gamePlayers,
+      events: validEvents,
+    });
+  }, [gamePlayers, validEvents]);
+
+  const fallbackTeamAPlayerIdsFromEvents = useMemo(() => {
+    const ids: string[] = [];
+
+    for (const e of validEvents) {
+      if (e.team_side !== "teamA") continue;
+      if (!e.player_id) continue;
+      if (!ids.includes(e.player_id)) ids.push(e.player_id);
+    }
+
+    for (const id of starterIds) {
+      if (!ids.includes(id)) ids.push(id);
+    }
+
+    return ids;
+  }, [validEvents, starterIds]);
+
   const teamAPlayerIds = useMemo(() => {
-    return teamAGamePlayers.map((gp) => gp.player_id);
-  }, [teamAGamePlayers]);
+    const idsFromGamePlayers = teamAGamePlayers.map((gp) => gp.player_id);
+    const finalIds =
+      idsFromGamePlayers.length > 0 ? idsFromGamePlayers : fallbackTeamAPlayerIdsFromEvents;
+
+    return Array.from(new Set(finalIds));
+  }, [teamAGamePlayers, fallbackTeamAPlayerIdsFromEvents]);
 
   const teamAPlayers = useMemo(() => {
     const merged: Player[] = teamAPlayerIds
@@ -567,30 +782,15 @@ export default function BoardPage() {
     return sortPlayers(merged);
   }, [teamAPlayerIds, playersMap]);
 
-  const starterIds = useMemo(() => {
-    return teamAGamePlayers
-      .filter((gp) => gp.is_starter)
-      .map((gp) => gp.player_id)
-      .slice(0, 5);
-  }, [teamAGamePlayers]);
+  const hasShiftData = useMemo(() => {
+    return playerShifts.length > 0;
+  }, [playerShifts]);
 
   const currentOnCourtIds = useMemo(() => {
-    const lineup = new Set<string>(starterIds);
-
-    for (const e of validEvents) {
-      if (e.team_side !== "teamA") continue;
-      if (!e.player_id) continue;
-
-      if (e.event_type === "sub_out") {
-        lineup.delete(e.player_id);
-        continue;
-      }
-
-      if (e.event_type === "sub_in") {
-        lineup.add(e.player_id);
-        continue;
-      }
-    }
+    const lineup = getLineupFromEvents({
+      starterIds,
+      events: validEvents,
+    });
 
     return Array.from(lineup);
   }, [starterIds, validEvents]);
@@ -617,6 +817,7 @@ export default function BoardPage() {
 
         if (e.event_type === "sub_in") {
           lineup.add(e.player_id);
+          if (!map[e.player_id]) map[e.player_id] = emptyStat();
           continue;
         }
       }
@@ -647,17 +848,26 @@ export default function BoardPage() {
   const minutesMap = useMemo(() => {
     const map: Record<string, number> = {};
 
-    for (const p of teamAPlayers) {
-      map[p.id] = getLiveSecondsFromShifts({
-        playerId: p.id,
-        shifts: playerShifts,
-        clock,
-        displaySeconds,
-      });
+    if (hasShiftData) {
+      for (const p of teamAPlayers) {
+        map[p.id] = getSecondsPlayedFromShiftRows({
+          playerId: p.id,
+          shifts: playerShifts,
+          clock,
+          displaySeconds,
+        });
+      }
+      return map;
     }
 
-    return map;
-  }, [teamAPlayers, playerShifts, clock, displaySeconds]);
+    return computeMinutesFromEvents({
+      playerIds: teamAPlayers.map((p) => p.id),
+      events: validEvents,
+      starterIds,
+      clock,
+      displaySeconds,
+    });
+  }, [hasShiftData, teamAPlayers, playerShifts, clock, displaySeconds, validEvents, starterIds]);
 
   const totalScore = useMemo(() => {
     let home = 0;
@@ -673,7 +883,7 @@ export default function BoardPage() {
   }, [validEvents]);
 
   const quarterScores = useMemo(() => {
-    const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
+    const maxQuarter = getMaxQuarterFromData(validEvents, clock);
     const byQuarter: Record<number, { home: number; away: number }> = {};
 
     for (let q = 1; q <= maxQuarter; q += 1) {
@@ -691,7 +901,7 @@ export default function BoardPage() {
     }
 
     return byQuarter;
-  }, [validEvents, clock?.quarter]);
+  }, [validEvents, clock]);
 
   const onCourtPlayers = useMemo(() => {
     return teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id));
@@ -771,9 +981,15 @@ export default function BoardPage() {
         </td>
         <td style={tdStyle}>{min}</td>
         <td style={{ ...tdStyle, color: "#fdba74", fontWeight: 800 }}>{s.pts}</td>
-        <td style={tdStyle}>{s.fg2m}/{s.fg2a}</td>
-        <td style={tdStyle}>{s.fg3m}/{s.fg3a}</td>
-        <td style={tdStyle}>{s.ftm}/{s.fta}</td>
+        <td style={tdStyle}>
+          {s.fg2m}/{s.fg2a}
+        </td>
+        <td style={tdStyle}>
+          {s.fg3m}/{s.fg3a}
+        </td>
+        <td style={tdStyle}>
+          {s.ftm}/{s.fta}
+        </td>
         <td style={tdStyle}>{s.reb}</td>
         <td style={tdStyle}>{s.ast}</td>
         <td style={tdStyle}>{s.tov}</td>
@@ -784,7 +1000,12 @@ export default function BoardPage() {
           style={{
             ...tdStyle,
             fontWeight: 800,
-            color: s.plusMinus > 0 ? "#86efac" : s.plusMinus < 0 ? "#fca5a5" : "#f4f4f5",
+            color:
+              s.plusMinus > 0
+                ? "#86efac"
+                : s.plusMinus < 0
+                ? "#fca5a5"
+                : "#f4f4f5",
           }}
         >
           {s.plusMinus > 0 ? `+${s.plusMinus}` : s.plusMinus}
@@ -801,10 +1022,18 @@ export default function BoardPage() {
       <tr style={teamTotalRowStyle}>
         <td style={teamTotalNameStyle}>TEAM</td>
         <td style={teamTotalTdStyle}>{min}</td>
-        <td style={{ ...teamTotalTdStyle, color: "#fdba74", fontWeight: 900 }}>{s.pts}</td>
-        <td style={teamTotalTdStyle}>{s.fg2m}/{s.fg2a}</td>
-        <td style={teamTotalTdStyle}>{s.fg3m}/{s.fg3a}</td>
-        <td style={teamTotalTdStyle}>{s.ftm}/{s.fta}</td>
+        <td style={{ ...teamTotalTdStyle, color: "#fdba74", fontWeight: 900 }}>
+          {s.pts}
+        </td>
+        <td style={teamTotalTdStyle}>
+          {s.fg2m}/{s.fg2a}
+        </td>
+        <td style={teamTotalTdStyle}>
+          {s.fg3m}/{s.fg3a}
+        </td>
+        <td style={teamTotalTdStyle}>
+          {s.ftm}/{s.fta}
+        </td>
         <td style={teamTotalTdStyle}>{s.reb}</td>
         <td style={teamTotalTdStyle}>{s.ast}</td>
         <td style={teamTotalTdStyle}>{s.tov}</td>
@@ -815,7 +1044,12 @@ export default function BoardPage() {
           style={{
             ...teamTotalTdStyle,
             fontWeight: 900,
-            color: s.plusMinus > 0 ? "#86efac" : s.plusMinus < 0 ? "#fca5a5" : "#f4f4f5",
+            color:
+              s.plusMinus > 0
+                ? "#86efac"
+                : s.plusMinus < 0
+                ? "#fca5a5"
+                : "#f4f4f5",
           }}
         >
           {s.plusMinus > 0 ? `+${s.plusMinus}` : s.plusMinus}
@@ -883,7 +1117,9 @@ export default function BoardPage() {
             <div style={quarterScoreRowStyle}>
               {Object.entries(quarterScores).map(([q, score]) => (
                 <div key={q} style={quarterCardStyle}>
-                  <div style={quarterCardTitleStyle}>{getQuarterLabel(Number(q))}</div>
+                  <div style={quarterCardTitleStyle}>
+                    {getQuarterLabel(Number(q))}
+                  </div>
                   <div style={quarterCardValueStyle}>
                     {score.home} - {score.away}
                   </div>
