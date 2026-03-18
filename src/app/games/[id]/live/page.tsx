@@ -66,12 +66,24 @@ type StatLine = {
   pf: number;
 };
 
+type PlayerShiftRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  quarter: number;
+  team_side: "teamA" | "teamB";
+  in_seconds_left: number;
+  out_seconds_left: number | null;
+};
+
+const [playerShifts, setPlayerShifts] = useState<PlayerShiftRow[]>([]);
+
 const REGULAR_SECONDS = 600;
 const OT_SECONDS = 300;
 
 function emptyStat(): StatLine {
   return {
-    gp: 1,
+    gp: 0,
     pts: 0,
     fg2m: 0,
     fg2a: 0,
@@ -273,6 +285,23 @@ export default function LiveGamePage() {
     return data;
   }
 
+  async function loadPlayerShifts(targetGameId: string) {
+  const { data, error } = await supabase
+    .from("player_shifts")
+    .select(
+      "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
+    )
+    .eq("game_id", targetGameId)
+    .order("quarter", { ascending: true });
+
+  if (error) {
+    setError((prev) => prev || `讀取上場時間失敗：${error.message}`);
+    return;
+  }
+
+  setPlayerShifts((data ?? []) as PlayerShiftRow[]);
+}
+
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
@@ -413,8 +442,13 @@ export default function LiveGamePage() {
     const g = await loadCurrentGame();
 
     if (g) {
-      await Promise.all([loadEvents(g.id), loadClock(g.id), loadGamePlayers(g.id)]);
-    }
+  await Promise.all([
+    loadEvents(g.id),
+    loadClock(g.id),
+    loadGamePlayers(g.id),
+    loadPlayerShifts(g.id),
+  ]);
+}
 
     setLoading(false);
   }
