@@ -49,8 +49,93 @@ type GamePlayerRow = {
   is_starter: boolean;
 };
 
+type StatLine = {
+  gp: number;
+  pts: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  reb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+  tov: number;
+  pf: number;
+};
+
 const REGULAR_SECONDS = 600;
 const OT_SECONDS = 300;
+
+function emptyStat(): StatLine {
+  return {
+    gp: 1,
+    pts: 0,
+    fg2m: 0,
+    fg2a: 0,
+    fg3m: 0,
+    fg3a: 0,
+    ftm: 0,
+    fta: 0,
+    reb: 0,
+    ast: 0,
+    stl: 0,
+    blk: 0,
+    tov: 0,
+    pf: 0,
+  };
+}
+
+function applyEventToStat(stat: StatLine, eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      stat.pts += 2;
+      stat.fg2m += 1;
+      stat.fg2a += 1;
+      break;
+    case "fg2_miss":
+      stat.fg2a += 1;
+      break;
+    case "fg3_made":
+      stat.pts += 3;
+      stat.fg3m += 1;
+      stat.fg3a += 1;
+      break;
+    case "fg3_miss":
+      stat.fg3a += 1;
+      break;
+    case "ft_made":
+      stat.pts += 1;
+      stat.ftm += 1;
+      stat.fta += 1;
+      break;
+    case "ft_miss":
+      stat.fta += 1;
+      break;
+    case "reb":
+      stat.reb += 1;
+      break;
+    case "ast":
+      stat.ast += 1;
+      break;
+    case "stl":
+      stat.stl += 1;
+      break;
+    case "blk":
+      stat.blk += 1;
+      break;
+    case "tov":
+      stat.tov += 1;
+      break;
+    case "pf":
+      stat.pf += 1;
+      break;
+    default:
+      break;
+  }
+}
 
 function formatTime(total: number) {
   const s = Math.max(0, total || 0);
@@ -140,6 +225,7 @@ export default function LiveGamePage() {
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
   const autoQuarterAdvanceLockRef = useRef(false);
+  const syncingStatsRef = useRef(false);
 
   const cooldownRef = useRef<Record<string, number>>({});
   const eventsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -276,6 +362,47 @@ export default function LiveGamePage() {
     setClock(currentClock);
   }
 
+  async function ensureStarterShiftsForCurrentQuarter(
+    targetGameId: string,
+    targetQuarter: number,
+    starterPlayerIds: string[]
+  ) {
+    if (!starterPlayerIds.length) return;
+
+    const { data: existing, error: existingError } = await supabase
+      .from("player_shifts")
+      .select("player_id")
+      .eq("game_id", targetGameId)
+      .eq("team_side", "teamA")
+      .eq("quarter", targetQuarter)
+      .in("player_id", starterPlayerIds);
+
+    if (existingError) {
+      setError((prev) => prev || `檢查先發上場時間失敗：${existingError.message}`);
+      return;
+    }
+
+    const existingIds = new Set((existing ?? []).map((row: { player_id: string }) => row.player_id));
+    const missingIds = starterPlayerIds.filter((id) => !existingIds.has(id));
+
+    if (!missingIds.length) return;
+
+    const rows = missingIds.map((playerId) => ({
+      game_id: targetGameId,
+      player_id: playerId,
+      team_side: "teamA",
+      quarter: targetQuarter,
+      in_seconds_left: getQuarterSeconds(targetQuarter),
+      out_seconds_left: null,
+    }));
+
+    const { error: insertError } = await supabase.from("player_shifts").insert(rows);
+
+    if (insertError) {
+      setError((prev) => prev || `建立先發上場時間失敗：${insertError.message}`);
+    }
+  }
+
   async function init() {
     if (!gameId) return;
 
@@ -383,39 +510,39 @@ export default function LiveGamePage() {
   }, [gameId]);
 
   useEffect(() => {
-  if (!clock?.is_running || !game) {
-    if (tickerRef.current) {
-      clearInterval(tickerRef.current);
-      tickerRef.current = null;
+    if (!clock?.is_running || !game) {
+      if (tickerRef.current) {
+        clearInterval(tickerRef.current);
+        tickerRef.current = null;
+      }
+      return;
     }
-    return;
-  }
 
-  if (tickerRef.current) clearInterval(tickerRef.current);
+    if (tickerRef.current) clearInterval(tickerRef.current);
 
-  tickerRef.current = setInterval(() => {
-    setClock((prev) => {
-      if (!prev) return prev;
+    tickerRef.current = setInterval(() => {
+      setClock((prev) => {
+        if (!prev) return prev;
 
-      const nextSeconds = Math.max(0, prev.seconds_left - 1);
-      const nextClock: ClockRow = {
-        ...prev,
-        seconds_left: nextSeconds,
-        is_running: nextSeconds > 0,
-      };
+        const nextSeconds = Math.max(0, prev.seconds_left - 1);
+        const nextClock: ClockRow = {
+          ...prev,
+          seconds_left: nextSeconds,
+          is_running: nextSeconds > 0,
+        };
 
-      void persistClock(nextClock);
-      return nextClock;
-    });
-  }, 1000);
+        void persistClock(nextClock);
+        return nextClock;
+      });
+    }, 1000);
 
-  return () => {
-    if (tickerRef.current) {
-      clearInterval(tickerRef.current);
-      tickerRef.current = null;
-    }
-  };
-}, [clock?.is_running, game]);
+    return () => {
+      if (tickerRef.current) {
+        clearInterval(tickerRef.current);
+        tickerRef.current = null;
+      }
+    };
+  }, [clock?.is_running, game]);
 
   async function persistClock(next: ClockRow) {
     const { error } = await supabase.from("game_clock").upsert(
@@ -430,6 +557,106 @@ export default function LiveGamePage() {
 
     if (error) {
       setError(`更新比賽時間失敗：${error.message}`);
+    }
+  }
+
+  async function syncAggregateStats(sourceEvents?: EventRow[]) {
+    if (!game) return;
+    if (!gamePlayers.length) return;
+    if (syncingStatsRef.current) return;
+
+    syncingStatsRef.current = true;
+
+    try {
+      const baseEvents = sourceEvents ?? events;
+      const valid = baseEvents.filter((e) => !e.is_undone);
+
+      const teamAIds = gamePlayers
+        .filter((gp) => gp.team_side === "teamA")
+        .map((gp) => gp.player_id);
+
+      const playerStatMap = new Map<string, StatLine>();
+
+      for (const playerId of teamAIds) {
+        playerStatMap.set(playerId, emptyStat());
+      }
+
+      const teamStat = emptyStat();
+
+      for (const e of valid) {
+        if (e.team_side !== "teamA") continue;
+
+        applyEventToStat(teamStat, e.event_type);
+
+        if (!e.player_id) continue;
+        if (!playerStatMap.has(e.player_id)) continue;
+
+        const stat = playerStatMap.get(e.player_id)!;
+        applyEventToStat(stat, e.event_type);
+      }
+
+      const playerRows = teamAIds.map((playerId) => {
+        const stat = playerStatMap.get(playerId) ?? emptyStat();
+
+        return {
+          game_id: game.id,
+          player_id: playerId,
+          gp: stat.gp,
+          pts: stat.pts,
+          fg2m: stat.fg2m,
+          fg2a: stat.fg2a,
+          fg3m: stat.fg3m,
+          fg3a: stat.fg3a,
+          ftm: stat.ftm,
+          fta: stat.fta,
+          reb: stat.reb,
+          ast: stat.ast,
+          stl: stat.stl,
+          blk: stat.blk,
+          tov: stat.tov,
+          pf: stat.pf,
+        };
+      });
+
+      const teamRow = {
+        game_id: game.id,
+        gp: 1,
+        pts: teamStat.pts,
+        fg2m: teamStat.fg2m,
+        fg2a: teamStat.fg2a,
+        fg3m: teamStat.fg3m,
+        fg3a: teamStat.fg3a,
+        ftm: teamStat.ftm,
+        fta: teamStat.fta,
+        reb: teamStat.reb,
+        ast: teamStat.ast,
+        stl: teamStat.stl,
+        blk: teamStat.blk,
+        tov: teamStat.tov,
+        pf: teamStat.pf,
+      };
+
+      if (playerRows.length > 0) {
+        const { error: playerStatError } = await supabase
+          .from("player_game_stats")
+          .upsert(playerRows, { onConflict: "game_id,player_id" });
+
+        if (playerStatError) {
+          setError(`同步球員數據失敗：${playerStatError.message}`);
+          return;
+        }
+      }
+
+      const { error: teamStatError } = await supabase
+        .from("team_game_stats")
+        .upsert(teamRow, { onConflict: "game_id" });
+
+      if (teamStatError) {
+        setError(`同步團隊數據失敗：${teamStatError.message}`);
+        return;
+      }
+    } finally {
+      syncingStatsRef.current = false;
     }
   }
 
@@ -474,111 +701,197 @@ export default function LiveGamePage() {
     await persistClock(next);
   }
 
-  async function nextQuarter() {
-  if (!clock || !game) return;
-  if (inCooldown("clock:nextQuarter", 180)) return;
+  const validEvents = useMemo(() => {
+    return events.filter((e) => !e.is_undone);
+  }, [events]);
 
-  const onCourtIds = currentOnCourtIds;
+  const teamScore = useMemo(() => {
+    let scoreA = 0;
+    let scoreB = 0;
 
-  // 1. 把本節仍在場上的球員 shift 關掉
-  if (onCourtIds.length > 0) {
-    const { error: closeShiftError } = await supabase
-      .from("player_shifts")
-      .update({ out_seconds_left: 0 })
-      .eq("game_id", game.id)
-      .eq("team_side", "teamA")
-      .eq("quarter", clock.quarter)
-      .is("out_seconds_left", null)
-      .in("player_id", onCourtIds);
-
-    if (closeShiftError) {
-      setError(`換節收尾失敗：${closeShiftError.message}`);
-      return;
+    for (const e of validEvents) {
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "teamA") scoreA += pts;
+      if (e.team_side === "teamB") scoreB += pts;
     }
-  }
 
-  const nextQuarterNum = clock.quarter + 1;
+    return { scoreA, scoreB };
+  }, [validEvents]);
 
-  // 2. 幫下一節仍在場上的球員建立新 shift
-  if (onCourtIds.length > 0) {
-    const nextShiftRows = onCourtIds.map((playerId) => ({
-      game_id: game.id,
-      player_id: playerId,
-      team_side: "teamA",
-      quarter: nextQuarterNum,
-      in_seconds_left: getQuarterSeconds(nextQuarterNum),
-      out_seconds_left: null,
-    }));
+  const teamAPlayerIds = useMemo(() => {
+    return gamePlayers
+      .filter((gp) => gp.team_side === "teamA")
+      .map((gp) => gp.player_id);
+  }, [gamePlayers]);
 
-    const { error: createShiftError } = await supabase
-      .from("player_shifts")
-      .insert(nextShiftRows);
+  const teamAPlayers = useMemo(() => {
+    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
+  }, [players, teamAPlayerIds]);
 
-    if (createShiftError) {
-      setError(`建立下一節上場時間失敗：${createShiftError.message}`);
-      return;
-    }
-  }
+  const starterIds = useMemo(() => {
+    const starterFromDb = gamePlayers
+      .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
+      .map((gp) => gp.player_id);
 
-  const next: ClockRow = {
-    game_id: game.id,
-    quarter: nextQuarterNum,
-    seconds_left: getQuarterSeconds(nextQuarterNum),
-    is_running: false,
-  };
+    return starterFromDb.slice(0, 5);
+  }, [gamePlayers]);
 
-  setClock(next);
-  await persistClock(next);
-}
+  const currentOnCourtIds = useMemo(() => {
+    const lineup = new Set<string>(starterIds.slice(0, 5));
 
-  async function endGame() {
-  if (!game || endingGame) return;
-  if (inCooldown("game:end", 300)) return;
+    for (const e of validEvents) {
+      if (e.team_side !== "teamA") continue;
+      if (!e.player_id) continue;
 
-  setEndingGame(true);
-  setError("");
+      if (e.event_type === "sub_out") {
+        lineup.delete(e.player_id);
+        continue;
+      }
 
-  try {
-    if (clock) {
-      const pausedClock = { ...clock, is_running: false };
-      setClock(pausedClock);
-      await persistClock(pausedClock);
-
-      // 把目前還在場上的球員 shift 關掉
-      if (currentOnCourtIds.length > 0) {
-        const { error: closeShiftError } = await supabase
-          .from("player_shifts")
-          .update({
-            out_seconds_left: pausedClock.seconds_left,
-          })
-          .eq("game_id", game.id)
-          .eq("team_side", "teamA")
-          .eq("quarter", pausedClock.quarter)
-          .is("out_seconds_left", null)
-          .in("player_id", currentOnCourtIds);
-
-        if (closeShiftError) {
-          setError(`結束比賽收尾失敗：${closeShiftError.message}`);
-          return;
+      if (e.event_type === "sub_in") {
+        if (lineup.size < 5) {
+          lineup.add(e.player_id);
         }
       }
     }
 
-    const { error } = await supabase
-      .from("games")
-      .update({ status: "finished" })
-      .eq("id", game.id);
+    return Array.from(lineup).slice(0, 5);
+  }, [starterIds, validEvents]);
 
-    if (error) {
-      setError(`結束比賽失敗：${error.message}`);
-      return;
+  async function advanceQuarter(fromClock: ClockRow, onCourtIds: string[]) {
+    if (!game) return false;
+
+    // 1. 關閉本節仍在場上的 shift
+    if (onCourtIds.length > 0) {
+      const { error: closeShiftError } = await supabase
+        .from("player_shifts")
+        .update({ out_seconds_left: 0 })
+        .eq("game_id", game.id)
+        .eq("team_side", "teamA")
+        .eq("quarter", fromClock.quarter)
+        .is("out_seconds_left", null)
+        .in("player_id", onCourtIds);
+
+      if (closeShiftError) {
+        setError(`換節收尾失敗：${closeShiftError.message}`);
+        return false;
+      }
     }
 
-    setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
-  } finally {
-    setEndingGame(false);
+    const nextQuarterNum = fromClock.quarter + 1;
+    const nextQuarterSeconds = getQuarterSeconds(nextQuarterNum);
+
+    // 2. 為下一節仍在場上的球員建立新 shift
+    if (onCourtIds.length > 0) {
+      const { data: existingOpen, error: existingOpenError } = await supabase
+        .from("player_shifts")
+        .select("player_id")
+        .eq("game_id", game.id)
+        .eq("team_side", "teamA")
+        .eq("quarter", nextQuarterNum)
+        .is("out_seconds_left", null)
+        .in("player_id", onCourtIds);
+
+      if (existingOpenError) {
+        setError(`檢查下一節上場時間失敗：${existingOpenError.message}`);
+        return false;
+      }
+
+      const existingIds = new Set(
+        (existingOpen ?? []).map((row: { player_id: string }) => row.player_id)
+      );
+
+      const rows = onCourtIds
+        .filter((playerId) => !existingIds.has(playerId))
+        .map((playerId) => ({
+          game_id: game.id,
+          player_id: playerId,
+          team_side: "teamA",
+          quarter: nextQuarterNum,
+          in_seconds_left: nextQuarterSeconds,
+          out_seconds_left: null,
+        }));
+
+      if (rows.length > 0) {
+        const { error: createShiftError } = await supabase
+          .from("player_shifts")
+          .insert(rows);
+
+        if (createShiftError) {
+          setError(`建立下一節上場時間失敗：${createShiftError.message}`);
+          return false;
+        }
+      }
+    }
+
+    const next: ClockRow = {
+      game_id: game.id,
+      quarter: nextQuarterNum,
+      seconds_left: nextQuarterSeconds,
+      is_running: false,
+    };
+
+    setClock(next);
+    await persistClock(next);
+    return true;
   }
-}
+
+  async function nextQuarter() {
+    if (!clock || !game) return;
+    if (inCooldown("clock:nextQuarter", 180)) return;
+    if (game.status === "finished") return;
+
+    await advanceQuarter(clock, currentOnCourtIds);
+  }
+
+  async function endGame() {
+    if (!game || endingGame) return;
+    if (inCooldown("game:end", 300)) return;
+
+    setEndingGame(true);
+    setError("");
+
+    try {
+      if (clock) {
+        const pausedClock = { ...clock, is_running: false };
+        setClock(pausedClock);
+        await persistClock(pausedClock);
+
+        if (currentOnCourtIds.length > 0) {
+          const { error: closeShiftError } = await supabase
+            .from("player_shifts")
+            .update({
+              out_seconds_left: pausedClock.seconds_left,
+            })
+            .eq("game_id", game.id)
+            .eq("team_side", "teamA")
+            .eq("quarter", pausedClock.quarter)
+            .is("out_seconds_left", null)
+            .in("player_id", currentOnCourtIds);
+
+          if (closeShiftError) {
+            setError(`結束比賽收尾失敗：${closeShiftError.message}`);
+            return;
+          }
+        }
+      }
+
+      const { error } = await supabase
+        .from("games")
+        .update({ status: "finished" })
+        .eq("id", game.id);
+
+      if (error) {
+        setError(`結束比賽失敗：${error.message}`);
+        return;
+      }
+
+      setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
+      await syncAggregateStats();
+    } finally {
+      setEndingGame(false);
+    }
+  }
 
   async function saveTeamAName() {
     if (!game) return;
@@ -626,7 +939,7 @@ export default function LiveGamePage() {
     } = {
       game_id: game.id,
       quarter: clock.quarter,
-      event_type: eventType,
+      event_type:eventType,
       team_side: teamSide,
     };
 
@@ -702,23 +1015,6 @@ export default function LiveGamePage() {
     );
   }
 
-  const validEvents = useMemo(() => {
-    return events.filter((e) => !e.is_undone);
-  }, [events]);
-
-  const teamScore = useMemo(() => {
-    let scoreA = 0;
-    let scoreB = 0;
-
-    for (const e of validEvents) {
-      const pts = getPoints(e.event_type);
-      if (e.team_side === "teamA") scoreA += pts;
-      if (e.team_side === "teamB") scoreB += pts;
-    }
-
-    return { scoreA, scoreB };
-  }, [validEvents]);
-
   useEffect(() => {
     async function handleQuarterEndAuto() {
       if (!clock || !game || game.status === "finished") return;
@@ -738,16 +1034,14 @@ export default function LiveGamePage() {
         return;
       }
 
-      const nextQuarterNum = clock.quarter + 1;
-      const next: ClockRow = {
-        game_id: game.id,
-        quarter: nextQuarterNum,
-        seconds_left: getQuarterSeconds(nextQuarterNum),
-        is_running: false,
-      };
-
-      setClock(next);
-      await persistClock(next);
+      await advanceQuarter(
+        {
+          ...clock,
+          seconds_left: 0,
+          is_running: false,
+        },
+        currentOnCourtIds
+      );
     }
 
     if (!clock || !game || game.status === "finished") return;
@@ -760,47 +1054,7 @@ export default function LiveGamePage() {
     }
 
     autoQuarterAdvanceLockRef.current = false;
-  }, [clock, game, teamScore]);
-
-  const teamAPlayerIds = useMemo(() => {
-  return gamePlayers
-    .filter((gp) => gp.team_side === "teamA")
-    .map((gp) => gp.player_id);
-}, [gamePlayers]);
-
-  const teamAPlayers = useMemo(() => {
-    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
-  }, [players, teamAPlayerIds]);
-
-  const starterIds = useMemo(() => {
-  const starterFromDb = gamePlayers
-    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
-    .map((gp) => gp.player_id);
-
-  return starterFromDb.slice(0, 5);
-}, [gamePlayers]);
-
-  const currentOnCourtIds = useMemo(() => {
-  const lineup = new Set<string>(starterIds.slice(0, 5));
-
-  for (const e of validEvents) {
-    if (e.team_side !== "teamA") continue;
-    if (!e.player_id) continue;
-
-    if (e.event_type === "sub_out") {
-      lineup.delete(e.player_id);
-      continue;
-    }
-
-    if (e.event_type === "sub_in") {
-      if (lineup.size < 5) {
-        lineup.add(e.player_id);
-      }
-    }
-  }
-
-  return Array.from(lineup).slice(0, 5);
-}, [starterIds, validEvents]);
+  }, [clock, game, teamScore, currentOnCourtIds]);
 
   const onCourtPlayers = useMemo(() => {
     return sortByNumber(teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id))).slice(0, 5);
@@ -837,6 +1091,20 @@ export default function LiveGamePage() {
       return validBenchIds.slice(0, subOutPlayerIds.length);
     });
   }, [benchPlayers, subOutPlayerIds.length]);
+
+  useEffect(() => {
+    if (!gameId || !gamePlayers.length || !starterIds.length) return;
+    if (!clock) return;
+
+    void ensureStarterShiftsForCurrentQuarter(gameId, 1, starterIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId, starterIds.join(","), clock?.quarter]);
+
+  useEffect(() => {
+    if (!game || !gamePlayers.length) return;
+    void syncAggregateStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, game?.id, gamePlayers]);
 
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId) ?? null,
@@ -878,120 +1146,140 @@ export default function LiveGamePage() {
   }
 
   async function makeSubstitution() {
-  if (!game || !clock) return;
-  if (inCooldown("substitution", 180)) return;
+    if (!game || !clock) return;
+    if (inCooldown("substitution", 180)) return;
 
-  if (game.status === "finished") {
-    setError("比賽已結束，不能換人");
-    return;
-  }
-
-  if (subOutPlayerIds.length === 0) {
-    setError("請先選擇下場球員");
-    return;
-  }
-
-  if (subOutPlayerIds.length !== subInPlayerIds.length) {
-    setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
-    return;
-  }
-
-  const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
-  if (duplicated) {
-    setError("上場與下場名單不可重複");
-    return;
-  }
-
-  setSubmittingSub(true);
-  setError("");
-
-  try {
-    const payload = [
-      ...subOutPlayerIds.map((playerId) => ({
-        game_id: game.id,
-        player_id: playerId,
-        quarter: clock.quarter,
-        event_type: "sub_out",
-        team_side: "teamA" as const,
-      })),
-      ...subInPlayerIds.map((playerId) => ({
-        game_id: game.id,
-        player_id: playerId,
-        quarter: clock.quarter,
-        event_type: "sub_in",
-        team_side: "teamA" as const,
-      })),
-    ];
-
-    const { data, error } = await supabase
-      .from("events")
-      .insert(payload)
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-      );
-
-    if (error) {
-      setError(`換人失敗：${error.message}`);
+    if (game.status === "finished") {
+      setError("比賽已結束，不能換人");
       return;
     }
 
-    // 1. 先把下場球員目前這段 shift 關掉
-    for (const playerId of subOutPlayerIds) {
-      const { error: shiftOutError } = await supabase
-        .from("player_shifts")
-        .update({
-          out_seconds_left: clock.seconds_left,
-        })
-        .eq("game_id", game.id)
-        .eq("player_id", playerId)
-        .eq("quarter", clock.quarter)
-        .eq("team_side", "teamA")
-        .is("out_seconds_left", null);
+    if (subOutPlayerIds.length === 0) {
+      setError("請先選擇下場球員");
+      return;
+    }
 
-      if (shiftOutError) {
-        setError(`更新下場時間失敗：${shiftOutError.message}`);
+    if (subOutPlayerIds.length !== subInPlayerIds.length) {
+      setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
+      return;
+    }
+
+    const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
+    if (duplicated) {
+      setError("上場與下場名單不可重複");
+      return;
+    }
+
+    setSubmittingSub(true);
+    setError("");
+
+    try {
+      const payload = [
+        ...subOutPlayerIds.map((playerId) => ({
+          game_id: game.id,
+          player_id: playerId,
+          quarter: clock.quarter,
+          event_type: "sub_out",
+          team_side: "teamA" as const,
+        })),
+        ...subInPlayerIds.map((playerId) => ({
+          game_id: game.id,
+          player_id: playerId,
+          quarter: clock.quarter,
+          event_type: "sub_in",
+          team_side: "teamA" as const,
+        })),
+      ];
+
+      const { data, error } = await supabase
+        .from("events")
+        .insert(payload)
+        .select(
+          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+        );
+
+      if (error) {
+        setError(`換人失敗：${error.message}`);
         return;
       }
-    }
 
-    // 2. 再新增上場球員新的 shift
-    if (subInPlayerIds.length > 0) {
-      const shiftInRows = subInPlayerIds.map((playerId) => ({
-        game_id: game.id,
-        player_id: playerId,
-        team_side: "teamA",
-        quarter: clock.quarter,
-        in_seconds_left: clock.seconds_left,
-        out_seconds_left: null,
-      }));
+      for (const playerId of subOutPlayerIds) {
+        const { error: shiftOutError } = await supabase
+          .from("player_shifts")
+          .update({
+            out_seconds_left: clock.seconds_left,
+          })
+          .eq("game_id", game.id)
+          .eq("player_id", playerId)
+          .eq("quarter", clock.quarter)
+          .eq("team_side", "teamA")
+          .is("out_seconds_left", null);
 
-      const { error: shiftInError } = await supabase
-        .from("player_shifts")
-        .insert(shiftInRows);
-
-      if (shiftInError) {
-        setError(`新增上場時間失敗：${shiftInError.message}`);
-        return;
+        if (shiftOutError) {
+          setError(`更新下場時間失敗：${shiftOutError.message}`);
+          return;
+        }
       }
-    }
 
-    if (subOutPlayerIds.includes(selectedPlayerId)) {
-      setSelectedPlayerId(subInPlayerIds[0] || "");
-    }
+      if (subInPlayerIds.length > 0) {
+        const { data: existingOpen, error: existingOpenError } = await supabase
+          .from("player_shifts")
+          .select("player_id")
+          .eq("game_id", game.id)
+          .eq("quarter", clock.quarter)
+          .eq("team_side", "teamA")
+          .is("out_seconds_left", null)
+          .in("player_id", subInPlayerIds);
 
-    clearSubSelection();
+        if (existingOpenError) {
+          setError(`檢查上場時間失敗：${existingOpenError.message}`);
+          return;
+        }
 
-    if (data?.length) {
-      setEvents((prev) => {
-        const existingIds = new Set(prev.map((e) => e.id));
-        const nextItems = data.filter((e) => !existingIds.has(e.id));
-        return [...prev, ...nextItems];
-      });
+        const existingIds = new Set(
+          (existingOpen ?? []).map((row: { player_id: string }) => row.player_id)
+        );
+
+        const shiftInRows = subInPlayerIds
+          .filter((playerId) => !existingIds.has(playerId))
+          .map((playerId) => ({
+            game_id: game.id,
+            player_id: playerId,
+            team_side: "teamA",
+            quarter: clock.quarter,
+            in_seconds_left: clock.seconds_left,
+            out_seconds_left: null,
+          }));
+
+        if (shiftInRows.length > 0) {
+          const { error: shiftInError } = await supabase
+            .from("player_shifts")
+            .insert(shiftInRows);
+
+          if (shiftInError) {
+            setError(`新增上場時間失敗：${shiftInError.message}`);
+            return;
+          }
+        }
+      }
+
+      if (subOutPlayerIds.includes(selectedPlayerId)) {
+        setSelectedPlayerId(subInPlayerIds[0] || "");
+      }
+
+      clearSubSelection();
+
+      if (data?.length) {
+        setEvents((prev) => {
+          const existingIds = new Set(prev.map((e) => e.id));
+          const nextItems = data.filter((e) => !existingIds.has(e.id));
+          return [...prev, ...nextItems];
+        });
+      }
+    } finally {
+      setSubmittingSub(false);
     }
-  } finally {
-    setSubmittingSub(false);
   }
-}
 
   const quarterScores = useMemo(() => {
     const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
@@ -1012,7 +1300,6 @@ export default function LiveGamePage() {
   }, [validEvents, clock?.quarter]);
 
   const needSubInCount = Math.max(0, subOutPlayerIds.length - subInPlayerIds.length);
-
   const recentQuarterScore = quarterScores[clock?.quarter ?? 1];
 
   if (loading) {
@@ -1110,9 +1397,7 @@ export default function LiveGamePage() {
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-sm font-black">快速紀錄</div>
-                    <div className="text-[11px] text-white/45">
-                      常用事件集中在主區
-                    </div>
+                    <div className="text-[11px] text-white/45">常用事件集中在主區</div>
                   </div>
 
                   <button
@@ -1387,9 +1672,9 @@ export default function LiveGamePage() {
                         >
                           <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
                           <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-<div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
-  {p.position || "未設定"}
-</div>
+                          <div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
+                            {p.position || "未設定"}
+                          </div>
                           <div className="mt-1 text-[10px] font-bold text-white/45">
                             {selectedOut ? "已選下場" : selected ? "目前紀錄" : shortName(p.name)}
                           </div>
@@ -1446,9 +1731,9 @@ export default function LiveGamePage() {
                         >
                           <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
                           <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-<div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
-  {p.position || "未設定"}
-</div>
+                          <div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
+                            {p.position || "未設定"}
+                          </div>
                           <div className="mt-1 text-[10px] font-bold text-white/45">
                             {selectedIn ? "已選上場" : selectable ? "可上場" : "待命"}
                           </div>
