@@ -738,26 +738,45 @@ export default function LiveGamePage() {
   }, [gamePlayers]);
 
   const currentOnCourtIds = useMemo(() => {
-    const lineup = new Set<string>(starterIds.slice(0, 5));
+  const lineup = new Set<string>(starterIds.slice(0, 5));
 
-    for (const e of validEvents) {
-      if (e.team_side !== "teamA") continue;
-      if (!e.player_id) continue;
+  const sortedEvents = [...validEvents].sort((a, b) => {
+    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
 
-      if (e.event_type === "sub_out") {
-        lineup.delete(e.player_id);
-        continue;
-      }
+    const timeDiff =
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    if (timeDiff !== 0) return timeDiff;
 
-      if (e.event_type === "sub_in") {
-        if (lineup.size < 5) {
-          lineup.add(e.player_id);
-        }
-      }
+    const getPriority = (eventType: string) => {
+      if (eventType === "sub_out") return 0;
+      if (eventType === "sub_in") return 1;
+      return 2;
+    };
+
+    const priorityDiff = getPriority(a.event_type) - getPriority(b.event_type);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    return a.id.localeCompare(b.id);
+  });
+
+  for (const e of sortedEvents) {
+    if (e.team_side !== "teamA") continue;
+    if (!e.player_id) continue;
+
+    if (e.event_type === "sub_out") {
+      lineup.delete(e.player_id);
+      continue;
     }
 
-    return Array.from(lineup).slice(0, 5);
-  }, [starterIds, validEvents]);
+    if (e.event_type === "sub_in") {
+      if (lineup.size < 5) {
+        lineup.add(e.player_id);
+      }
+    }
+  }
+
+  return Array.from(lineup).slice(0, 5);
+}, [starterIds, validEvents]);
 
   async function advanceQuarter(fromClock: ClockRow, onCourtIds: string[]) {
     if (!game) return false;
