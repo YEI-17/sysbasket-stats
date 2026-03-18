@@ -76,7 +76,7 @@ type PlayerShiftRow = {
   out_seconds_left: number | null;
 };
 
-const [playerShifts, setPlayerShifts] = useState<PlayerShiftRow[]>([]);
+
 
 const REGULAR_SECONDS = 600;
 const OT_SECONDS = 300;
@@ -212,7 +212,7 @@ function actionBtnClass(tone: "score" | "miss" | "def" | "warn" | "ghost") {
 
 export default function LiveGamePage() {
   const params = useParams();
-  const gameId = String(params.id);
+  const gameId = Array.isArray(params?.id) ? params.id[0] : params?.id ?? "";
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -221,6 +221,7 @@ export default function LiveGamePage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [clock, setClock] = useState<ClockRow | null>(null);
+  const [playerShifts, setPlayerShifts] = useState<PlayerShiftRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
 
   const [viewerCount, setViewerCount] = useState(1);
