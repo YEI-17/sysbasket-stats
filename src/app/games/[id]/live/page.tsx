@@ -619,22 +619,23 @@ export default function LiveGamePage() {
       });
 
       const teamRow = {
-        game_id: game.id,
-        gp: 1,
-        pts: teamStat.pts,
-        fg2m: teamStat.fg2m,
-        fg2a: teamStat.fg2a,
-        fg3m: teamStat.fg3m,
-        fg3a: teamStat.fg3a,
-        ftm: teamStat.ftm,
-        fta: teamStat.fta,
-        reb: teamStat.reb,
-        ast: teamStat.ast,
-        stl: teamStat.stl,
-        blk: teamStat.blk,
-        tov: teamStat.tov,
-        pf: teamStat.pf,
-      };
+  game_id: game.id,
+  team_side: "teamA",
+  gp: 1,
+  pts: teamStat.pts,
+  fg2m: teamStat.fg2m,
+  fg2a: teamStat.fg2a,
+  fg3m: teamStat.fg3m,
+  fg3a: teamStat.fg3a,
+  ftm: teamStat.ftm,
+  fta: teamStat.fta,
+  reb: teamStat.reb,
+  ast: teamStat.ast,
+  stl: teamStat.stl,
+  blk: teamStat.blk,
+  tov: teamStat.tov,
+  pf: teamStat.pf,
+};
 
       if (playerRows.length > 0) {
         const { error: playerStatError } = await supabase
@@ -648,8 +649,8 @@ export default function LiveGamePage() {
       }
 
       const { error: teamStatError } = await supabase
-        .from("team_game_stats")
-        .upsert(teamRow, { onConflict: "game_id" });
+  .from("team_game_stats")
+  .upsert(teamRow, { onConflict: "game_id,team_side" });
 
       if (teamStatError) {
         setError(`同步團隊數據失敗：${teamStatError.message}`);
