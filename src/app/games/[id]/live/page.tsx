@@ -596,105 +596,104 @@ export default function LiveGamePage() {
   }
 
   async function syncAggregateStats(sourceEvents?: EventRow[]) {
-    if (!game) return;
-    if (!gamePlayers.length) return;
-    if (syncingStatsRef.current) return;
+  if (!game) return;
+  if (!gamePlayers.length) return;
+  if (syncingStatsRef.current) return;
 
-    syncingStatsRef.current = true;
+  syncingStatsRef.current = true;
 
-    try {
-      const baseEvents = sourceEvents ?? events;
-      const valid = baseEvents.filter((e) => !e.is_undone);
+  try {
+    const baseEvents = sourceEvents ?? events;
+    const valid = baseEvents.filter((e) => !e.is_undone);
 
-      const teamAIds = gamePlayers
-        .filter((gp) => gp.team_side === "teamA")
-        .map((gp) => gp.player_id);
+    const teamAIds = gamePlayers
+      .filter((gp) => gp.team_side === "teamA")
+      .map((gp) => gp.player_id);
 
-      const playerStatMap = new Map<string, StatLine>();
+    const playerStatMap = new Map<string, StatLine>();
 
-      for (const playerId of teamAIds) {
-        playerStatMap.set(playerId, emptyStat());
-      }
+    for (const playerId of teamAIds) {
+      playerStatMap.set(playerId, emptyStat());
+    }
 
-      const teamStat = emptyStat();
+    const teamStat = emptyStat();
 
-      for (const e of valid) {
-        if (e.team_side !== "teamA") continue;
+    for (const e of valid) {
+      if (e.team_side !== "teamA") continue;
 
-        applyEventToStat(teamStat, e.event_type);
+      applyEventToStat(teamStat, e.event_type);
 
-        if (!e.player_id) continue;
-        if (!playerStatMap.has(e.player_id)) continue;
+      if (!e.player_id) continue;
+      if (!playerStatMap.has(e.player_id)) continue;
 
-        const stat = playerStatMap.get(e.player_id)!;
-        applyEventToStat(stat, e.event_type);
-      }
+      const stat = playerStatMap.get(e.player_id)!;
+      applyEventToStat(stat, e.event_type);
+    }
 
-      const playerRows = teamAIds.map((playerId) => {
-        const stat = playerStatMap.get(playerId) ?? emptyStat();
+    const playerRows = teamAIds.map((playerId) => {
+      const stat = playerStatMap.get(playerId) ?? emptyStat();
 
-        return {
-          game_id: game.id,
-          player_id: playerId,
-          gp: stat.gp,
-          pts: stat.pts,
-          fg2m: stat.fg2m,
-          fg2a: stat.fg2a,
-          fg3m: stat.fg3m,
-          fg3a: stat.fg3a,
-          ftm: stat.ftm,
-          fta: stat.fta,
-          reb: stat.reb,
-          ast: stat.ast,
-          stl: stat.stl,
-          blk: stat.blk,
-          tov: stat.tov,
-          pf: stat.pf,
-        };
-      });
+      return {
+        game_id: game.id,
+        player_id: playerId,
+        gp: stat.gp,
+        pts: stat.pts,
+        fg2m: stat.fg2m,
+        fg2a: stat.fg2a,
+        fg3m: stat.fg3m,
+        fg3a: stat.fg3a,
+        ftm: stat.ftm,
+        fta: stat.fta,
+        reb: stat.reb,
+        ast: stat.ast,
+        stl: stat.stl,
+        blk: stat.blk,
+        tov: stat.tov,
+        pf: stat.pf,
+      };
+    });
 
-      const teamRow = {
-  game_id: game.id,
-  team_side: "teamA",
-  gp: 1,
-  pts: teamStat.pts,
-  fg2m: teamStat.fg2m,
-  fg2a: teamStat.fg2a,
-  fg3m: teamStat.fg3m,
-  fg3a: teamStat.fg3a,
-  ftm: teamStat.ftm,
-  fta: teamStat.fta,
-  reb: teamStat.reb,
-  ast: teamStat.ast,
-  stl: teamStat.stl,
-  blk: teamStat.blk,
-  tov: teamStat.tov,
-  pf: teamStat.pf,
-};
+    const teamRow = {
+      game_id: game.id,
+      team_side: "teamA",
+      pts: teamStat.pts,
+      fg2m: teamStat.fg2m,
+      fg2a: teamStat.fg2a,
+      fg3m: teamStat.fg3m,
+      fg3a: teamStat.fg3a,
+      ftm: teamStat.ftm,
+      fta: teamStat.fta,
+      reb: teamStat.reb,
+      ast: teamStat.ast,
+      stl: teamStat.stl,
+      blk: teamStat.blk,
+      tov: teamStat.tov,
+      pf: teamStat.pf,
+    };
 
-      if (playerRows.length > 0) {
-        const { error: playerStatError } = await supabase
-          .from("player_game_stats")
-          .upsert(playerRows, { onConflict: "game_id,player_id" });
+    if (playerRows.length > 0) {
+      const { error: playerStatError } = await supabase
+        .from("player_game_stats")
+        .upsert(playerRows, { onConflict: "game_id,player_id" });
 
-        if (playerStatError) {
-          setError(`同步球員數據失敗：${playerStatError.message}`);
-          return;
-        }
-      }
-
-      const { error: teamStatError } = await supabase
-  .from("team_game_stats")
-  .upsert(teamRow, { onConflict: "game_id,team_side" });
-
-      if (teamStatError) {
-        setError(`同步團隊數據失敗：${teamStatError.message}`);
+      if (playerStatError) {
+        setError(`同步球員數據失敗：${playerStatError.message}`);
         return;
       }
-    } finally {
-      syncingStatsRef.current = false;
     }
+
+    const { error: teamStatError } = await supabase
+      .from("team_game_stats")
+      .upsert(teamRow, { onConflict: "game_id,team_side" });
+
+    if (teamStatError) {
+      setError(`同步團隊數據失敗：${teamStatError.message}`);
+      return;
+    }
+  } finally {
+    syncingStatsRef.current = false;
   }
+}
 
   async function startClock() {
     if (!clock || game?.status === "finished") return;

@@ -25,6 +25,47 @@ type EventRow = {
   is_undone?: boolean | null;
 };
 
+type TeamGameStatsRow = {
+  game_id: string;
+  team_side: "teamA" | "teamB";
+  pts: number | null;
+  opp_pts: number | null;
+  fg2m: number | null;
+  fg2a: number | null;
+  fg3m: number | null;
+  fg3a: number | null;
+  ftm: number | null;
+  fta: number | null;
+  reb: number | null;
+  ast: number | null;
+  stl: number | null;
+  blk: number | null;
+  tov: number | null;
+  pf: number | null;
+  result?: string | null;
+  updated_at?: string | null;
+};
+
+type TeamGameSummaryRow = {
+  game_id: string;
+  team_side: "teamA" | "teamB";
+  pts: number;
+  opp_pts: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  reb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+  tov: number;
+  pf: number;
+  result: "W" | "L";
+};
+
 type OverviewStat = {
   label: string;
   value: string;
@@ -75,143 +116,179 @@ function formatDate(dateStr?: string | null, createdAt?: string | null) {
   return `${mm}/${dd}`;
 }
 
-function getPointsFromEventType(eventType: string) {
-  switch (eventType) {
-    case "fg2_made":
-      return 2;
-    case "fg3_made":
-      return 3;
-    case "ft_made":
-      return 1;
-    default:
-      return 0;
+function sortGamesDesc(list: GameRow[]) {
+  return [...list].sort((a, b) => {
+    const ta = new Date(a.game_date || a.created_at || 0).getTime();
+    const tb = new Date(b.game_date || b.created_at || 0).getTime();
+    return tb - ta;
+  });
+}
+
+function buildFallbackTeamStatsFromEvents(
+  gameId: string,
+  events: EventRow[],
+  mySide: "teamA" | "teamB" = "teamA"
+): TeamGameSummaryRow {
+  let pts = 0;
+  let oppPts = 0;
+  let fg2m = 0;
+  let fg2a = 0;
+  let fg3m = 0;
+  let fg3a = 0;
+  let ftm = 0;
+  let fta = 0;
+  let reb = 0;
+  let ast = 0;
+  let stl = 0;
+  let blk = 0;
+  let tov = 0;
+  let pf = 0;
+
+  const validEvents = events
+    .filter((e) => e.game_id === gameId && !e.is_undone)
+    .sort((a, b) => {
+      const ta = new Date(a.created_at).getTime();
+      const tb = new Date(b.created_at).getTime();
+      return ta - tb;
+    });
+
+  for (const e of validEvents) {
+    const side = normalizeTeamSide(e.team_side);
+    if (!side) continue;
+
+    const isMine = side === mySide;
+    const isOpp = side !== mySide;
+
+    switch (e.event_type) {
+      case "fg2_made":
+        if (isMine) {
+          pts += 2;
+          fg2m += 1;
+          fg2a += 1;
+        }
+        if (isOpp) oppPts += 2;
+        break;
+      case "fg2_miss":
+        if (isMine) fg2a += 1;
+        break;
+      case "fg3_made":
+        if (isMine) {
+          pts += 3;
+          fg3m += 1;
+          fg3a += 1;
+        }
+        if (isOpp) oppPts += 3;
+        break;
+      case "fg3_miss":
+        if (isMine) fg3a += 1;
+        break;
+      case "ft_made":
+        if (isMine) {
+          pts += 1;
+          ftm += 1;
+          fta += 1;
+        }
+        if (isOpp) oppPts += 1;
+        break;
+      case "ft_miss":
+        if (isMine) fta += 1;
+        break;
+      case "reb":
+        if (isMine) reb += 1;
+        break;
+      case "ast":
+        if (isMine) ast += 1;
+        break;
+      case "stl":
+        if (isMine) stl += 1;
+        break;
+      case "blk":
+        if (isMine) blk += 1;
+        break;
+      case "tov":
+        if (isMine) tov += 1;
+        break;
+      case "pf":
+        if (isMine) pf += 1;
+        break;
+      default:
+        break;
+    }
   }
+
+  return {
+    game_id: gameId,
+    team_side: mySide,
+    pts,
+    opp_pts: oppPts,
+    fg2m,
+    fg2a,
+    fg3m,
+    fg3a,
+    ftm,
+    fta,
+    reb,
+    ast,
+    stl,
+    blk,
+    tov,
+    pf,
+    result: pts > oppPts ? "W" : "L",
+  };
 }
 
-function calcGameScore(events: EventRow[], side: "teamA" | "teamB") {
-  return events.reduce((sum, e) => {
-    if (normalizeTeamSide(e.team_side) !== side) return sum;
-    return sum + getPointsFromEventType(e.event_type);
-  }, 0);
-}
-
-function buildTeamSummary(games: GameRow[], events: EventRow[]) {
-  const gameIds = new Set(games.map((g) => g.id));
-  const validEvents = events.filter(
-    (e) => gameIds.has(e.game_id) && !e.is_undone
-  );
+function buildTeamSummaryFromGameStats(
+  games: GameRow[],
+  gameStatsMap: Map<string, TeamGameSummaryRow>
+) {
+  const gamesSorted = sortGamesDesc(games);
 
   let totalPts = 0;
   let totalReb = 0;
   let totalAst = 0;
   let totalTov = 0;
-
   let totalFg2m = 0;
   let totalFg2a = 0;
   let totalFg3m = 0;
   let totalFg3a = 0;
   let totalFtm = 0;
   let totalFta = 0;
-
   let totalOppPts = 0;
 
   const recentGames: GameItem[] = [];
-
-  const gamesSorted = [...games].sort((a, b) => {
-    const ta = new Date(a.game_date || a.created_at || 0).getTime();
-    const tb = new Date(b.game_date || b.created_at || 0).getTime();
-    return tb - ta;
-  });
+  let countedGp = 0;
 
   for (const game of gamesSorted) {
-    const gameEvents = validEvents.filter((e) => e.game_id === game.id);
+    const stat = gameStatsMap.get(game.id);
+    if (!stat) continue;
 
-    let gamePts = 0;
-    let gameReb = 0;
-    let gameAst = 0;
-    let gameTov = 0;
+    countedGp += 1;
 
-    let gameFg2m = 0;
-    let gameFg2a = 0;
-    let gameFg3m = 0;
-    let gameFg3a = 0;
-    let gameFtm = 0;
-    let gameFta = 0;
-
-    for (const e of gameEvents) {
-      const side = normalizeTeamSide(e.team_side);
-
-      if (side === "teamA") {
-        switch (e.event_type) {
-          case "fg2_made":
-            gamePts += 2;
-            gameFg2m += 1;
-            gameFg2a += 1;
-            break;
-          case "fg2_miss":
-            gameFg2a += 1;
-            break;
-          case "fg3_made":
-            gamePts += 3;
-            gameFg3m += 1;
-            gameFg3a += 1;
-            break;
-          case "fg3_miss":
-            gameFg3a += 1;
-            break;
-          case "ft_made":
-            gamePts += 1;
-            gameFtm += 1;
-            gameFta += 1;
-            break;
-          case "ft_miss":
-            gameFta += 1;
-            break;
-          case "reb":
-            gameReb += 1;
-            break;
-          case "ast":
-            gameAst += 1;
-            break;
-          case "tov":
-            gameTov += 1;
-            break;
-          default:
-            break;
-        }
-      }
-    }
-
-    const myScore = calcGameScore(gameEvents, "teamA");
-    const oppScore = calcGameScore(gameEvents, "teamB");
-
-    totalPts += gamePts;
-    totalReb += gameReb;
-    totalAst += gameAst;
-    totalTov += gameTov;
-    totalFg2m += gameFg2m;
-    totalFg2a += gameFg2a;
-    totalFg3m += gameFg3m;
-    totalFg3a += gameFg3a;
-    totalFtm += gameFtm;
-    totalFta += gameFta;
-    totalOppPts += oppScore;
+    totalPts += stat.pts;
+    totalReb += stat.reb;
+    totalAst += stat.ast;
+    totalTov += stat.tov;
+    totalFg2m += stat.fg2m;
+    totalFg2a += stat.fg2a;
+    totalFg3m += stat.fg3m;
+    totalFg3a += stat.fg3a;
+    totalFtm += stat.ftm;
+    totalFta += stat.fta;
+    totalOppPts += stat.opp_pts;
 
     recentGames.push({
       id: game.id,
       date: formatDate(game.game_date, game.created_at),
       opponent: game.teamB || "對手",
-      result: myScore >= oppScore ? "W" : "L",
-      score: `${myScore} - ${oppScore}`,
-      myScore,
-      oppScore,
+      result: stat.pts > stat.opp_pts ? "W" : "L",
+      score: `${stat.pts} - ${stat.opp_pts}`,
+      myScore: stat.pts,
+      oppScore: stat.opp_pts,
     });
   }
 
-  const gp = games.length;
-
   return {
-    gp,
+    gp: countedGp,
     totalPts,
     totalReb,
     totalAst,
@@ -223,21 +300,21 @@ function buildTeamSummary(games: GameRow[], events: EventRow[]) {
     totalFtm,
     totalFta,
     totalOppPts,
-    avgPts: avg(totalPts, gp),
-    avgReb: avg(totalReb, gp),
-    avgAst: avg(totalAst, gp),
-    avgTov: avg(totalTov, gp),
+    avgPts: avg(totalPts, countedGp),
+    avgReb: avg(totalReb, countedGp),
+    avgAst: avg(totalAst, countedGp),
+    avgTov: avg(totalTov, countedGp),
     ftPct: pct(totalFtm, totalFta),
     fg2Pct: pct(totalFg2m, totalFg2a),
     fg3Pct: pct(totalFg3m, totalFg3a),
-    oppAvgPts: avg(totalOppPts, gp),
+    oppAvgPts: avg(totalOppPts, countedGp),
     recentGames,
   };
 }
 
 export default function TeamStatsPage() {
   const [games, setGames] = useState<GameRow[]>([]);
-  const [events, setEvents] = useState<EventRow[]>([]);
+  const [teamGameStats, setTeamGameStats] = useState<TeamGameSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedRange, setSelectedRange] = useState("全部比賽");
   const [error, setError] = useState("");
@@ -263,47 +340,113 @@ export default function TeamStatsPage() {
       return;
     }
 
-    const safeGames = (gamesData ?? []) as GameRow[];
+    const safeGames = sortGamesDesc((gamesData ?? []) as GameRow[]);
     const gameIds = safeGames.map((g) => g.id);
 
     if (gameIds.length === 0) {
       setGames([]);
-      setEvents([]);
+      setTeamGameStats([]);
       setLoading(false);
       return;
     }
 
-    const { data: eventsData, error: eventsError } = await supabase
-      .from("events")
+    const { data: teamStatsData, error: teamStatsError } = await supabase
+      .from("team_game_stats")
       .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
+        "game_id, team_side, pts, opp_pts, fg2m, fg2a, fg3m, fg3a, ftm, fta, reb, ast, stl, blk, tov, pf, result, updated_at"
       )
-      .in("game_id", gameIds)
-      .order("created_at", { ascending: true });
+      .eq("team_side", "teamA")
+      .in("game_id", gameIds);
 
-    if (eventsError) {
-      console.error("load events error:", eventsError);
-      setError("載入事件資料失敗");
-      setGames(safeGames);
-      setEvents([]);
+    if (teamStatsError) {
+      console.error("load team_game_stats error:", teamStatsError);
+      setError("載入團隊統計資料失敗");
       setLoading(false);
       return;
     }
+
+    const safeTeamStats = ((teamStatsData ?? []) as TeamGameStatsRow[]).map(
+      (row): TeamGameSummaryRow => ({
+        game_id: row.game_id,
+        team_side: "teamA",
+        pts: row.pts ?? 0,
+        opp_pts: row.opp_pts ?? 0,
+        fg2m: row.fg2m ?? 0,
+        fg2a: row.fg2a ?? 0,
+        fg3m: row.fg3m ?? 0,
+        fg3a: row.fg3a ?? 0,
+        ftm: row.ftm ?? 0,
+        fta: row.fta ?? 0,
+        reb: row.reb ?? 0,
+        ast: row.ast ?? 0,
+        stl: row.stl ?? 0,
+        blk: row.blk ?? 0,
+        tov: row.tov ?? 0,
+        pf: row.pf ?? 0,
+        result: row.result === "W" ? "W" : "L",
+      })
+    );
+
+    const statsGameIdSet = new Set(safeTeamStats.map((x) => x.game_id));
+    const missingGameIds = gameIds.filter((id) => !statsGameIdSet.has(id));
+
+    let fallbackStats: TeamGameSummaryRow[] = [];
+
+    if (missingGameIds.length > 0) {
+      const { data: fallbackEventsData, error: fallbackEventsError } =
+        await supabase
+          .from("events")
+          .select(
+            "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
+          )
+          .in("game_id", missingGameIds)
+          .order("created_at", { ascending: true });
+
+      if (fallbackEventsError) {
+        console.error("load fallback events error:", fallbackEventsError);
+        setError("載入舊比賽事件資料失敗");
+        setLoading(false);
+        return;
+      }
+
+      const safeEvents = (fallbackEventsData ?? []) as EventRow[];
+
+      fallbackStats = missingGameIds.map((gameId) =>
+        buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
+      );
+    }
+
+    const mergedStats = [...safeTeamStats, ...fallbackStats];
 
     setGames(safeGames);
-    setEvents((eventsData ?? []) as EventRow[]);
+    setTeamGameStats(mergedStats);
     setLoading(false);
   }
 
+  const sortedGames = useMemo(() => sortGamesDesc(games), [games]);
+
   const filteredGames = useMemo(() => {
-    if (selectedRange === "最近5場") return games.slice(0, 5);
-    if (selectedRange === "最近10場") return games.slice(0, 10);
-    return games;
-  }, [games, selectedRange]);
+    if (selectedRange === "最近5場") return sortedGames.slice(0, 5);
+    if (selectedRange === "最近10場") return sortedGames.slice(0, 10);
+    return sortedGames;
+  }, [sortedGames, selectedRange]);
+
+  const filteredGameStatsMap = useMemo(() => {
+    const allowedIds = new Set(filteredGames.map((g) => g.id));
+    const map = new Map<string, TeamGameSummaryRow>();
+
+    for (const row of teamGameStats) {
+      if (allowedIds.has(row.game_id)) {
+        map.set(row.game_id, row);
+      }
+    }
+
+    return map;
+  }, [filteredGames, teamGameStats]);
 
   const summary = useMemo(() => {
-    return buildTeamSummary(filteredGames, events);
-  }, [filteredGames, events]);
+    return buildTeamSummaryFromGameStats(filteredGames, filteredGameStatsMap);
+  }, [filteredGames, filteredGameStatsMap]);
 
   const overviewStats: OverviewStat[] = useMemo(
     () => [
@@ -469,8 +612,6 @@ export default function TeamStatsPage() {
                 <option style={{ color: "#000" }}>最近5場</option>
                 <option style={{ color: "#000" }}>最近10場</option>
               </select>
-
-              
 
               <div
                 style={{
