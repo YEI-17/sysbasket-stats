@@ -795,42 +795,42 @@ export default function LiveGamePage() {
   }, [starterIds, validEvents]);
 
   async function syncAggregateStats(sourceEvents?: EventRow[]) {
-    if (!game) return;
-    if (!gamePlayers.length) return;
-    if (syncingStatsRef.current) return;
+  if (!game) return;
+  if (!gamePlayers.length) return;
+  if (syncingStatsRef.current) return;
 
-    syncingStatsRef.current = true;
+  syncingStatsRef.current = true;
 
-    try {
-      const baseEvents = sourceEvents ?? events;
-      const valid = sortEventsStable(baseEvents.filter((e) => !e.is_undone));
+  try {
+    const baseEvents = sourceEvents ?? events;
+    const valid = sortEventsStable(baseEvents.filter((e) => !e.is_undone));
 
-      const teamAIds = gamePlayers
-        .filter((gp) => gp.team_side === "teamA")
-        .map((gp) => gp.player_id);
+    const teamAIds = gamePlayers
+      .filter((gp) => gp.team_side === "teamA")
+      .map((gp) => gp.player_id);
 
-      const starters = getStarterIdsFallback({
-        gamePlayers,
-        validEvents: valid,
-      });
+    const starters = getStarterIdsFallback({
+      gamePlayers,
+      validEvents: valid,
+    });
 
-      const plusMinusMap = computePlusMinusMap({
-        teamAIds,
-        starterIds: starters,
-        validEvents: valid,
-      });
+    const plusMinusMap = computePlusMinusMap({
+      teamAIds,
+      starterIds: starters,
+      validEvents: valid,
+    });
 
-      const playerStatMap = new Map<string, StatLine>();
+    const playerStatMap = new Map<string, StatLine>();
 
-      for (const playerId of teamAIds) {
-        playerStatMap.set(playerId, emptyStat());
-      }
+    for (const playerId of teamAIds) {
+      playerStatMap.set(playerId, emptyStat());
+    }
 
-      const teamStat = emptyStat();
+    const teamStat = emptyStat();
+    let oppPts = 0;
 
-      for (const e of valid) {
-        if (e.team_side !== "teamA") continue;
-
+    for (const e of valid) {
+      if (e.team_side === "teamA") {
         applyEventToStat(teamStat, e.event_type);
 
         if (!e.player_id) continue;
@@ -838,90 +838,97 @@ export default function LiveGamePage() {
 
         const stat = playerStatMap.get(e.player_id)!;
         applyEventToStat(stat, e.event_type);
+        continue;
       }
 
-      const playerRows = teamAIds.map((playerId) => {
-        const stat = playerStatMap.get(playerId) ?? emptyStat();
-        const appeared =
-          stat.pts > 0 ||
-          stat.fg2m > 0 ||
-          stat.fg2a > 0 ||
-          stat.fg3m > 0 ||
-          stat.fg3a > 0 ||
-          stat.ftm > 0 ||
-          stat.fta > 0 ||
-          stat.reb > 0 ||
-          stat.ast > 0 ||
-          stat.stl > 0 ||
-          stat.blk > 0 ||
-          stat.tov > 0 ||
-          stat.pf > 0 ||
-          plusMinusMap[playerId] !== 0 ||
-          playerShifts.some((s) => s.player_id === playerId);
+      if (e.team_side === "teamB") {
+        oppPts += getPoints(e.event_type);
+      }
+    }
 
-        return {
-          game_id: game.id,
-          player_id: playerId,
-          team_side: "teamA",
-          gp: appeared ? 1 : 0,
-          pts: stat.pts,
-          fg2m: stat.fg2m,
-          fg2a: stat.fg2a,
-          fg3m: stat.fg3m,
-          fg3a: stat.fg3a,
-          ftm: stat.ftm,
-          fta: stat.fta,
-          reb: stat.reb,
-          ast: stat.ast,
-          stl: stat.stl,
-          blk: stat.blk,
-          tov: stat.tov,
-          pf: stat.pf,
-          plus_minus: plusMinusMap[playerId] ?? 0,
-        };
-      });
+    const playerRows = teamAIds.map((playerId) => {
+      const stat = playerStatMap.get(playerId) ?? emptyStat();
+      const appeared =
+        stat.pts > 0 ||
+        stat.fg2m > 0 ||
+        stat.fg2a > 0 ||
+        stat.fg3m > 0 ||
+        stat.fg3a > 0 ||
+        stat.ftm > 0 ||
+        stat.fta > 0 ||
+        stat.reb > 0 ||
+        stat.ast > 0 ||
+        stat.stl > 0 ||
+        stat.blk > 0 ||
+        stat.tov > 0 ||
+        stat.pf > 0 ||
+        plusMinusMap[playerId] !== 0 ||
+        playerShifts.some((s) => s.player_id === playerId);
 
-      const teamRow = {
+      return {
         game_id: game.id,
+        player_id: playerId,
         team_side: "teamA",
-        pts: teamStat.pts,
-        fg2m: teamStat.fg2m,
-        fg2a: teamStat.fg2a,
-        fg3m: teamStat.fg3m,
-        fg3a: teamStat.fg3a,
-        ftm: teamStat.ftm,
-        fta: teamStat.fta,
-        reb: teamStat.reb,
-        ast: teamStat.ast,
-        stl: teamStat.stl,
-        blk: teamStat.blk,
-        tov: teamStat.tov,
-        pf: teamStat.pf,
+        gp: appeared ? 1 : 0,
+        pts: stat.pts,
+        fg2m: stat.fg2m,
+        fg2a: stat.fg2a,
+        fg3m: stat.fg3m,
+        fg3a: stat.fg3a,
+        ftm: stat.ftm,
+        fta: stat.fta,
+        reb: stat.reb,
+        ast: stat.ast,
+        stl: stat.stl,
+        blk: stat.blk,
+        tov: stat.tov,
+        pf: stat.pf,
+        plus_minus: plusMinusMap[playerId] ?? 0,
       };
+    });
 
-      if (playerRows.length > 0) {
-        const { error: playerStatError } = await supabase
-          .from("player_game_stats")
-          .upsert(playerRows, { onConflict: "game_id,player_id" });
+    const teamRow = {
+      game_id: game.id,
+      team_side: "teamA",
+      pts: teamStat.pts,
+      fg2m: teamStat.fg2m,
+      fg2a: teamStat.fg2a,
+      fg3m: teamStat.fg3m,
+      fg3a: teamStat.fg3a,
+      ftm: teamStat.ftm,
+      fta: teamStat.fta,
+      reb: teamStat.reb,
+      ast: teamStat.ast,
+      stl: teamStat.stl,
+      blk: teamStat.blk,
+      tov: teamStat.tov,
+      pf: teamStat.pf,
+      opp_pts: oppPts,
+    };
 
-        if (playerStatError) {
-          setError(`同步球員數據失敗：${playerStatError.message}`);
-          return;
-        }
-      }
+    if (playerRows.length > 0) {
+      const { error: playerStatError } = await supabase
+        .from("player_game_stats")
+        .upsert(playerRows, { onConflict: "game_id,player_id" });
 
-      const { error: teamStatError } = await supabase
-        .from("team_game_stats")
-        .upsert(teamRow, { onConflict: "game_id,team_side" });
-
-      if (teamStatError) {
-        setError(`同步團隊數據失敗：${teamStatError.message}`);
+      if (playerStatError) {
+        setError(`同步球員數據失敗：${playerStatError.message}`);
         return;
       }
-    } finally {
-      syncingStatsRef.current = false;
     }
+
+    const { error: teamStatError } = await supabase
+      .from("team_game_stats")
+      .upsert(teamRow, { onConflict: "game_id,team_side" });
+
+    if (teamStatError) {
+      setError(`同步團隊數據失敗：${teamStatError.message}`);
+      return;
+    }
+  } finally {
+    syncingStatsRef.current = false;
   }
+}
 
   async function startClock() {
     if (!clock || game?.status === "finished") return;
