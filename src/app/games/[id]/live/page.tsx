@@ -19,6 +19,7 @@ type GameRow = {
   teamA: string | null;
   teamB: string | null;
   status?: string | null;
+  is_live?: boolean | null;
 };
 
 type EventRow = {
@@ -398,10 +399,10 @@ export default function LiveGamePage() {
     setError("");
 
     const { data, error } = await supabase
-      .from("games")
-      .select("id, teamA, teamB, status")
-      .eq("id", gameId)
-      .single();
+  .from("games")
+  .select("id, teamA, teamB, status, is_live")
+  .eq("id", gameId)
+  .single();
 
     if (error) {
       setError(`讀取目前比賽失敗：${error.message}`);
@@ -1088,16 +1089,27 @@ export default function LiveGamePage() {
       }
 
       const { error } = await supabase
-        .from("games")
-        .update({ status: "finished" })
-        .eq("id", game.id);
+  .from("games")
+  .update({
+    status: "finished",
+    is_live: false,
+  })
+  .eq("id", game.id);
 
       if (error) {
         setError(`結束比賽失敗：${error.message}`);
         return;
       }
 
-      setGame((prev) => (prev ? { ...prev, status: "finished" } : prev));
+      setGame((prev) =>
+  prev
+    ? {
+        ...prev,
+        status: "finished",
+        is_live: false,
+      }
+    : prev
+);
       await syncAggregateStats();
     } finally {
       setEndingGame(false);

@@ -36,16 +36,18 @@ function normalizeStatus(status?: string | null) {
 
 function getStatusText(game: GameRow) {
   const s = normalizeStatus(game.status);
-  if (game.is_live || s === "live") return "直播中";
+
   if (s === "finished") return "已結束";
+  if (game.is_live || s === "live") return "直播中";
   if (s === "scheduled") return "尚未開始";
   return "未分類";
 }
 
 function getStatusEnglish(game: GameRow) {
   const s = normalizeStatus(game.status);
-  if (game.is_live || s === "live") return "LIVE";
+
   if (s === "finished") return "FINAL";
+  if (game.is_live || s === "live") return "LIVE";
   if (s === "scheduled") return "SCHEDULED";
   return "UNKNOWN";
 }
@@ -53,11 +55,11 @@ function getStatusEnglish(game: GameRow) {
 function getStatusClass(game: GameRow) {
   const s = normalizeStatus(game.status);
 
-  if (game.is_live || s === "live") {
-    return "border-red-500/40 bg-red-500/15 text-red-200";
-  }
   if (s === "finished") {
     return "border-zinc-700 bg-zinc-800/80 text-zinc-200";
+  }
+  if (game.is_live || s === "live") {
+    return "border-red-500/40 bg-red-500/15 text-red-200";
   }
   if (s === "scheduled") {
     return "border-amber-500/40 bg-amber-500/15 text-amber-200";
@@ -211,9 +213,11 @@ export default function GamesPage() {
 
   const summary = useMemo(() => {
     const total = games.length;
-    const live = games.filter(
-      (g) => g.is_live || normalizeStatus(g.status) === "live"
-    ).length;
+   const live = games.filter((g) => {
+  const s = normalizeStatus(g.status);
+  if (s === "finished") return false;
+  return g.is_live || s === "live";
+}).length;
     const today = games.filter((g) => isToday(g.game_date)).length;
     const finished = games.filter(
       (g) => normalizeStatus(g.status) === "finished"
@@ -250,10 +254,12 @@ export default function GamesPage() {
 
     if (filter === "today") {
       result = result.filter((g) => isToday(g.game_date));
-    } else if (filter === "live") {
-      result = result.filter(
-        (g) => g.is_live || normalizeStatus(g.status) === "live"
-      );
+   } else if (filter === "live") {
+  result = result.filter((g) => {
+    const s = normalizeStatus(g.status);
+    if (s === "finished") return false;
+    return g.is_live || s === "live";
+  });
     } else if (filter === "scheduled") {
       result = result.filter((g) => normalizeStatus(g.status) === "scheduled");
     } else if (filter === "finished") {
@@ -281,28 +287,32 @@ export default function GamesPage() {
   }, [searchedGames, filter, sort]);
 
   const liveGames = useMemo(
-    () =>
-      filteredGames.filter(
-        (g) => g.is_live || normalizeStatus(g.status) === "live"
-      ),
-    [filteredGames]
-  );
+  () =>
+    filteredGames.filter((g) => {
+      const s = normalizeStatus(g.status);
+      if (s === "finished") return false;
+      return g.is_live || s === "live";
+    }),
+  [filteredGames]
+);
 
   const todayGames = useMemo(
-    () =>
-      filteredGames.filter(
-        (g) =>
-          isToday(g.game_date) &&
-          !(g.is_live || normalizeStatus(g.status) === "live")
-      ),
-    [filteredGames]
-  );
+  () =>
+    filteredGames.filter((g) => {
+      const s = normalizeStatus(g.status);
+      const isLive = s !== "finished" && (g.is_live || s === "live");
+      return isToday(g.game_date) && !isLive;
+    }),
+  [filteredGames]
+);
 
   const scheduleGames = useMemo(() => {
-    return filteredGames.filter(
-      (g) => !(g.is_live || normalizeStatus(g.status) === "live")
-    );
-  }, [filteredGames]);
+  return filteredGames.filter((g) => {
+    const s = normalizeStatus(g.status);
+    const isLive = s !== "finished" && (g.is_live || s === "live");
+    return !isLive;
+  });
+}, [filteredGames]);
 
   const recentFinished = useMemo(() => {
     return [...games]
@@ -704,7 +714,8 @@ function LiveGameCard({ game }: { game: GameRow }) {
 }
 
 function ScheduleRow({ game }: { game: GameRow }) {
-  const isLive = game.is_live || normalizeStatus(game.status) === "live";
+  const status = normalizeStatus(game.status);
+const isLive = status !== "finished" && (game.is_live || status === "live");
   const isGameToday = isToday(game.game_date);
 
   return (
