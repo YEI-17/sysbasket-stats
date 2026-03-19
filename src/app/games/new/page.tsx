@@ -39,10 +39,39 @@ function normalizePosition(position?: string | null): PlayerPosition | "OTHER" {
   return "OTHER";
 }
 
+function getTodayDateInputValue() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function getCurrentTimeInputValue() {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, "0");
+  const m = String(now.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
+function buildStartTimeISO(gameDate: string, gameTime: string) {
+  const safeDate = gameDate.trim();
+  const safeTime = gameTime.trim();
+
+  if (!safeDate || !safeTime) return null;
+
+  const iso = `${safeDate}T${safeTime}:00+08:00`;
+  return iso;
+}
+
 export default function NewGamePage() {
   const router = useRouter();
 
   const [opponent, setOpponent] = useState("");
+  const [gameDate, setGameDate] = useState(getTodayDateInputValue());
+  const [gameTime, setGameTime] = useState(getCurrentTimeInputValue());
+  const [location, setLocation] = useState("");
+
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedRosterIds, setSelectedRosterIds] = useState<string[]>([]);
   const [selectedStarterIds, setSelectedStarterIds] = useState<string[]>([]);
@@ -160,6 +189,18 @@ export default function NewGamePage() {
     setError("");
 
     try {
+      if (!gameDate) {
+        setError("請選擇比賽日期");
+        setLoading(false);
+        return;
+      }
+
+      if (!gameTime) {
+        setError("請選擇比賽時間");
+        setLoading(false);
+        return;
+      }
+
       if (selectedRosterIds.length < 5) {
         setError("登入名單至少要 5 人");
         setLoading(false);
@@ -182,9 +223,17 @@ export default function NewGamePage() {
         return;
       }
 
+      const startTimeISO = buildStartTimeISO(gameDate, gameTime);
+
+      if (!startTimeISO) {
+        setError("比賽時間格式錯誤");
+        setLoading(false);
+        return;
+      }
+
       const { error: closeError } = await supabase
         .from("games")
-        .update({ status: "finished" })
+        .update({ status: "finished", is_live: false })
         .eq("status", "live");
 
       if (closeError) {
@@ -198,9 +247,14 @@ export default function NewGamePage() {
         .insert({
           teamA: "我們",
           teamB: opponent.trim() || "對手",
+          game_date: gameDate,
+          start_time: startTimeISO,
+          location: location.trim() || null,
           status: "live",
+          is_live: true,
           home_score: 0,
           away_score: 0,
+          current_quarter: 1,
         })
         .select()
         .single();
@@ -225,16 +279,16 @@ export default function NewGamePage() {
       }
 
       const gamePlayersPayload = selectedRosterIds.map((playerId) => {
-  const player = players.find((p) => p.id === playerId);
+        const player = players.find((p) => p.id === playerId);
 
-  return {
-    game_id: game.id,
-    player_id: playerId,
-    team_side: "teamA",
-    is_starter: selectedStarterIds.includes(playerId),
-    position: player?.position ?? null,
-  };
-});
+        return {
+          game_id: game.id,
+          player_id: playerId,
+          team_side: "teamA",
+          is_starter: selectedStarterIds.includes(playerId),
+          position: player?.position ?? null,
+        };
+      });
 
       const { error: gamePlayersError } = await supabase
         .from("game_players")
@@ -269,23 +323,23 @@ export default function NewGamePage() {
       }
 
       const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
-  game_id: game.id,
-  player_id: playerId,
-  team_side: "teamA",
-  quarter: 1,
-  in_seconds_left: 600,
-  out_seconds_left: null,
-}));
+        game_id: game.id,
+        player_id: playerId,
+        team_side: "teamA",
+        quarter: 1,
+        in_seconds_left: 600,
+        out_seconds_left: null,
+      }));
 
-const { error: starterShiftsError } = await supabase
-  .from("player_shifts")
-  .insert(starterShiftsPayload);
+      const { error: starterShiftsError } = await supabase
+        .from("player_shifts")
+        .insert(starterShiftsPayload);
 
-if (starterShiftsError) {
-  setError("寫入先發上場時間失敗：" + starterShiftsError.message);
-  setLoading(false);
-  return;
-}
+      if (starterShiftsError) {
+        setError("寫入先發上場時間失敗：" + starterShiftsError.message);
+        setLoading(false);
+        return;
+      }
 
       router.push(`/games/${game.id}/live`);
     } catch (err: any) {
@@ -296,8 +350,8 @@ if (starterShiftsError) {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white p-6">
-      <div className="max-w-6xl mx-auto space-y-6">
+    <div className="min-h-screen bg-neutral-950 p-6 text-white">
+      <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">建立新比賽</h1>
           <LogoutButton />
@@ -305,13 +359,45 @@ if (starterShiftsError) {
 
         <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-4">
           <div>
-            <div className="text-sm text-white/60 mb-2">對手名稱</div>
+            <div className="mb-2 text-sm text-white/60">對手名稱</div>
             <input
               value={opponent}
               onChange={(e) => setOpponent(e.target.value)}
               placeholder="輸入對手"
-              className="w-full rounded-xl bg-neutral-900 border border-white/10 px-4 py-3 outline-none"
+              className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
             />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div>
+              <div className="mb-2 text-sm text-white/60">比賽日期</div>
+              <input
+                type="date"
+                value={gameDate}
+                onChange={(e) => setGameDate(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
+              />
+            </div>
+
+            <div>
+              <div className="mb-2 text-sm text-white/60">比賽時間</div>
+              <input
+                type="time"
+                value={gameTime}
+                onChange={(e) => setGameTime(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
+              />
+            </div>
+
+            <div>
+              <div className="mb-2 text-sm text-white/60">比賽地點</div>
+              <input
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="例如：學校體育館"
+                className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
+              />
+            </div>
           </div>
         </div>
 
@@ -319,25 +405,25 @@ if (starterShiftsError) {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <div className="text-lg font-bold">依位置選擇登入名單與先發五人</div>
-              <div className="text-sm text-white/60 mt-1">
+              <div className="mt-1 text-sm text-white/60">
                 先勾選登入名單，再從登入名單中選 5 位先發
               </div>
             </div>
 
             <div className="flex flex-wrap gap-3 text-sm">
-              <div className="rounded-xl bg-black/20 px-3 py-2 border border-white/10">
+              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                 登入名單 {selectedRosterIds.length} 人
               </div>
-              <div className="rounded-xl bg-black/20 px-3 py-2 border border-white/10">
+              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                 先發 {selectedStarterIds.length}/5
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <div className="text-sm text-white/50 mb-2">目前先發</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="mb-2 text-sm text-white/50">目前先發</div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {starterPlayers.length === 0 ? (
                   <div className="text-sm text-white/40">尚未選擇先發</div>
                 ) : (
@@ -349,7 +435,7 @@ if (starterShiftsError) {
                       <div className="font-semibold">
                         #{p.number ?? "-"} {p.name}
                       </div>
-                      <div className="text-xs text-emerald-200/80 mt-1">
+                      <div className="mt-1 text-xs text-emerald-200/80">
                         {p.position || "未設定位置"}
                       </div>
                     </div>
@@ -359,7 +445,7 @@ if (starterShiftsError) {
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <div className="text-sm text-white/50 mb-2">目前登入名單</div>
+              <div className="mb-2 text-sm text-white/50">目前登入名單</div>
               <div className="flex flex-wrap gap-2">
                 {rosterPlayers.length === 0 ? (
                   <div className="text-sm text-white/40">尚未選擇登入名單</div>
@@ -388,12 +474,12 @@ if (starterShiftsError) {
                 key={position}
                 className="rounded-2xl border border-white/10 bg-black/20 p-4"
               >
-                <div className="flex items-center justify-between mb-4">
+                <div className="mb-4 flex items-center justify-between">
                   <div>
                     <div className="text-base font-bold">
                       {POSITION_LABEL[position]}
                     </div>
-                    <div className="text-xs text-white/45 mt-1">
+                    <div className="mt-1 text-xs text-white/45">
                       {positionPlayers.length} 人
                     </div>
                   </div>
@@ -408,7 +494,7 @@ if (starterShiftsError) {
                     此位置目前沒有球員
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {positionPlayers.map((p) => {
                       const inRoster = selectedRosterIds.includes(p.id);
                       const isStarter = selectedStarterIds.includes(p.id);
@@ -424,13 +510,13 @@ if (starterShiftsError) {
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="font-bold text-base">
+                              <div className="text-base font-bold">
                                 #{p.number ?? "-"} {p.name}
                               </div>
-                              <div className="text-xs text-white/50 mt-1">
+                              <div className="mt-1 text-xs text-white/50">
                                 {p.position || "未設定位置"}
                               </div>
-                              <div className="text-xs text-white/50 mt-1">
+                              <div className="mt-1 text-xs text-white/50">
                                 {inRoster
                                   ? isStarter
                                     ? "已登入｜先發"
@@ -440,7 +526,7 @@ if (starterShiftsError) {
                             </div>
 
                             {isStarter && (
-                              <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs text-emerald-300 border border-emerald-400/30">
+                              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/20 px-2.5 py-1 text-xs text-emerald-300">
                                 先發
                               </span>
                             )}
@@ -452,8 +538,8 @@ if (starterShiftsError) {
                               onClick={() => toggleRoster(p.id)}
                               className={`flex-1 rounded-xl px-3 py-2 text-sm font-medium transition ${
                                 inRoster
-                                  ? "bg-blue-500/20 text-blue-200 border border-blue-400/30"
-                                  : "bg-white/5 text-white border border-white/10"
+                                  ? "border border-blue-400/30 bg-blue-500/20 text-blue-200"
+                                  : "border border-white/10 bg-white/5 text-white"
                               }`}
                             >
                               {inRoster ? "已登入" : "加入登入名單"}
@@ -465,10 +551,10 @@ if (starterShiftsError) {
                               disabled={!inRoster}
                               className={`flex-1 rounded-xl px-3 py-2 text-sm font-medium transition ${
                                 !inRoster
-                                  ? "bg-white/5 text-white/40 border border-white/10 cursor-not-allowed"
+                                  ? "cursor-not-allowed border border-white/10 bg-white/5 text-white/40"
                                   : isStarter
-                                  ? "bg-emerald-500/20 text-emerald-200 border border-emerald-400/30"
-                                  : "bg-white/5 text-white border border-white/10"
+                                  ? "border border-emerald-400/30 bg-emerald-500/20 text-emerald-200"
+                                  : "border border-white/10 bg-white/5 text-white"
                               }`}
                             >
                               {isStarter ? "取消先發" : "設為先發"}
@@ -485,12 +571,12 @@ if (starterShiftsError) {
 
           {groupedPlayers.OTHER.length > 0 && (
             <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-4">
-              <div className="flex items-center justify-between mb-4">
+              <div className="mb-4 flex items-center justify-between">
                 <div>
                   <div className="text-base font-bold text-yellow-200">
                     未設定位置
                   </div>
-                  <div className="text-xs text-yellow-200/70 mt-1">
+                  <div className="mt-1 text-xs text-yellow-200/70">
                     建議回 players table 補上 position
                   </div>
                 </div>
@@ -500,7 +586,7 @@ if (starterShiftsError) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {groupedPlayers.OTHER.map((p) => {
                   const inRoster = selectedRosterIds.includes(p.id);
                   const isStarter = selectedStarterIds.includes(p.id);
@@ -516,13 +602,13 @@ if (starterShiftsError) {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="font-bold text-base">
+                          <div className="text-base font-bold">
                             #{p.number ?? "-"} {p.name}
                           </div>
-                          <div className="text-xs text-white/50 mt-1">
+                          <div className="mt-1 text-xs text-white/50">
                             未設定位置
                           </div>
-                          <div className="text-xs text-white/50 mt-1">
+                          <div className="mt-1 text-xs text-white/50">
                             {inRoster
                               ? isStarter
                                 ? "已登入｜先發"
@@ -532,7 +618,7 @@ if (starterShiftsError) {
                         </div>
 
                         {isStarter && (
-                          <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs text-emerald-300 border border-emerald-400/30">
+                          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/20 px-2.5 py-1 text-xs text-emerald-300">
                             先發
                           </span>
                         )}
@@ -544,8 +630,8 @@ if (starterShiftsError) {
                           onClick={() => toggleRoster(p.id)}
                           className={`flex-1 rounded-xl px-3 py-2 text-sm font-medium transition ${
                             inRoster
-                              ? "bg-blue-500/20 text-blue-200 border border-blue-400/30"
-                              : "bg-white/5 text-white border border-white/10"
+                              ? "border border-blue-400/30 bg-blue-500/20 text-blue-200"
+                              : "border border-white/10 bg-white/5 text-white"
                           }`}
                         >
                           {inRoster ? "已登入" : "加入登入名單"}
@@ -557,10 +643,10 @@ if (starterShiftsError) {
                           disabled={!inRoster}
                           className={`flex-1 rounded-xl px-3 py-2 text-sm font-medium transition ${
                             !inRoster
-                              ? "bg-white/5 text-white/40 border border-white/10 cursor-not-allowed"
+                              ? "cursor-not-allowed border border-white/10 bg-white/5 text-white/40"
                               : isStarter
-                              ? "bg-emerald-500/20 text-emerald-200 border border-emerald-400/30"
-                              : "bg-white/5 text-white border border-white/10"
+                              ? "border border-emerald-400/30 bg-emerald-500/20 text-emerald-200"
+                              : "border border-white/10 bg-white/5 text-white"
                           }`}
                         >
                           {isStarter ? "取消先發" : "設為先發"}

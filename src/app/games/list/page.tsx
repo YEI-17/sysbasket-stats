@@ -13,6 +13,7 @@ type GameRow = {
   is_live: boolean | null;
   created_at?: string | null;
   game_date?: string | null;
+  start_time?: string | null;
 };
 
 type FilterType = "all" | "today" | "live" | "scheduled" | "finished";
@@ -173,8 +174,9 @@ export default function GamesPage() {
 
     const { data, error } = await supabase
       .from("games")
-      .select("id, teamA, teamB, status, is_live, created_at, game_date")
+      .select("id, teamA, teamB, status, is_live, created_at, game_date, start_time")
       .order("game_date", { ascending: false, nullsFirst: false })
+      .order("start_time", { ascending: false, nullsFirst: false })
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -209,9 +211,13 @@ export default function GamesPage() {
 
   const summary = useMemo(() => {
     const total = games.length;
-    const live = games.filter((g) => g.is_live || normalizeStatus(g.status) === "live").length;
+    const live = games.filter(
+      (g) => g.is_live || normalizeStatus(g.status) === "live"
+    ).length;
     const today = games.filter((g) => isToday(g.game_date)).length;
-    const finished = games.filter((g) => normalizeStatus(g.status) === "finished").length;
+    const finished = games.filter(
+      (g) => normalizeStatus(g.status) === "finished"
+    ).length;
 
     return { total, live, today, finished };
   }, [games]);
@@ -226,13 +232,15 @@ export default function GamesPage() {
       const statusText = getStatusText(g).toLowerCase();
       const statusRaw = (g.status || "").toLowerCase();
       const dateText = formatDate(g.game_date).toLowerCase();
+      const timeText = formatTime(g.start_time).toLowerCase();
 
       return (
         a.includes(keyword) ||
         b.includes(keyword) ||
         statusText.includes(keyword) ||
         statusRaw.includes(keyword) ||
-        dateText.includes(keyword)
+        dateText.includes(keyword) ||
+        timeText.includes(keyword)
       );
     });
   }, [games, search]);
@@ -254,10 +262,14 @@ export default function GamesPage() {
 
     result.sort((a, b) => {
       if (sort === "dateDesc") {
-        return getTimestamp(b.game_date) - getTimestamp(a.game_date);
+        const bTime = getTimestamp(b.start_time) || getTimestamp(b.game_date);
+        const aTime = getTimestamp(a.start_time) || getTimestamp(a.game_date);
+        return bTime - aTime;
       }
       if (sort === "dateAsc") {
-        return getTimestamp(a.game_date) - getTimestamp(b.game_date);
+        const aTime = getTimestamp(a.start_time) || getTimestamp(a.game_date);
+        const bTime = getTimestamp(b.start_time) || getTimestamp(b.game_date);
+        return aTime - bTime;
       }
       if (sort === "createdDesc") {
         return getTimestamp(b.created_at) - getTimestamp(a.created_at);
@@ -295,7 +307,11 @@ export default function GamesPage() {
   const recentFinished = useMemo(() => {
     return [...games]
       .filter((g) => normalizeStatus(g.status) === "finished")
-      .sort((a, b) => getTimestamp(b.game_date) - getTimestamp(a.game_date))
+      .sort((a, b) => {
+        const bTime = getTimestamp(b.start_time) || getTimestamp(b.game_date);
+        const aTime = getTimestamp(a.start_time) || getTimestamp(a.game_date);
+        return bTime - aTime;
+      })
       .slice(0, 5);
   }, [games]);
 
@@ -384,7 +400,7 @@ export default function GamesPage() {
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="搜尋對手、狀態、日期"
+                  placeholder="搜尋對手、狀態、日期、時間"
                   className="w-full rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-500 focus:border-orange-400/60 focus:bg-zinc-900"
                 />
               </div>
@@ -662,7 +678,7 @@ function LiveGameCard({ game }: { game: GameRow }) {
               {formatDate(game.game_date)}
             </span>
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-              開賽 {formatTime(game.game_date)}
+              開賽 {formatTime(game.start_time)}
             </span>
           </div>
         </div>
@@ -710,7 +726,7 @@ function ScheduleRow({ game }: { game: GameRow }) {
                 Tip Off
               </div>
               <div className="text-lg font-black text-white">
-                {formatTime(game.game_date)}
+                {formatTime(game.start_time)}
               </div>
             </div>
           </div>
@@ -739,6 +755,8 @@ function ScheduleRow({ game }: { game: GameRow }) {
 
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-zinc-400">
               <span>{formatDate(game.game_date)}</span>
+              <span className="text-zinc-600">•</span>
+              <span>{formatTime(game.start_time)}</span>
               <span className="text-zinc-600">•</span>
               <span>建立於 {formatCreatedAt(game.created_at)}</span>
               <span className="text-zinc-600">•</span>
@@ -783,7 +801,9 @@ function ResultMiniCard({ game }: { game: GameRow }) {
         <div className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] font-bold tracking-[0.18em] text-zinc-300">
           FINAL
         </div>
-        <div className="text-xs text-zinc-500">{formatShortDate(game.game_date)}</div>
+        <div className="text-xs text-zinc-500">
+          {formatShortDate(game.game_date)}
+        </div>
       </div>
 
       <div className="text-lg font-black tracking-tight text-white">
@@ -793,7 +813,7 @@ function ResultMiniCard({ game }: { game: GameRow }) {
       </div>
 
       <div className="mt-2 text-sm text-zinc-400">
-        {formatDate(game.game_date)} · {formatTime(game.game_date)}
+        {formatDate(game.game_date)} · {formatTime(game.start_time)}
       </div>
 
       <div className="mt-4 grid gap-2 sm:grid-cols-2">
