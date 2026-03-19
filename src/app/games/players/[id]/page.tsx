@@ -43,6 +43,24 @@ type EventRow = {
   undone_at?: string | null;
 };
 
+type PlayerGameStatRow = {
+  game_id: string;
+  player_id: string;
+  pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
+  tov?: number | null;
+  pf?: number | null;
+  fg2m?: number | null;
+  fg2a?: number | null;
+  fg3m?: number | null;
+  fg3a?: number | null;
+  ftm?: number | null;
+  fta?: number | null;
+};
+
 type Stat = {
   gp: number;
   pts: number;
@@ -188,6 +206,24 @@ function applyEventToStat(stat: Omit<Stat, "gp">, eventType: string) {
   }
 }
 
+function normalizePgsRowToStat(row: PlayerGameStatRow): Omit<Stat, "gp"> {
+  return {
+    pts: Number(row.pts ?? 0),
+    reb: Number(row.reb ?? 0),
+    ast: Number(row.ast ?? 0),
+    stl: Number(row.stl ?? 0),
+    blk: Number(row.blk ?? 0),
+    tov: Number(row.tov ?? 0),
+    pf: Number(row.pf ?? 0),
+    fg2m: Number(row.fg2m ?? 0),
+    fg2a: Number(row.fg2a ?? 0),
+    fg3m: Number(row.fg3m ?? 0),
+    fg3a: Number(row.fg3a ?? 0),
+    ftm: Number(row.ftm ?? 0),
+    fta: Number(row.fta ?? 0),
+  };
+}
+
 function sumStats(list: PerGameStat[]) {
   const total = emptyStat();
   total.gp = list.length;
@@ -234,6 +270,7 @@ export default function PlayerProfilePage() {
   const [games, setGames] = useState<GameRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
 
   const load = useCallback(async () => {
     if (!playerId) {
@@ -261,7 +298,6 @@ export default function PlayerProfilePage() {
         .eq("player_id", playerId);
 
       if (gpError) throw gpError;
-
       const safeGamePlayers = (gpData || []) as GamePlayerRow[];
       setGamePlayers(safeGamePlayers);
 
@@ -274,14 +310,25 @@ export default function PlayerProfilePage() {
         .order("created_at", { ascending: true });
 
       if (eventError) throw eventError;
-
       const safeEvents = (eventData || []) as EventRow[];
       setEvents(safeEvents);
+
+      const { data: pgsData, error: pgsError } = await supabase
+        .from("player_game_stats")
+        .select(
+          "game_id, player_id, pts, reb, ast, stl, blk, tov, pf, fg2m, fg2a, fg3m, fg3a, ftm, fta"
+        )
+        .eq("player_id", playerId);
+
+      if (pgsError) throw pgsError;
+      const safePlayerGameStats = (pgsData || []) as PlayerGameStatRow[];
+      setPlayerGameStats(safePlayerGameStats);
 
       const gameIds = [
         ...new Set([
           ...safeGamePlayers.map((row) => row.game_id),
           ...safeEvents.map((row) => row.game_id),
+          ...safePlayerGameStats.map((row) => row.game_id),
         ]),
       ];
 
@@ -296,7 +343,6 @@ export default function PlayerProfilePage() {
         .in("id", gameIds);
 
       if (gameError) throw gameError;
-
       setGames((gameData || []) as GameRow[]);
     } catch (err: any) {
       console.error("PlayerProfilePage load error:", err);
@@ -313,11 +359,22 @@ export default function PlayerProfilePage() {
   const perGameStats = useMemo(() => {
     const gameMap = new Map(games.map((g) => [g.id, g]));
     const gpMap = new Map(gamePlayers.map((gp) => [gp.game_id, gp]));
+    const pgsMap = new Map(playerGameStats.map((row) => [row.game_id, row]));
+
+    const allGamesSortedAsc = [...games].sort((a, b) => {
+      const ta = new Date(a.game_date || a.created_at || 0).getTime();
+      const tb = new Date(b.game_date || b.created_at || 0).getTime();
+      return ta - tb;
+    });
+
+    const legacyGameIds = new Set(allGamesSortedAsc.slice(0, 2).map((g) => g.id));
     const bucket = new Map<string, PerGameStat>();
 
+    // 前兩場：維持原本 events 統計方式
     for (const ev of events) {
       if (!ev.player_id) continue;
       if (ev.is_undone) continue;
+      if (!legacyGameIds.has(ev.game_id)) continue;
 
       const game = gameMap.get(ev.game_id);
       if (!game) continue;
@@ -342,10 +399,33 @@ export default function PlayerProfilePage() {
     for (const ev of events) {
       if (!ev.player_id) continue;
       if (ev.is_undone) continue;
+      if (!legacyGameIds.has(ev.game_id)) continue;
 
       const item = bucket.get(ev.game_id);
       if (!item) continue;
       applyEventToStat(item.stat, ev.event_type);
+    }
+
+    // 第三場之後：改讀 player_game_stats
+    for (const game of allGamesSortedAsc) {
+      if (legacyGameIds.has(game.id)) continue;
+
+      const row = pgsMap.get(game.id);
+      if (!row) continue;
+
+      const gp = gpMap.get(game.id);
+      const teamSide = (gp?.team_side || "teamA") as "teamA" | "teamB";
+      const opponent =
+        teamSide === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
+
+      bucket.set(game.id, {
+        gameId: game.id,
+        dateLabel: formatDate(game.game_date || game.created_at),
+        opponent,
+        teamSide,
+        isStarter: !!gp?.is_starter,
+        stat: normalizePgsRowToStat(row),
+      });
     }
 
     return [...bucket.values()].sort((a, b) => {
@@ -355,7 +435,7 @@ export default function PlayerProfilePage() {
       const tb = new Date(gb?.game_date || gb?.created_at || 0).getTime();
       return tb - ta;
     });
-  }, [games, gamePlayers, events]);
+  }, [games, gamePlayers, events, playerGameStats]);
 
   const total = useMemo(() => sumStats(perGameStats), [perGameStats]);
 
@@ -443,7 +523,7 @@ export default function PlayerProfilePage() {
       style={{
         minHeight: "100vh",
         background:
-          "radial-gradient(circle at top, rgba(245,158,11,0.18) 0%, rgba(120,53,15,0.18) 12%, #050505 30%, #000 100%)",
+          "radial-gradient(ellipse at top, rgba(245,158,11,0.18) 0%, rgba(120,53,15,0.18) 12%, #050505 30%, #000 100%)",
         color: "#fff",
         padding: 20,
       }}
@@ -712,7 +792,7 @@ export default function PlayerProfilePage() {
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 22, fontWeight: 900 }}>詳細數據</div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                從 events 與 games 自動統計
+                前兩場從 events 統計，第三場起從 player_game_stats 讀取
               </div>
             </div>
 
@@ -847,7 +927,7 @@ export default function PlayerProfilePage() {
             >
               <div style={{ fontSize: 22, fontWeight: 900 }}>投籃命中率</div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-                依照資料庫命中 / 出手計算
+                依照累計命中 / 出手計算
               </div>
 
               <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
@@ -949,7 +1029,7 @@ export default function PlayerProfilePage() {
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 22, fontWeight: 900 }}>比賽紀錄</div>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.56)", marginTop: 4 }}>
-              每場比賽從資料庫事件自動統計
+              前兩場沿用 events，自第三場起改用 player_game_stats
             </div>
           </div>
 
