@@ -13,6 +13,12 @@ type PlayerRow = {
   active?: boolean | null;
 };
 
+type GameRow = {
+  id: string;
+  game_date?: string | null;
+  created_at?: string | null;
+};
+
 type EventRow = {
   id: string;
   game_id: string;
@@ -24,6 +30,16 @@ type EventRow = {
 type GamePlayerRow = {
   player_id: string;
   game_id: string;
+};
+
+type PlayerGameStatRow = {
+  player_id: string;
+  game_id: string;
+  pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
 };
 
 type PreviewStat = {
@@ -51,12 +67,18 @@ function avg(total: number, gp: number) {
   return (total / gp).toFixed(1);
 }
 
+function toSafeNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 export default function PlayersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [players, setPlayers] = useState<PlayerRow[]>([]);
+  const [firstTwoGameIds, setFirstTwoGameIds] = useState<string[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
 
   useEffect(() => {
     async function load() {
@@ -64,29 +86,74 @@ export default function PlayersPage() {
       setError("");
 
       try {
-        const [{ data: playerData, error: playerError }, { data: eventData, error: eventError }, { data: gpData, error: gpError }] =
-          await Promise.all([
-            supabase
-              .from("players")
-              .select("id, name, number, position, active")
-              .order("number", { ascending: true, nullsFirst: false }),
+        const { data: gamesData, error: gamesError } = await supabase
+          .from("games")
+          .select("id, game_date, created_at")
+          .order("game_date", { ascending: true, nullsFirst: false })
+          .order("created_at", { ascending: true, nullsFirst: false });
 
-            supabase
-              .from("events")
-              .select("id, game_id, player_id, event_type, is_undone"),
+        if (gamesError) throw gamesError;
 
-            supabase
-              .from("game_players")
-              .select("player_id, game_id"),
-          ]);
+        const sortedGames = ((gamesData || []) as GameRow[]).slice().sort((a, b) => {
+          const aTime = new Date(a.game_date || a.created_at || 0).getTime();
+          const bTime = new Date(b.game_date || b.created_at || 0).getTime();
+          return aTime - bTime;
+        });
+
+        const firstTwoIds = sortedGames.slice(0, 2).map((g) => g.id);
+        const laterGameIds = sortedGames.slice(2).map((g) => g.id);
+
+        const playerQuery = supabase
+          .from("players")
+          .select("id, name, number, position, active")
+          .order("number", { ascending: true, nullsFirst: false });
+
+        const eventQuery =
+          firstTwoIds.length > 0
+            ? supabase
+                .from("events")
+                .select("id, game_id, player_id, event_type, is_undone")
+                .in("game_id", firstTwoIds)
+            : Promise.resolve({ data: [], error: null } as any);
+
+        const gamePlayersQuery =
+          firstTwoIds.length > 0
+            ? supabase
+                .from("game_players")
+                .select("player_id, game_id")
+                .in("game_id", firstTwoIds)
+            : Promise.resolve({ data: [], error: null } as any);
+
+        const playerGameStatsQuery =
+          laterGameIds.length > 0
+            ? supabase
+                .from("player_game_stats")
+                .select("player_id, game_id, pts, reb, ast, stl, blk")
+                .in("game_id", laterGameIds)
+            : Promise.resolve({ data: [], error: null } as any);
+
+        const [
+          { data: playerData, error: playerError },
+          { data: eventData, error: eventError },
+          { data: gpData, error: gpError },
+          { data: pgsData, error: pgsError },
+        ] = await Promise.all([
+          playerQuery,
+          eventQuery as any,
+          gamePlayersQuery as any,
+          playerGameStatsQuery as any,
+        ]);
 
         if (playerError) throw playerError;
         if (eventError) throw eventError;
         if (gpError) throw gpError;
+        if (pgsError) throw pgsError;
 
         setPlayers((playerData || []) as PlayerRow[]);
+        setFirstTwoGameIds(firstTwoIds);
         setEvents((eventData || []) as EventRow[]);
         setGamePlayers((gpData || []) as GamePlayerRow[]);
+        setPlayerGameStats((pgsData || []) as PlayerGameStatRow[]);
       } catch (err: any) {
         console.error("PlayersPage load error:", err);
         setError(err?.message || "載入球員資料失敗");
@@ -114,9 +181,18 @@ export default function PlayersPage() {
       return playedGameSetMap.get(playerId)!;
     };
 
+    const ensureStat = (playerId: string) => {
+      if (!map.has(playerId)) {
+        map.set(playerId, emptyPreviewStat());
+      }
+      return map.get(playerId)!;
+    };
+
+    // 前兩場：沿用舊邏輯，用 game_players + events
     for (const row of gamePlayers) {
       if (!row.player_id || !row.game_id) continue;
       ensurePlayedSet(row.player_id).add(row.game_id);
+      ensureStat(row.player_id);
     }
 
     for (const ev of events) {
@@ -125,11 +201,7 @@ export default function PlayersPage() {
 
       ensurePlayedSet(ev.player_id).add(ev.game_id);
 
-      if (!map.has(ev.player_id)) {
-        map.set(ev.player_id, emptyPreviewStat());
-      }
-
-      const stat = map.get(ev.player_id)!;
+      const stat = ensureStat(ev.player_id);
 
       switch (ev.event_type) {
         case "fg2_made":
@@ -158,15 +230,26 @@ export default function PlayersPage() {
       }
     }
 
+    // 後面場次：改讀 player_game_stats
+    for (const row of playerGameStats) {
+      if (!row.player_id || !row.game_id) continue;
+
+      ensurePlayedSet(row.player_id).add(row.game_id);
+
+      const stat = ensureStat(row.player_id);
+      stat.pts += toSafeNumber(row.pts);
+      stat.reb += toSafeNumber(row.reb);
+      stat.ast += toSafeNumber(row.ast);
+      stat.stl += toSafeNumber(row.stl);
+      stat.blk += toSafeNumber(row.blk);
+    }
+
     for (const [playerId, gameSet] of playedGameSetMap.entries()) {
-      if (!map.has(playerId)) {
-        map.set(playerId, emptyPreviewStat());
-      }
-      map.get(playerId)!.gp = gameSet.size;
+      ensureStat(playerId).gp = gameSet.size;
     }
 
     return map;
-  }, [players, events, gamePlayers]);
+  }, [players, events, gamePlayers, playerGameStats]);
 
   return (
     <main
@@ -208,7 +291,7 @@ export default function PlayersPage() {
             </div>
             <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>球員列表</h1>
             <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 600 }}>
-              預覽每位球員本季場均數據
+              前兩場沿用 events，後續場次改讀 player_game_stats
             </div>
           </div>
 
@@ -244,6 +327,18 @@ export default function PlayersPage() {
             }}
           >
             錯誤：{error}
+          </div>
+        ) : null}
+
+        {!loading && firstTwoGameIds.length > 0 ? (
+          <div
+            style={{
+              fontSize: 13,
+              color: "rgba(255,255,255,0.55)",
+              fontWeight: 700,
+            }}
+          >
+            前兩場比賽維持舊邏輯，其餘場次使用 player_game_stats
           </div>
         ) : null}
 
