@@ -64,6 +64,7 @@ type StatLine = {
   blk: number;
   tov: number;
   pf: number;
+  plusMinus: number;
 };
 
 type PlayerShiftRow = {
@@ -75,8 +76,6 @@ type PlayerShiftRow = {
   in_seconds_left: number;
   out_seconds_left: number | null;
 };
-
-
 
 const REGULAR_SECONDS = 600;
 const OT_SECONDS = 300;
@@ -97,6 +96,7 @@ function emptyStat(): StatLine {
     blk: 0,
     tov: 0,
     pf: 0,
+    plusMinus: 0,
   };
 }
 
@@ -165,6 +165,14 @@ function getPoints(eventType: string) {
   return 0;
 }
 
+function isScoringEvent(eventType: string) {
+  return (
+    eventType === "fg2_made" ||
+    eventType === "fg3_made" ||
+    eventType === "ft_made"
+  );
+}
+
 function getQuarterLabel(quarter: number) {
   if (quarter <= 4) return `Q${quarter}`;
   return `OT${quarter - 4}`;
@@ -210,6 +218,124 @@ function actionBtnClass(tone: "score" | "miss" | "def" | "warn" | "ghost") {
   return `${base} border border-white/10 bg-white/10 hover:bg-white/15`;
 }
 
+function getTimestampMs(value?: string | null) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function sortEventsStable(events: EventRow[]) {
+  return [...events].sort((a, b) => {
+    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
+
+    const timeDiff = getTimestampMs(a.created_at) - getTimestampMs(b.created_at);
+    if (timeDiff !== 0) return timeDiff;
+
+    const getPriority = (eventType: string) => {
+      if (eventType === "sub_out") return 0;
+      if (eventType === "sub_in") return 1;
+      return 2;
+    };
+
+    const priorityDiff = getPriority(a.event_type) - getPriority(b.event_type);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function getStarterIdsFallback(params: {
+  gamePlayers: GamePlayerRow[];
+  validEvents: EventRow[];
+}) {
+  const { gamePlayers, validEvents } = params;
+
+  const starterFromDb = gamePlayers
+    .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
+    .map((gp) => gp.player_id)
+    .slice(0, 5);
+
+  if (starterFromDb.length > 0) return starterFromDb;
+
+  const q1TeamAEvents = sortEventsStable(
+    validEvents.filter(
+      (e) => e.team_side === "teamA" && e.quarter === 1 && !!e.player_id
+    )
+  );
+
+  const subInIds: string[] = [];
+  for (const e of q1TeamAEvents) {
+    if (
+      e.event_type === "sub_in" &&
+      e.player_id &&
+      !subInIds.includes(e.player_id)
+    ) {
+      subInIds.push(e.player_id);
+    }
+    if (subInIds.length >= 5) break;
+  }
+
+  if (subInIds.length > 0) return subInIds.slice(0, 5);
+
+  const seenIds: string[] = [];
+  for (const e of q1TeamAEvents) {
+    if (e.player_id && !seenIds.includes(e.player_id)) {
+      seenIds.push(e.player_id);
+    }
+    if (seenIds.length >= 5) break;
+  }
+
+  return seenIds.slice(0, 5);
+}
+
+function computePlusMinusMap(params: {
+  teamAIds: string[];
+  starterIds: string[];
+  validEvents: EventRow[];
+}) {
+  const { teamAIds, starterIds, validEvents } = params;
+
+  const teamAIdSet = new Set(teamAIds);
+  const plusMinusMap: Record<string, number> = {};
+
+  for (const id of teamAIds) {
+    plusMinusMap[id] = 0;
+  }
+
+  const lineup = new Set(starterIds.filter((id) => teamAIdSet.has(id)));
+  const sorted = sortEventsStable(validEvents);
+
+  for (const e of sorted) {
+    if (isScoringEvent(e.event_type)) {
+      const pts = getPoints(e.event_type);
+
+      if (pts > 0) {
+        if (e.team_side === "teamA") {
+          for (const playerId of lineup) {
+            plusMinusMap[playerId] = (plusMinusMap[playerId] ?? 0) + pts;
+          }
+        } else if (e.team_side === "teamB") {
+          for (const playerId of lineup) {
+            plusMinusMap[playerId] = (plusMinusMap[playerId] ?? 0) - pts;
+          }
+        }
+      }
+    }
+
+    if (e.team_side !== "teamA") continue;
+    if (!e.player_id) continue;
+    if (!teamAIdSet.has(e.player_id)) continue;
+
+    if (e.event_type === "sub_out") {
+      lineup.delete(e.player_id);
+    } else if (e.event_type === "sub_in") {
+      lineup.add(e.player_id);
+    }
+  }
+
+  return plusMinusMap;
+}
+
 export default function LiveGamePage() {
   const params = useParams();
   const gameId = Array.isArray(params?.id) ? params.id[0] : params?.id ?? "";
@@ -245,6 +371,7 @@ export default function LiveGamePage() {
   const clockReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gamePlayersReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playerShiftsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function inCooldown(key: string, ms: number) {
     const now = Date.now();
@@ -287,21 +414,21 @@ export default function LiveGamePage() {
   }
 
   async function loadPlayerShifts(targetGameId: string) {
-  const { data, error } = await supabase
-    .from("player_shifts")
-    .select(
-      "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
-    )
-    .eq("game_id", targetGameId)
-    .order("quarter", { ascending: true });
+    const { data, error } = await supabase
+      .from("player_shifts")
+      .select(
+        "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
+      )
+      .eq("game_id", targetGameId)
+      .order("quarter", { ascending: true });
 
-  if (error) {
-    setError((prev) => prev || `讀取上場時間失敗：${error.message}`);
-    return;
+    if (error) {
+      setError((prev) => prev || `讀取上場時間失敗：${error.message}`);
+      return;
+    }
+
+    setPlayerShifts((data ?? []) as PlayerShiftRow[]);
   }
-
-  setPlayerShifts((data ?? []) as PlayerShiftRow[]);
-}
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -351,7 +478,7 @@ export default function LiveGamePage() {
       return;
     }
 
-    setEvents(data ?? []);
+    setEvents((data ?? []) as EventRow[]);
   }
 
   async function loadClock(targetGameId: string) {
@@ -412,7 +539,9 @@ export default function LiveGamePage() {
       return;
     }
 
-    const existingIds = new Set((existing ?? []).map((row: { player_id: string }) => row.player_id));
+    const existingIds = new Set(
+      (existing ?? []).map((row: { player_id: string }) => row.player_id)
+    );
     const missingIds = starterPlayerIds.filter((id) => !existingIds.has(id));
 
     if (!missingIds.length) return;
@@ -443,13 +572,13 @@ export default function LiveGamePage() {
     const g = await loadCurrentGame();
 
     if (g) {
-  await Promise.all([
-    loadEvents(g.id),
-    loadClock(g.id),
-    loadGamePlayers(g.id),
-    loadPlayerShifts(g.id),
-  ]);
-}
+      await Promise.all([
+        loadEvents(g.id),
+        loadClock(g.id),
+        loadGamePlayers(g.id),
+        loadPlayerShifts(g.id),
+      ]);
+    }
 
     setLoading(false);
   }
@@ -525,6 +654,18 @@ export default function LiveGamePage() {
           scheduleReload(gamePlayersReloadTimerRef, () => loadGamePlayers(gameId), 80);
         }
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "player_shifts",
+          filter: `game_id=eq.${gameId}`,
+        },
+        async () => {
+          scheduleReload(playerShiftsReloadTimerRef, () => loadPlayerShifts(gameId), 80);
+        }
+      )
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await channel.track({
@@ -540,6 +681,7 @@ export default function LiveGamePage() {
       if (clockReloadTimerRef.current) clearTimeout(clockReloadTimerRef.current);
       if (gameReloadTimerRef.current) clearTimeout(gameReloadTimerRef.current);
       if (gamePlayersReloadTimerRef.current) clearTimeout(gamePlayersReloadTimerRef.current);
+      if (playerShiftsReloadTimerRef.current) clearTimeout(playerShiftsReloadTimerRef.current);
       supabase.removeChannel(channel);
     };
   }, [gameId]);
@@ -595,105 +737,191 @@ export default function LiveGamePage() {
     }
   }
 
-  async function syncAggregateStats(sourceEvents?: EventRow[]) {
-  if (!game) return;
-  if (!gamePlayers.length) return;
-  if (syncingStatsRef.current) return;
+  const validEvents = useMemo(() => {
+    return sortEventsStable(events.filter((e) => !e.is_undone));
+  }, [events]);
 
-  syncingStatsRef.current = true;
+  const teamScore = useMemo(() => {
+    let scoreA = 0;
+    let scoreB = 0;
 
-  try {
-    const baseEvents = sourceEvents ?? events;
-    const valid = baseEvents.filter((e) => !e.is_undone);
+    for (const e of validEvents) {
+      const pts = getPoints(e.event_type);
+      if (e.team_side === "teamA") scoreA += pts;
+      if (e.team_side === "teamB") scoreB += pts;
+    }
 
-    const teamAIds = gamePlayers
+    return { scoreA, scoreB };
+  }, [validEvents]);
+
+  const teamAPlayerIds = useMemo(() => {
+    return gamePlayers
       .filter((gp) => gp.team_side === "teamA")
       .map((gp) => gp.player_id);
+  }, [gamePlayers]);
 
-    const playerStatMap = new Map<string, StatLine>();
+  const teamAPlayers = useMemo(() => {
+    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
+  }, [players, teamAPlayerIds]);
 
-    for (const playerId of teamAIds) {
-      playerStatMap.set(playerId, emptyStat());
-    }
-
-    const teamStat = emptyStat();
-
-    for (const e of valid) {
-      if (e.team_side !== "teamA") continue;
-
-      applyEventToStat(teamStat, e.event_type);
-
-      if (!e.player_id) continue;
-      if (!playerStatMap.has(e.player_id)) continue;
-
-      const stat = playerStatMap.get(e.player_id)!;
-      applyEventToStat(stat, e.event_type);
-    }
-
-    const playerRows = teamAIds.map((playerId) => {
-      const stat = playerStatMap.get(playerId) ?? emptyStat();
-
-      return {
-        game_id: game.id,
-        player_id: playerId,
-        gp: stat.gp,
-        pts: stat.pts,
-        fg2m: stat.fg2m,
-        fg2a: stat.fg2a,
-        fg3m: stat.fg3m,
-        fg3a: stat.fg3a,
-        ftm: stat.ftm,
-        fta: stat.fta,
-        reb: stat.reb,
-        ast: stat.ast,
-        stl: stat.stl,
-        blk: stat.blk,
-        tov: stat.tov,
-        pf: stat.pf,
-      };
+  const starterIds = useMemo(() => {
+    return getStarterIdsFallback({
+      gamePlayers,
+      validEvents,
     });
+  }, [gamePlayers, validEvents]);
 
-    const teamRow = {
-      game_id: game.id,
-      team_side: "teamA",
-      pts: teamStat.pts,
-      fg2m: teamStat.fg2m,
-      fg2a: teamStat.fg2a,
-      fg3m: teamStat.fg3m,
-      fg3a: teamStat.fg3a,
-      ftm: teamStat.ftm,
-      fta: teamStat.fta,
-      reb: teamStat.reb,
-      ast: teamStat.ast,
-      stl: teamStat.stl,
-      blk: teamStat.blk,
-      tov: teamStat.tov,
-      pf: teamStat.pf,
-    };
+  const currentOnCourtIds = useMemo(() => {
+    const lineup = new Set<string>(starterIds.slice(0, 5));
+    const sortedEvents = sortEventsStable(validEvents);
 
-    if (playerRows.length > 0) {
-      const { error: playerStatError } = await supabase
-        .from("player_game_stats")
-        .upsert(playerRows, { onConflict: "game_id,player_id" });
+    for (const e of sortedEvents) {
+      if (e.team_side !== "teamA") continue;
+      if (!e.player_id) continue;
 
-      if (playerStatError) {
-        setError(`同步球員數據失敗：${playerStatError.message}`);
-        return;
+      if (e.event_type === "sub_out") {
+        lineup.delete(e.player_id);
+        continue;
+      }
+
+      if (e.event_type === "sub_in") {
+        if (lineup.size < 5) {
+          lineup.add(e.player_id);
+        }
       }
     }
 
-    const { error: teamStatError } = await supabase
-      .from("team_game_stats")
-      .upsert(teamRow, { onConflict: "game_id,team_side" });
+    return Array.from(lineup).slice(0, 5);
+  }, [starterIds, validEvents]);
 
-    if (teamStatError) {
-      setError(`同步團隊數據失敗：${teamStatError.message}`);
-      return;
+  async function syncAggregateStats(sourceEvents?: EventRow[]) {
+    if (!game) return;
+    if (!gamePlayers.length) return;
+    if (syncingStatsRef.current) return;
+
+    syncingStatsRef.current = true;
+
+    try {
+      const baseEvents = sourceEvents ?? events;
+      const valid = sortEventsStable(baseEvents.filter((e) => !e.is_undone));
+
+      const teamAIds = gamePlayers
+        .filter((gp) => gp.team_side === "teamA")
+        .map((gp) => gp.player_id);
+
+      const starters = getStarterIdsFallback({
+        gamePlayers,
+        validEvents: valid,
+      });
+
+      const plusMinusMap = computePlusMinusMap({
+        teamAIds,
+        starterIds: starters,
+        validEvents: valid,
+      });
+
+      const playerStatMap = new Map<string, StatLine>();
+
+      for (const playerId of teamAIds) {
+        playerStatMap.set(playerId, emptyStat());
+      }
+
+      const teamStat = emptyStat();
+
+      for (const e of valid) {
+        if (e.team_side !== "teamA") continue;
+
+        applyEventToStat(teamStat, e.event_type);
+
+        if (!e.player_id) continue;
+        if (!playerStatMap.has(e.player_id)) continue;
+
+        const stat = playerStatMap.get(e.player_id)!;
+        applyEventToStat(stat, e.event_type);
+      }
+
+      const playerRows = teamAIds.map((playerId) => {
+        const stat = playerStatMap.get(playerId) ?? emptyStat();
+        const appeared =
+          stat.pts > 0 ||
+          stat.fg2m > 0 ||
+          stat.fg2a > 0 ||
+          stat.fg3m > 0 ||
+          stat.fg3a > 0 ||
+          stat.ftm > 0 ||
+          stat.fta > 0 ||
+          stat.reb > 0 ||
+          stat.ast > 0 ||
+          stat.stl > 0 ||
+          stat.blk > 0 ||
+          stat.tov > 0 ||
+          stat.pf > 0 ||
+          plusMinusMap[playerId] !== 0 ||
+          playerShifts.some((s) => s.player_id === playerId);
+
+        return {
+          game_id: game.id,
+          player_id: playerId,
+          team_side: "teamA",
+          gp: appeared ? 1 : 0,
+          pts: stat.pts,
+          fg2m: stat.fg2m,
+          fg2a: stat.fg2a,
+          fg3m: stat.fg3m,
+          fg3a: stat.fg3a,
+          ftm: stat.ftm,
+          fta: stat.fta,
+          reb: stat.reb,
+          ast: stat.ast,
+          stl: stat.stl,
+          blk: stat.blk,
+          tov: stat.tov,
+          pf: stat.pf,
+          plus_minus: plusMinusMap[playerId] ?? 0,
+        };
+      });
+
+      const teamRow = {
+        game_id: game.id,
+        team_side: "teamA",
+        pts: teamStat.pts,
+        fg2m: teamStat.fg2m,
+        fg2a: teamStat.fg2a,
+        fg3m: teamStat.fg3m,
+        fg3a: teamStat.fg3a,
+        ftm: teamStat.ftm,
+        fta: teamStat.fta,
+        reb: teamStat.reb,
+        ast: teamStat.ast,
+        stl: teamStat.stl,
+        blk: teamStat.blk,
+        tov: teamStat.tov,
+        pf: teamStat.pf,
+      };
+
+      if (playerRows.length > 0) {
+        const { error: playerStatError } = await supabase
+          .from("player_game_stats")
+          .upsert(playerRows, { onConflict: "game_id,player_id" });
+
+        if (playerStatError) {
+          setError(`同步球員數據失敗：${playerStatError.message}`);
+          return;
+        }
+      }
+
+      const { error: teamStatError } = await supabase
+        .from("team_game_stats")
+        .upsert(teamRow, { onConflict: "game_id,team_side" });
+
+      if (teamStatError) {
+        setError(`同步團隊數據失敗：${teamStatError.message}`);
+        return;
+      }
+    } finally {
+      syncingStatsRef.current = false;
     }
-  } finally {
-    syncingStatsRef.current = false;
   }
-}
 
   async function startClock() {
     if (!clock || game?.status === "finished") return;
@@ -736,86 +964,9 @@ export default function LiveGamePage() {
     await persistClock(next);
   }
 
-  const validEvents = useMemo(() => {
-    return events.filter((e) => !e.is_undone);
-  }, [events]);
-
-  const teamScore = useMemo(() => {
-    let scoreA = 0;
-    let scoreB = 0;
-
-    for (const e of validEvents) {
-      const pts = getPoints(e.event_type);
-      if (e.team_side === "teamA") scoreA += pts;
-      if (e.team_side === "teamB") scoreB += pts;
-    }
-
-    return { scoreA, scoreB };
-  }, [validEvents]);
-
-  const teamAPlayerIds = useMemo(() => {
-    return gamePlayers
-      .filter((gp) => gp.team_side === "teamA")
-      .map((gp) => gp.player_id);
-  }, [gamePlayers]);
-
-  const teamAPlayers = useMemo(() => {
-    return sortByNumber(players.filter((p) => teamAPlayerIds.includes(p.id)));
-  }, [players, teamAPlayerIds]);
-
-  const starterIds = useMemo(() => {
-    const starterFromDb = gamePlayers
-      .filter((gp) => gp.team_side === "teamA" && gp.is_starter)
-      .map((gp) => gp.player_id);
-
-    return starterFromDb.slice(0, 5);
-  }, [gamePlayers]);
-
-  const currentOnCourtIds = useMemo(() => {
-  const lineup = new Set<string>(starterIds.slice(0, 5));
-
-  const sortedEvents = [...validEvents].sort((a, b) => {
-    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
-
-    const timeDiff =
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-    if (timeDiff !== 0) return timeDiff;
-
-    const getPriority = (eventType: string) => {
-      if (eventType === "sub_out") return 0;
-      if (eventType === "sub_in") return 1;
-      return 2;
-    };
-
-    const priorityDiff = getPriority(a.event_type) - getPriority(b.event_type);
-    if (priorityDiff !== 0) return priorityDiff;
-
-    return a.id.localeCompare(b.id);
-  });
-
-  for (const e of sortedEvents) {
-    if (e.team_side !== "teamA") continue;
-    if (!e.player_id) continue;
-
-    if (e.event_type === "sub_out") {
-      lineup.delete(e.player_id);
-      continue;
-    }
-
-    if (e.event_type === "sub_in") {
-      if (lineup.size < 5) {
-        lineup.add(e.player_id);
-      }
-    }
-  }
-
-  return Array.from(lineup).slice(0, 5);
-}, [starterIds, validEvents]);
-
   async function advanceQuarter(fromClock: ClockRow, onCourtIds: string[]) {
     if (!game) return false;
 
-    // 1. 關閉本節仍在場上的 shift
     if (onCourtIds.length > 0) {
       const { error: closeShiftError } = await supabase
         .from("player_shifts")
@@ -835,7 +986,6 @@ export default function LiveGamePage() {
     const nextQuarterNum = fromClock.quarter + 1;
     const nextQuarterSeconds = getQuarterSeconds(nextQuarterNum);
 
-    // 2. 為下一節仍在場上的球員建立新 shift
     if (onCourtIds.length > 0) {
       const { data: existingOpen, error: existingOpenError } = await supabase
         .from("player_shifts")
@@ -993,7 +1143,7 @@ export default function LiveGamePage() {
     } = {
       game_id: game.id,
       quarter: clock.quarter,
-      event_type:eventType,
+      event_type: eventType,
       team_side: teamSide,
     };
 
@@ -1025,7 +1175,7 @@ export default function LiveGamePage() {
     if (data) {
       setEvents((prev) => {
         if (prev.some((e) => e.id === data.id)) return prev;
-        return [...prev, data];
+        return sortEventsStable([...prev, data]);
       });
     }
   }
@@ -1111,7 +1261,9 @@ export default function LiveGamePage() {
   }, [clock, game, teamScore, currentOnCourtIds]);
 
   const onCourtPlayers = useMemo(() => {
-    return sortByNumber(teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id))).slice(0, 5);
+    return sortByNumber(
+      teamAPlayers.filter((p) => currentOnCourtIds.includes(p.id))
+    ).slice(0, 5);
   }, [teamAPlayers, currentOnCourtIds]);
 
   const benchPlayers = useMemo(() => {
@@ -1158,7 +1310,7 @@ export default function LiveGamePage() {
     if (!game || !gamePlayers.length) return;
     void syncAggregateStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, game?.id, gamePlayers]);
+  }, [events, game?.id, gamePlayers, playerShifts]);
 
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId) ?? null,
@@ -1327,7 +1479,7 @@ export default function LiveGamePage() {
         setEvents((prev) => {
           const existingIds = new Set(prev.map((e) => e.id));
           const nextItems = data.filter((e) => !existingIds.has(e.id));
-          return [...prev, ...nextItems];
+          return sortEventsStable([...prev, ...nextItems]);
         });
       }
     } finally {
