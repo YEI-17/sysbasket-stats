@@ -355,92 +355,213 @@ function getStarterIdsFallback(params: {
   return firstSeenIds.slice(0, 5);
 }
 
+function getTimestampMs(value?: string | null) {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
 function computeMinutesFromEvents(params: {
   playerIds: string[];
   events: EventRow[];
   starterIds: string[];
   clock: ClockRow | null;
   displaySeconds: number;
+  game: GameRow | null;
 }) {
-  const { playerIds, events, starterIds, clock, displaySeconds } = params;
+  const { playerIds, events, starterIds, clock, displaySeconds, game } = params;
 
   const playerIdSet = new Set(playerIds);
   const totals: Record<string, number> = {};
-  const openIntervals: Record<
-    string,
-    { quarter: number; inSecondsLeft: number } | null
-  > = {};
 
   for (const id of playerIds) {
     totals[id] = 0;
-    openIntervals[id] = null;
   }
 
+  if (playerIds.length === 0) return totals;
+
   const maxQuarter = getMaxQuarterFromData(events, clock);
+  const allEventsSorted = [...events].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+
+  const firstEventMsOverall = getTimestampMs(allEventsSorted[0]?.created_at);
+  const lastEventMsOverall = getTimestampMs(
+    allEventsSorted[allEventsSorted.length - 1]?.created_at
+  );
+  const endedAtMs = getTimestampMs(game?.ended_at);
+  const clockUpdatedAtMs = getTimestampMs(clock?.updated_at);
+
+  const firstEventMsByQuarter: Record<number, number | null> = {};
+  const lastEventMsByQuarter: Record<number, number | null> = {};
+
+  for (let q = 1; q <= maxQuarter; q += 1) {
+    const quarterEvents = allEventsSorted.filter((e) => e.quarter === q);
+    firstEventMsByQuarter[q] = getTimestampMs(quarterEvents[0]?.created_at);
+    lastEventMsByQuarter[q] = getTimestampMs(
+      quarterEvents[quarterEvents.length - 1]?.created_at
+    );
+  }
+
+  const quarterStartMs: Record<number, number> = {};
+  const quarterEndMs: Record<number, number> = {};
+
+  let previousEndMs =
+    firstEventMsByQuarter[1] ??
+    firstEventMsOverall ??
+    endedAtMs ??
+    clockUpdatedAtMs ??
+    Date.now();
+
+  for (let q = 1; q <= maxQuarter; q += 1) {
+    const officialSeconds = getQuarterSeconds(q);
+    const fallbackDurationMs = officialSeconds * 1000;
+
+    const startMs =
+      firstEventMsByQuarter[q] ??
+      previousEndMs ??
+      firstEventMsOverall ??
+      endedAtMs ??
+      clockUpdatedAtMs ??
+      Date.now();
+
+    let endMs =
+      firstEventMsByQuarter[q + 1] ??
+      null;
+
+    if (endMs == null) {
+      if (q === maxQuarter) {
+        if (game?.status === "finished") {
+          endMs =
+            endedAtMs ??
+            lastEventMsByQuarter[q] ??
+            lastEventMsOverall ??
+            startMs + fallbackDurationMs;
+        } else if (clock && clock.quarter === q) {
+          const playedSeconds = officialSeconds - clamp(displaySeconds, 0, officialSeconds);
+          endMs =
+            clockUpdatedAtMs != null
+              ? clockUpdatedAtMs - playedSeconds * 1000
+              : (lastEventMsByQuarter[q] ?? startMs + playedSeconds * 1000);
+          if (endMs < startMs) {
+            endMs = lastEventMsByQuarter[q] ?? startMs + playedSeconds * 1000;
+          }
+        } else {
+          endMs =
+            lastEventMsByQuarter[q] ??
+            lastEventMsOverall ??
+            startMs + fallbackDurationMs;
+        }
+      } else {
+        endMs =
+          lastEventMsByQuarter[q] ??
+          startMs + fallbackDurationMs;
+      }
+    }
+
+    if (endMs <= startMs) {
+      endMs = startMs + fallbackDurationMs;
+    }
+
+    quarterStartMs[q] = startMs;
+    quarterEndMs[q] = endMs;
+    previousEndMs = endMs;
+  }
 
   for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
-    const quarterMax = getQuarterSeconds(quarter);
-    const quarterEvents = events.filter(
-      (e) => e.team_side === "teamA" && e.quarter === quarter && !!e.player_id
-    );
+    const officialSeconds = getQuarterSeconds(quarter);
+    const startMs = quarterStartMs[quarter];
+    const endMs = quarterEndMs[quarter];
+    const totalQuarterMs = Math.max(1, endMs - startMs);
 
+    const quarterEvents = allEventsSorted.filter((e) => e.quarter === quarter);
+
+    const firstQuarterEventIndex = events.findIndex((e) => e.quarter === quarter);
     const initialLineup =
       quarter === 1
         ? new Set(starterIds)
         : getLineupFromEvents({
             starterIds,
             events,
-            throughEventIndex: events.findIndex((e) => e.quarter === quarter) - 1,
+            throughEventIndex:
+              firstQuarterEventIndex >= 0 ? firstQuarterEventIndex - 1 : events.length - 1,
           });
 
-    for (const playerId of Array.from(initialLineup)) {
-      if (!playerIdSet.has(playerId)) continue;
-      openIntervals[playerId] = {
-        quarter,
-        inSecondsLeft: quarterMax,
-      };
+    const lineup = new Set<string>(
+      Array.from(initialLineup).filter((id) => playerIdSet.has(id))
+    );
+
+    if (quarterEvents.length === 0) {
+      const activeCount = lineup.size;
+      if (activeCount > 0) {
+        for (const playerId of Array.from(lineup)) {
+          totals[playerId] += officialSeconds;
+        }
+      }
+      continue;
+    }
+
+    let segmentStartMs = startMs;
+    const rawSecondsByPlayer: Record<string, number> = {};
+
+    for (const id of playerIds) {
+      rawSecondsByPlayer[id] = 0;
     }
 
     for (const e of quarterEvents) {
-      const playerId = e.player_id;
-      if (!playerId || !playerIdSet.has(playerId)) continue;
+      const eventMs = getTimestampMs(e.created_at);
+      if (eventMs == null) continue;
 
-      if (e.event_type !== "sub_in" && e.event_type !== "sub_out") continue;
+      const clampedEventMs = clamp(eventMs, startMs, endMs);
+      const segmentMs = Math.max(0, clampedEventMs - segmentStartMs);
 
-      const eventSec = (() => {
-        const raw = (e as EventRow & { clock_seconds_left?: number | null })
-          .clock_seconds_left;
-        if (typeof raw === "number") return clamp(raw, 0, quarterMax);
-        return null;
-      })();
-
-      if (e.event_type === "sub_out") {
-        const interval = openIntervals[playerId];
-        if (interval && interval.quarter === quarter) {
-          const outSec = eventSec ?? 0;
-          totals[playerId] += Math.max(0, interval.inSecondsLeft - outSec);
-          openIntervals[playerId] = null;
+      if (segmentMs > 0) {
+        const segmentSeconds = segmentMs / 1000;
+        for (const playerId of Array.from(lineup)) {
+          rawSecondsByPlayer[playerId] += segmentSeconds;
         }
       }
 
-      if (e.event_type === "sub_in") {
-        const inSec = eventSec ?? quarterMax;
-        openIntervals[playerId] = {
-          quarter,
-          inSecondsLeft: inSec,
-        };
+      if (e.team_side === "teamA" && e.player_id && playerIdSet.has(e.player_id)) {
+        if (e.event_type === "sub_out") {
+          lineup.delete(e.player_id);
+        } else if (e.event_type === "sub_in") {
+          lineup.add(e.player_id);
+        }
+      }
+
+      segmentStartMs = clampedEventMs;
+    }
+
+    const tailMs = Math.max(0, endMs - segmentStartMs);
+    if (tailMs > 0) {
+      const tailSeconds = tailMs / 1000;
+      for (const playerId of Array.from(lineup)) {
+        rawSecondsByPlayer[playerId] += tailSeconds;
       }
     }
 
-    const quarterEndSec =
-      clock && clock.quarter === quarter ? clamp(displaySeconds, 0, quarterMax) : 0;
+    const teamRawSeconds = Object.values(rawSecondsByPlayer).reduce(
+      (sum, value) => sum + value,
+      0
+    );
 
-    for (const playerId of playerIds) {
-      const interval = openIntervals[playerId];
-      if (!interval || interval.quarter !== quarter) continue;
+    const expectedTeamSeconds = officialSeconds * 5;
 
-      totals[playerId] += Math.max(0, interval.inSecondsLeft - quarterEndSec);
-      openIntervals[playerId] = null;
+    if (teamRawSeconds > 0) {
+      const scale = expectedTeamSeconds / teamRawSeconds;
+      for (const playerId of playerIds) {
+        totals[playerId] += rawSecondsByPlayer[playerId] * scale;
+      }
+    } else {
+      const activeCount = initialLineup.size;
+      if (activeCount > 0) {
+        for (const playerId of Array.from(initialLineup)) {
+          if (playerIdSet.has(playerId)) {
+            totals[playerId] += officialSeconds;
+          }
+        }
+      }
     }
   }
 
@@ -866,8 +987,18 @@ export default function BoardPage() {
       starterIds,
       clock,
       displaySeconds,
+      game,
     });
-  }, [hasShiftData, teamAPlayers, playerShifts, clock, displaySeconds, validEvents, starterIds]);
+  }, [
+    hasShiftData,
+    teamAPlayers,
+    playerShifts,
+    clock,
+    displaySeconds,
+    validEvents,
+    starterIds,
+    game,
+  ]);
 
   const totalScore = useMemo(() => {
     let home = 0;
