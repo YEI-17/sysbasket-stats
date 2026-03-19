@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
-type RankCategory = "pts" | "reb" | "ast" | "stl" | "blk";
+type RankCategory = "pts" | "reb" | "ast" | "stl" | "blk" | "plus_minus";
 type RankMode = "avg" | "total";
 
 type PlayerRow = {
@@ -29,6 +29,15 @@ type EventRow = {
   event_type: string;
   is_undone?: boolean | null;
   team_side?: "A" | "B" | "teamA" | "teamB" | null;
+  quarter?: number | null;
+  created_at?: string | null;
+};
+
+type GamePlayerRow = {
+  game_id: string;
+  player_id: string;
+  team_side: "teamA" | "teamB";
+  is_starter: boolean;
 };
 
 type PlayerGameStatsRow = {
@@ -39,6 +48,7 @@ type PlayerGameStatsRow = {
   ast?: number | null;
   stl?: number | null;
   blk?: number | null;
+  plus_minus?: number | null;
 };
 
 type PlayerRank = {
@@ -56,6 +66,7 @@ type PlayerStat = {
   ast: number;
   stl: number;
   blk: number;
+  plus_minus: number;
 };
 
 type CategoryConfig = {
@@ -114,6 +125,15 @@ const categoryList: CategoryConfig[] = [
     unitTotal: "TOTAL BLK",
     accent: "#f59e0b",
   },
+  {
+    key: "plus_minus",
+    label: "正負值",
+    short: "+/-",
+    icon: "📈",
+    unitAvg: "AVG +/-",
+    unitTotal: "TOTAL +/-",
+    accent: "#22c55e",
+  },
 ];
 
 function emptyStat(): PlayerStat {
@@ -123,6 +143,7 @@ function emptyStat(): PlayerStat {
     ast: 0,
     stl: 0,
     blk: 0,
+    plus_minus: 0,
   };
 }
 
@@ -136,6 +157,28 @@ function normalizeStatus(status?: string | null) {
     return "live";
   }
   return s;
+}
+
+function normalizeTeamSide(
+  side?: string | null
+): "teamA" | "teamB" | null {
+  if (!side) return null;
+  if (side === "teamA" || side === "A") return "teamA";
+  if (side === "teamB" || side === "B") return "teamB";
+  return null;
+}
+
+function getPointsFromEvent(eventType: string) {
+  switch (eventType) {
+    case "fg2_made":
+      return 2;
+    case "fg3_made":
+      return 3;
+    case "ft_made":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function applyEventToStat(stat: PlayerStat, eventType: string) {
@@ -172,14 +215,37 @@ function medalLabel(index: number) {
   return "TOP 3";
 }
 
-function formatValue(value: number, mode: RankMode) {
-  return mode === "avg" ? value.toFixed(1) : String(value);
+function formatValue(value: number, mode: RankMode, category: RankCategory) {
+  if (mode === "avg") {
+    if (category === "plus_minus") {
+      return value > 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
+    }
+    return value.toFixed(1);
+  }
+
+  if (category === "plus_minus") {
+    const rounded = Math.round(value);
+    return rounded > 0 ? `+${rounded}` : String(rounded);
+  }
+
+  return String(Math.round(value));
 }
 
-function diffFromFirst(first: number, current: number, mode: RankMode) {
+function diffFromFirst(
+  first: number,
+  current: number,
+  mode: RankMode,
+  category: RankCategory
+) {
   const diff = first - current;
   if (diff <= 0) return "領先";
-  return mode === "avg" ? `-${diff.toFixed(1)}` : `-${diff}`;
+
+  if (category === "plus_minus") {
+    if (mode === "avg") return `-${diff.toFixed(1)}`;
+    return `-${Math.round(diff)}`;
+  }
+
+  return mode === "avg" ? `-${diff.toFixed(1)}` : `-${Math.round(diff)}`;
 }
 
 function rankGlow(index: number) {
@@ -211,19 +277,102 @@ function ensurePlayerMaps(
   }
 }
 
+function buildLegacyPlusMinus(
+  legacyGameIds: string[],
+  legacyEvents: EventRow[],
+  legacyGamePlayers: GamePlayerRow[],
+  totals: Map<string, PlayerStat>,
+  gamesPlayedByPlayer: Map<string, Set<string>>
+) {
+  const gamePlayerMap = new Map<string, GamePlayerRow[]>();
+  for (const row of legacyGamePlayers) {
+    const list = gamePlayerMap.get(row.game_id) ?? [];
+    list.push(row);
+    gamePlayerMap.set(row.game_id, list);
+  }
+
+  const eventMap = new Map<string, EventRow[]>();
+  for (const ev of legacyEvents) {
+    if (ev.is_undone) continue;
+    const list = eventMap.get(ev.game_id) ?? [];
+    list.push(ev);
+    eventMap.set(ev.game_id, list);
+  }
+
+  for (const gameId of legacyGameIds) {
+    const players = gamePlayerMap.get(gameId) ?? [];
+    const events = (eventMap.get(gameId) ?? []).slice().sort((a, b) => {
+      const qa = Number(a.quarter ?? 0);
+      const qb = Number(b.quarter ?? 0);
+      if (qa !== qb) return qa - qb;
+
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      if (ta !== tb) return ta - tb;
+
+      return a.id.localeCompare(b.id);
+    });
+
+    const currentOnCourt = new Set<string>();
+    for (const row of players) {
+      if (normalizeTeamSide(row.team_side) !== "teamA") continue;
+      if (row.is_starter) currentOnCourt.add(row.player_id);
+    }
+
+    for (const row of players) {
+      if (normalizeTeamSide(row.team_side) !== "teamA") continue;
+      ensurePlayerMaps(totals, gamesPlayedByPlayer, row.player_id);
+      gamesPlayedByPlayer.get(row.player_id)!.add(gameId);
+    }
+
+    for (const ev of events) {
+      const teamSide = normalizeTeamSide(ev.team_side);
+      const playerId = ev.player_id ?? null;
+
+      if (ev.event_type === "sub_in" && playerId && teamSide === "teamA") {
+        ensurePlayerMaps(totals, gamesPlayedByPlayer, playerId);
+        gamesPlayedByPlayer.get(playerId)!.add(gameId);
+        currentOnCourt.add(playerId);
+        continue;
+      }
+
+      if (ev.event_type === "sub_out" && playerId && teamSide === "teamA") {
+        ensurePlayerMaps(totals, gamesPlayedByPlayer, playerId);
+        gamesPlayedByPlayer.get(playerId)!.add(gameId);
+        currentOnCourt.delete(playerId);
+        continue;
+      }
+
+      const pts = getPointsFromEvent(ev.event_type);
+      if (pts > 0 && teamSide) {
+        for (const onCourtPlayerId of currentOnCourt) {
+          ensurePlayerMaps(totals, gamesPlayedByPlayer, onCourtPlayerId);
+          gamesPlayedByPlayer.get(onCourtPlayerId)!.add(gameId);
+
+          const stat = totals.get(onCourtPlayerId)!;
+          stat.plus_minus += teamSide === "teamA" ? pts : -pts;
+        }
+      }
+    }
+  }
+}
+
 export default function RankingsPage() {
   const [mode, setMode] = useState<RankMode>("avg");
   const [activeCategory, setActiveCategory] = useState<RankCategory>("pts");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [rankData, setRankData] = useState<Record<RankMode, Record<RankCategory, PlayerRank[]>>>({
+  const [rankData, setRankData] = useState<
+    Record<RankMode, Record<RankCategory, PlayerRank[]>>
+  >({
     avg: {
       pts: [],
       reb: [],
       ast: [],
       stl: [],
       blk: [],
+      plus_minus: [],
     },
     total: {
       pts: [],
@@ -231,6 +380,7 @@ export default function RankingsPage() {
       ast: [],
       stl: [],
       blk: [],
+      plus_minus: [],
     },
   });
 
@@ -261,8 +411,22 @@ export default function RankingsPage() {
           if (!alive) return;
           setGameCount(0);
           setRankData({
-            avg: { pts: [], reb: [], ast: [], stl: [], blk: [] },
-            total: { pts: [], reb: [], ast: [], stl: [], blk: [] },
+            avg: {
+              pts: [],
+              reb: [],
+              ast: [],
+              stl: [],
+              blk: [],
+              plus_minus: [],
+            },
+            total: {
+              pts: [],
+              reb: [],
+              ast: [],
+              stl: [],
+              blk: [],
+              plus_minus: [],
+            },
           });
           setLoading(false);
           return;
@@ -274,33 +438,47 @@ export default function RankingsPage() {
         const [
           { data: playersData, error: playersError },
           legacyEventsResult,
+          legacyGamePlayersResult,
           modernStatsResult,
         ] = await Promise.all([
           supabase
             .from("players")
             .select("id, name, number, position, active")
             .order("number", { ascending: true }),
+
           legacyGameIds.length > 0
             ? supabase
                 .from("events")
-                .select("id, game_id, player_id, event_type, is_undone, team_side")
+                .select(
+                  "id, game_id, player_id, event_type, is_undone, team_side, quarter, created_at"
+                )
                 .in("game_id", legacyGameIds)
                 .order("created_at", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
+
+          legacyGameIds.length > 0
+            ? supabase
+                .from("game_players")
+                .select("game_id, player_id, team_side, is_starter")
+                .in("game_id", legacyGameIds)
+            : Promise.resolve({ data: [], error: null }),
+
           modernGameIds.length > 0
             ? supabase
                 .from("player_game_stats")
-                .select("game_id, player_id, pts, reb, ast, stl, blk")
+                .select("game_id, player_id, pts, reb, ast, stl, blk, plus_minus")
                 .in("game_id", modernGameIds)
             : Promise.resolve({ data: [], error: null }),
         ]);
 
         if (playersError) throw playersError;
         if (legacyEventsResult.error) throw legacyEventsResult.error;
+        if (legacyGamePlayersResult.error) throw legacyGamePlayersResult.error;
         if (modernStatsResult.error) throw modernStatsResult.error;
 
         const players = (playersData ?? []) as PlayerRow[];
         const legacyEvents = (legacyEventsResult.data ?? []) as EventRow[];
+        const legacyGamePlayers = (legacyGamePlayersResult.data ?? []) as GamePlayerRow[];
         const modernStats = (modernStatsResult.data ?? []) as PlayerGameStatsRow[];
 
         const playerMap = new Map<string, PlayerRow>();
@@ -311,19 +489,27 @@ export default function RankingsPage() {
         const totals = new Map<string, PlayerStat>();
         const gamesPlayedByPlayer = new Map<string, Set<string>>();
 
-        // 前 2 場：用 events 計算
+        // 前 2 場：一般數據用 events 計算
         for (const ev of legacyEvents) {
           if (ev.is_undone) continue;
           if (!ev.player_id) continue;
 
           const playerId = ev.player_id;
           ensurePlayerMaps(totals, gamesPlayedByPlayer, playerId);
-
           gamesPlayedByPlayer.get(playerId)!.add(ev.game_id);
 
           const stat = totals.get(playerId)!;
           applyEventToStat(stat, ev.event_type);
         }
+
+        // 前 2 場：正負值用 events + game_players 計算
+        buildLegacyPlusMinus(
+          legacyGameIds,
+          legacyEvents,
+          legacyGamePlayers,
+          totals,
+          gamesPlayedByPlayer
+        );
 
         // 第 3 場之後：用 player_game_stats 計算
         for (const row of modernStats) {
@@ -340,6 +526,7 @@ export default function RankingsPage() {
           stat.ast += Number(row.ast ?? 0);
           stat.stl += Number(row.stl ?? 0);
           stat.blk += Number(row.blk ?? 0);
+          stat.plus_minus += Number(row.plus_minus ?? 0);
         }
 
         const totalRanks: Record<RankCategory, PlayerRank[]> = {
@@ -348,6 +535,7 @@ export default function RankingsPage() {
           ast: [],
           stl: [],
           blk: [],
+          plus_minus: [],
         };
 
         const avgRanks: Record<RankCategory, PlayerRank[]> = {
@@ -356,6 +544,7 @@ export default function RankingsPage() {
           ast: [],
           stl: [],
           blk: [],
+          plus_minus: [],
         };
 
         for (const [playerId, stat] of totals.entries()) {
@@ -378,12 +567,14 @@ export default function RankingsPage() {
           totalRanks.ast.push({ ...baseInfo, value: stat.ast });
           totalRanks.stl.push({ ...baseInfo, value: stat.stl });
           totalRanks.blk.push({ ...baseInfo, value: stat.blk });
+          totalRanks.plus_minus.push({ ...baseInfo, value: stat.plus_minus });
 
           avgRanks.pts.push({ ...baseInfo, value: stat.pts / gp });
           avgRanks.reb.push({ ...baseInfo, value: stat.reb / gp });
           avgRanks.ast.push({ ...baseInfo, value: stat.ast / gp });
           avgRanks.stl.push({ ...baseInfo, value: stat.stl / gp });
           avgRanks.blk.push({ ...baseInfo, value: stat.blk / gp });
+          avgRanks.plus_minus.push({ ...baseInfo, value: stat.plus_minus / gp });
         }
 
         const sortDesc = (a: PlayerRank, b: PlayerRank) => {
@@ -392,7 +583,14 @@ export default function RankingsPage() {
           return a.number - b.number;
         };
 
-        for (const key of ["pts", "reb", "ast", "stl", "blk"] as RankCategory[]) {
+        for (const key of [
+          "pts",
+          "reb",
+          "ast",
+          "stl",
+          "blk",
+          "plus_minus",
+        ] as RankCategory[]) {
           totalRanks[key].sort(sortDesc);
           avgRanks[key].sort(sortDesc);
         }
@@ -504,10 +702,11 @@ export default function RankingsPage() {
                   color: "rgba(255,255,255,0.72)",
                   fontSize: 14,
                   lineHeight: 1.7,
-                  maxWidth: 700,
+                  maxWidth: 760,
                 }}
               >
-                目前使用資料庫中已完成的 {gameCount} 場比賽數據，自動統計全隊五大數據前三名。
+                目前使用資料庫中已完成的 {gameCount} 場比賽數據，自動統計全隊六大數據前三名，
+                包含得分、籃板、助攻、抄截、阻攻與正負值。
               </p>
             </div>
 
@@ -865,7 +1064,7 @@ export default function RankingsPage() {
                           letterSpacing: -1,
                         }}
                       >
-                        {formatValue(player.value, mode)}
+                        {formatValue(player.value, mode, activeCategory)}
                       </div>
 
                       <div
@@ -904,7 +1103,12 @@ export default function RankingsPage() {
                       >
                         {index === 0
                           ? "目前榜首"
-                          : `與第1差距 ${diffFromFirst(firstValue, player.value, mode)}`}
+                          : `與第1差距 ${diffFromFirst(
+                              firstValue,
+                              player.value,
+                              mode,
+                              activeCategory
+                            )}`}
                       </div>
                     </div>
                   </div>
@@ -1021,7 +1225,7 @@ export default function RankingsPage() {
                         lineHeight: 1,
                       }}
                     >
-                      {top ? formatValue(top.value, mode) : "-"}
+                      {top ? formatValue(top.value, mode, cat.key) : "-"}
                     </div>
                   </div>
                 </button>
