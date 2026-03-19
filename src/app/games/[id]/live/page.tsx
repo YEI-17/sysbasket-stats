@@ -1180,11 +1180,14 @@ export default function LiveGamePage() {
     }
 
     if (data) {
-      setEvents((prev) => {
-        if (prev.some((e) => e.id === data.id)) return prev;
-        return sortEventsStable([...prev, data]);
-      });
-    }
+  const nextEvents = sortEventsStable([
+    ...events.filter((e) => e.id !== data.id),
+    data,
+  ]);
+
+  setEvents(nextEvents);
+  await syncAggregateStats(nextEvents);
+}
   }
 
   async function undoLastEvent() {
