@@ -64,6 +64,7 @@ type TeamGameSummaryRow = {
   tov: number;
   pf: number;
   result: "W" | "L";
+  updated_at?: string | null;
 };
 
 type OverviewStat = {
@@ -366,57 +367,107 @@ export default function TeamStatsPage() {
     }
 
     const safeTeamStats = ((teamStatsData ?? []) as TeamGameStatsRow[]).map(
-      (row): TeamGameSummaryRow => ({
-        game_id: row.game_id,
-        team_side: "teamA",
-        pts: row.pts ?? 0,
-        opp_pts: row.opp_pts ?? 0,
-        fg2m: row.fg2m ?? 0,
-        fg2a: row.fg2a ?? 0,
-        fg3m: row.fg3m ?? 0,
-        fg3a: row.fg3a ?? 0,
-        ftm: row.ftm ?? 0,
-        fta: row.fta ?? 0,
-        reb: row.reb ?? 0,
-        ast: row.ast ?? 0,
-        stl: row.stl ?? 0,
-        blk: row.blk ?? 0,
-        tov: row.tov ?? 0,
-        pf: row.pf ?? 0,
-        result: row.result === "W" ? "W" : "L",
-      })
-    );
+  (row): TeamGameSummaryRow & { updated_at?: string | null } => ({
+    game_id: row.game_id,
+    team_side: "teamA",
+    pts: row.pts ?? 0,
+    opp_pts: row.opp_pts ?? 0,
+    fg2m: row.fg2m ?? 0,
+    fg2a: row.fg2a ?? 0,
+    fg3m: row.fg3m ?? 0,
+    fg3a: row.fg3a ?? 0,
+    ftm: row.ftm ?? 0,
+    fta: row.fta ?? 0,
+    reb: row.reb ?? 0,
+    ast: row.ast ?? 0,
+    stl: row.stl ?? 0,
+    blk: row.blk ?? 0,
+    tov: row.tov ?? 0,
+    pf: row.pf ?? 0,
+    result: row.result === "W" ? "W" : "L",
+    updated_at: row.updated_at ?? null,
+  })
+);
 
-    const statsGameIdSet = new Set(safeTeamStats.map((x) => x.game_id));
-    const missingGameIds = gameIds.filter((id) => !statsGameIdSet.has(id));
+    function isValidTeamStatsRow(row: TeamGameSummaryRow) {
+  return (
+    row.pts > 0 ||
+    row.opp_pts > 0 ||
+    row.fg2a > 0 ||
+    row.fg3a > 0 ||
+    row.fta > 0 ||
+    row.reb > 0 ||
+    row.ast > 0 ||
+    row.stl > 0 ||
+    row.blk > 0 ||
+    row.tov > 0 ||
+    row.pf > 0
+  );
+}
 
-    let fallbackStats: TeamGameSummaryRow[] = [];
+const statsMap = new Map<string, TeamGameSummaryRow>();
 
-    if (missingGameIds.length > 0) {
-      const { data: fallbackEventsData, error: fallbackEventsError } =
-        await supabase
-          .from("events")
-          .select(
-            "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
-          )
-          .in("game_id", missingGameIds)
-          .order("created_at", { ascending: true });
+for (const row of safeTeamStats) {
+  const prev = statsMap.get(row.game_id);
 
-      if (fallbackEventsError) {
-        console.error("load fallback events error:", fallbackEventsError);
-        setError("載入舊比賽事件資料失敗");
-        setLoading(false);
-        return;
-      }
+  if (!prev) {
+    statsMap.set(row.game_id, row);
+    continue;
+  }
 
-      const safeEvents = (fallbackEventsData ?? []) as EventRow[];
+  const prevValid = isValidTeamStatsRow(prev);
+  const currValid = isValidTeamStatsRow(row);
 
-      fallbackStats = missingGameIds.map((gameId) =>
-        buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
-      );
+  if (!prevValid && currValid) {
+    statsMap.set(row.game_id, row);
+    continue;
+  }
+
+  if (prevValid === currValid) {
+    const prevTs = new Date(prev.updated_at || 0).getTime();
+    const currTs = new Date(row.updated_at || 0).getTime();
+    if (currTs > prevTs) {
+      statsMap.set(row.game_id, row);
     }
+  }
+}
 
-    const mergedStats = [...safeTeamStats, ...fallbackStats];
+const missingOrInvalidGameIds = gameIds.filter((id) => {
+  const row = statsMap.get(id);
+  return !row || !isValidTeamStatsRow(row);
+});
+
+let fallbackStats: TeamGameSummaryRow[] = [];
+
+if (missingOrInvalidGameIds.length > 0) {
+  const { data: fallbackEventsData, error: fallbackEventsError } =
+    await supabase
+      .from("events")
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
+      )
+      .in("game_id", missingOrInvalidGameIds)
+      .order("created_at", { ascending: true });
+
+  if (fallbackEventsError) {
+    console.error("load fallback events error:", fallbackEventsError);
+    setError("載入舊比賽事件資料失敗");
+    setLoading(false);
+    return;
+  }
+
+  const safeEvents = (fallbackEventsData ?? []) as EventRow[];
+
+  fallbackStats = missingOrInvalidGameIds.map((gameId) =>
+    buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
+  );
+}
+
+for (const row of fallbackStats) {
+  statsMap.set(row.game_id, row);
+}
+
+const mergedStats = Array.from(statsMap.values());
 
     setGames(safeGames);
     setTeamGameStats(mergedStats);
