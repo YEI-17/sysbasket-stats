@@ -18,6 +18,8 @@ type PlayerRow = {
 type GameRow = {
   id: string;
   status?: string | null;
+  created_at?: string | null;
+  game_date?: string | null;
 };
 
 type EventRow = {
@@ -27,6 +29,16 @@ type EventRow = {
   event_type: string;
   is_undone?: boolean | null;
   team_side?: "A" | "B" | "teamA" | "teamB" | null;
+};
+
+type PlayerGameStatsRow = {
+  game_id: string;
+  player_id: string;
+  pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
 };
 
 type PlayerRank = {
@@ -180,6 +192,25 @@ function rankGlow(index: number) {
   return "0 0 0 1px rgba(255,140,90,0.22), 0 16px 38px rgba(255,140,90,0.10)";
 }
 
+function getGameSortValue(game: GameRow) {
+  const raw = game.game_date || game.created_at || "";
+  const t = raw ? new Date(raw).getTime() : 0;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function ensurePlayerMaps(
+  totals: Map<string, PlayerStat>,
+  gamesPlayedByPlayer: Map<string, Set<string>>,
+  playerId: string
+) {
+  if (!totals.has(playerId)) {
+    totals.set(playerId, emptyStat());
+  }
+  if (!gamesPlayedByPlayer.has(playerId)) {
+    gamesPlayedByPlayer.set(playerId, new Set<string>());
+  }
+}
+
 export default function RankingsPage() {
   const [mode, setMode] = useState<RankMode>("avg");
   const [activeCategory, setActiveCategory] = useState<RankCategory>("pts");
@@ -215,14 +246,14 @@ export default function RankingsPage() {
       try {
         const { data: gamesData, error: gamesError } = await supabase
           .from("games")
-          .select("id, status")
+          .select("id, status, created_at, game_date")
           .order("created_at", { ascending: true });
 
         if (gamesError) throw gamesError;
 
-        const finishedGames = (gamesData ?? []).filter(
-          (g) => normalizeStatus(g.status) === "finished"
-        );
+        const finishedGames = ((gamesData ?? []) as GameRow[])
+          .filter((g) => normalizeStatus(g.status) === "finished")
+          .sort((a, b) => getGameSortValue(a) - getGameSortValue(b));
 
         const gameIds = finishedGames.map((g) => g.id);
 
@@ -237,24 +268,40 @@ export default function RankingsPage() {
           return;
         }
 
-        const [{ data: playersData, error: playersError }, { data: eventsData, error: eventsError }] =
-          await Promise.all([
-            supabase
-              .from("players")
-              .select("id, name, number, position, active")
-              .order("number", { ascending: true }),
-            supabase
-              .from("events")
-              .select("id, game_id, player_id, event_type, is_undone, team_side")
-              .in("game_id", gameIds)
-              .order("created_at", { ascending: true }),
-          ]);
+        const legacyGameIds = finishedGames.slice(0, 2).map((g) => g.id);
+        const modernGameIds = finishedGames.slice(2).map((g) => g.id);
+
+        const [
+          { data: playersData, error: playersError },
+          legacyEventsResult,
+          modernStatsResult,
+        ] = await Promise.all([
+          supabase
+            .from("players")
+            .select("id, name, number, position, active")
+            .order("number", { ascending: true }),
+          legacyGameIds.length > 0
+            ? supabase
+                .from("events")
+                .select("id, game_id, player_id, event_type, is_undone, team_side")
+                .in("game_id", legacyGameIds)
+                .order("created_at", { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
+          modernGameIds.length > 0
+            ? supabase
+                .from("player_game_stats")
+                .select("game_id, player_id, pts, reb, ast, stl, blk")
+                .in("game_id", modernGameIds)
+            : Promise.resolve({ data: [], error: null }),
+        ]);
 
         if (playersError) throw playersError;
-        if (eventsError) throw eventsError;
+        if (legacyEventsResult.error) throw legacyEventsResult.error;
+        if (modernStatsResult.error) throw modernStatsResult.error;
 
         const players = (playersData ?? []) as PlayerRow[];
-        const events = (eventsData ?? []) as EventRow[];
+        const legacyEvents = (legacyEventsResult.data ?? []) as EventRow[];
+        const modernStats = (modernStatsResult.data ?? []) as PlayerGameStatsRow[];
 
         const playerMap = new Map<string, PlayerRow>();
         for (const p of players) {
@@ -264,23 +311,35 @@ export default function RankingsPage() {
         const totals = new Map<string, PlayerStat>();
         const gamesPlayedByPlayer = new Map<string, Set<string>>();
 
-        for (const ev of events) {
+        // 前 2 場：用 events 計算
+        for (const ev of legacyEvents) {
           if (ev.is_undone) continue;
           if (!ev.player_id) continue;
 
           const playerId = ev.player_id;
-
-          if (!totals.has(playerId)) {
-            totals.set(playerId, emptyStat());
-          }
-          if (!gamesPlayedByPlayer.has(playerId)) {
-            gamesPlayedByPlayer.set(playerId, new Set<string>());
-          }
+          ensurePlayerMaps(totals, gamesPlayedByPlayer, playerId);
 
           gamesPlayedByPlayer.get(playerId)!.add(ev.game_id);
 
           const stat = totals.get(playerId)!;
           applyEventToStat(stat, ev.event_type);
+        }
+
+        // 第 3 場之後：用 player_game_stats 計算
+        for (const row of modernStats) {
+          if (!row.player_id || !row.game_id) continue;
+
+          const playerId = row.player_id;
+          ensurePlayerMaps(totals, gamesPlayedByPlayer, playerId);
+
+          gamesPlayedByPlayer.get(playerId)!.add(row.game_id);
+
+          const stat = totals.get(playerId)!;
+          stat.pts += Number(row.pts ?? 0);
+          stat.reb += Number(row.reb ?? 0);
+          stat.ast += Number(row.ast ?? 0);
+          stat.stl += Number(row.stl ?? 0);
+          stat.blk += Number(row.blk ?? 0);
         }
 
         const totalRanks: Record<RankCategory, PlayerRank[]> = {
