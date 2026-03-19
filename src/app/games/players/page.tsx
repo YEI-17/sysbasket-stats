@@ -94,11 +94,13 @@ export default function PlayersPage() {
 
         if (gamesError) throw gamesError;
 
-        const sortedGames = ((gamesData || []) as GameRow[]).slice().sort((a, b) => {
-          const aTime = new Date(a.game_date || a.created_at || 0).getTime();
-          const bTime = new Date(b.game_date || b.created_at || 0).getTime();
-          return aTime - bTime;
-        });
+        const sortedGames = ((gamesData || []) as GameRow[])
+          .slice()
+          .sort((a, b) => {
+            const aTime = new Date(a.game_date || a.created_at || 0).getTime();
+            const bTime = new Date(b.game_date || b.created_at || 0).getTime();
+            return aTime - bTime;
+          });
 
         const firstTwoIds = sortedGames.slice(0, 2).map((g) => g.id);
         const laterGameIds = sortedGames.slice(2).map((g) => g.id);
@@ -188,7 +190,7 @@ export default function PlayersPage() {
       return map.get(playerId)!;
     };
 
-    // 前兩場：沿用舊邏輯，用 game_players + events
+    // 前兩場：用 game_players + events
     for (const row of gamePlayers) {
       if (!row.player_id || !row.game_id) continue;
       ensurePlayedSet(row.player_id).add(row.game_id);
@@ -251,6 +253,33 @@ export default function PlayersPage() {
     return map;
   }, [players, events, gamePlayers, playerGameStats]);
 
+  const sortedPlayers = useMemo(() => {
+    return [...players].sort((a, b) => {
+      const aStat = statMap.get(a.id) || emptyPreviewStat();
+      const bStat = statMap.get(b.id) || emptyPreviewStat();
+
+      // 先比總得分高低
+      if (bStat.pts !== aStat.pts) {
+        return bStat.pts - aStat.pts;
+      }
+
+      // 得分一樣時，比出賽場次
+      if (bStat.gp !== aStat.gp) {
+        return bStat.gp - aStat.gp;
+      }
+
+      // 再來比背號
+      const aNumber = a.number ?? 9999;
+      const bNumber = b.number ?? 9999;
+      if (aNumber !== bNumber) {
+        return aNumber - bNumber;
+      }
+
+      // 最後比名字
+      return (a.name || "").localeCompare(b.name || "", "zh-Hant");
+    });
+  }, [players, statMap]);
+
   return (
     <main
       style={{
@@ -290,8 +319,14 @@ export default function PlayersPage() {
               TEAM ROSTER
             </div>
             <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>球員列表</h1>
-            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 600 }}>
-              前兩場沿用 events，後續場次改讀 player_game_stats
+            <div
+              style={{
+                color: "rgba(255,255,255,0.6)",
+                fontSize: 14,
+                fontWeight: 600,
+              }}
+            >
+              依總得分高到低排序；同分時依出賽場次排序
             </div>
           </div>
 
@@ -355,7 +390,7 @@ export default function PlayersPage() {
           </div>
         ) : (
           <div className="gridWrap">
-            {players.map((player) => {
+            {sortedPlayers.map((player) => {
               const stat = statMap.get(player.id) || emptyPreviewStat();
 
               return (
@@ -447,6 +482,7 @@ export default function PlayersPage() {
                     >
                       {[
                         { label: "GP", value: String(stat.gp) },
+                        { label: "TOTAL PTS", value: String(stat.pts) },
                         { label: "AVG PTS", value: avg(stat.pts, stat.gp) },
                         { label: "AVG REB", value: avg(stat.reb, stat.gp) },
                         { label: "AVG AST", value: avg(stat.ast, stat.gp) },
