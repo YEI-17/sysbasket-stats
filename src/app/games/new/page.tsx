@@ -15,6 +15,19 @@ type Player = {
   position?: string | null;
 };
 
+type GameRow = {
+  id: string;
+  game_date?: string | null;
+  start_time?: string | null;
+  created_at?: string | null;
+};
+
+type GamePlayerRow = {
+  player_id: string;
+  is_starter?: boolean | null;
+  team_side?: string | null;
+};
+
 const POSITION_ORDER: PlayerPosition[] = ["PG", "SG", "SF", "PF", "C"];
 
 const POSITION_LABEL: Record<PlayerPosition, string> = {
@@ -60,8 +73,11 @@ function buildStartTimeISO(gameDate: string, gameTime: string) {
 
   if (!safeDate || !safeTime) return null;
 
-  const iso = `${safeDate}T${safeTime}:00+08:00`;
-  return iso;
+  return `${safeDate}T${safeTime}:00+08:00`;
+}
+
+function uniqueIds(ids: string[]) {
+  return Array.from(new Set(ids));
 }
 
 export default function NewGamePage() {
@@ -75,22 +91,16 @@ export default function NewGamePage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedRosterIds, setSelectedRosterIds] = useState<string[]>([]);
   const [selectedStarterIds, setSelectedStarterIds] = useState<string[]>([]);
+
+  const [lastGameRosterIds, setLastGameRosterIds] = useState<string[]>([]);
+  const [lastGameStarterIds, setLastGameStarterIds] = useState<string[]>([]);
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
 
-  async function loadPlayers() {
-    const { data, error } = await supabase
-      .from("players")
-      .select("id, name, number, active, position")
-      .eq("active", true)
-      .order("number", { ascending: true });
-
-    if (error) {
-      setError(`讀取球員失敗：${error.message}`);
-      return;
-    }
-
-    const list = ((data as Player[]) || []).sort((a, b) => {
+  function sortPlayers(list: Player[]) {
+    return [...list].sort((a, b) => {
       const posA = normalizePosition(a.position);
       const posB = normalizePosition(b.position);
 
@@ -107,18 +117,150 @@ export default function NewGamePage() {
 
       return a.name.localeCompare(b.name, "zh-Hant");
     });
+  }
 
-    setPlayers(list);
+  function getFallbackSelections(activePlayers: Player[]) {
+    const sorted = sortPlayers(activePlayers);
+    return {
+      rosterIds: sorted.map((p) => p.id),
+      starterIds: sorted.slice(0, 5).map((p) => p.id),
+    };
+  }
 
-    const defaultRosterIds = list.map((p) => p.id);
-    const defaultStarterIds = list.slice(0, 5).map((p) => p.id);
+  async function loadPlayersAndDefaults() {
+    setPageLoading(true);
+    setError("");
 
-    setSelectedRosterIds(defaultRosterIds);
-    setSelectedStarterIds(defaultStarterIds);
+    try {
+      const { data: playersData, error: playersError } = await supabase
+        .from("players")
+        .select("id, name, number, active, position")
+        .eq("active", true)
+        .order("number", { ascending: true });
+
+      if (playersError) {
+        setError(`讀取球員失敗：${playersError.message}`);
+        setPageLoading(false);
+        return;
+      }
+
+      const list = sortPlayers((playersData as Player[]) || []);
+      setPlayers(list);
+
+      const activePlayerIdSet = new Set(list.map((p) => p.id));
+      const fallback = getFallbackSelections(list);
+
+      const { data: latestGame, error: latestGameError } = await supabase
+        .from("games")
+        .select("id, game_date, start_time, created_at")
+        .order("game_date", { ascending: false })
+        .order("start_time", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<GameRow>();
+
+      if (latestGameError || !latestGame?.id) {
+        setLastGameRosterIds(fallback.rosterIds);
+        setLastGameStarterIds(fallback.starterIds);
+        setSelectedRosterIds(fallback.rosterIds);
+        setSelectedStarterIds(fallback.starterIds);
+        setPageLoading(false);
+        return;
+      }
+
+      const { data: previousGamePlayers, error: previousGamePlayersError } =
+        await supabase
+          .from("game_players")
+          .select("player_id, is_starter, team_side")
+          .eq("game_id", latestGame.id)
+          .eq("team_side", "teamA");
+
+      if (previousGamePlayersError) {
+        setLastGameRosterIds(fallback.rosterIds);
+        setLastGameStarterIds(fallback.starterIds);
+        setSelectedRosterIds(fallback.rosterIds);
+        setSelectedStarterIds(fallback.starterIds);
+        setPageLoading(false);
+        return;
+      }
+
+      const previousRows = (previousGamePlayers as GamePlayerRow[]) || [];
+
+      if (previousRows.length === 0) {
+        setLastGameRosterIds(fallback.rosterIds);
+        setLastGameStarterIds(fallback.starterIds);
+        setSelectedRosterIds(fallback.rosterIds);
+        setSelectedStarterIds(fallback.starterIds);
+        setPageLoading(false);
+        return;
+      }
+
+      const previousRosterIdSet = new Set(
+        previousRows
+          .map((row) => row.player_id)
+          .filter((id): id is string => !!id && activePlayerIdSet.has(id))
+      );
+
+      const previousStarterIdSet = new Set(
+        previousRows
+          .filter((row) => row.is_starter)
+          .map((row) => row.player_id)
+          .filter((id): id is string => !!id && activePlayerIdSet.has(id))
+      );
+
+      const previousRosterIds = list
+        .filter((p) => previousRosterIdSet.has(p.id))
+        .map((p) => p.id);
+
+      let previousStarterIds = list
+        .filter((p) => previousStarterIdSet.has(p.id))
+        .map((p) => p.id)
+        .filter((id) => previousRosterIds.includes(id));
+
+      if (previousStarterIds.length > 5) {
+        previousStarterIds = previousStarterIds.slice(0, 5);
+      }
+
+      if (previousStarterIds.length < 5) {
+        const fillCandidates = previousRosterIds.filter(
+          (id) => !previousStarterIds.includes(id)
+        );
+        previousStarterIds = [
+          ...previousStarterIds,
+          ...fillCandidates.slice(0, 5 - previousStarterIds.length),
+        ];
+      }
+
+      const finalRosterIds =
+        previousRosterIds.length >= 5 ? previousRosterIds : fallback.rosterIds;
+
+      const finalStarterIds =
+        previousStarterIds.length === 5
+          ? previousStarterIds
+          : finalRosterIds.slice(0, 5);
+
+      const safeRosterIds = uniqueIds(finalRosterIds);
+      const safeStarterIds = uniqueIds(finalStarterIds);
+
+      setLastGameRosterIds(safeRosterIds);
+      setLastGameStarterIds(safeStarterIds);
+      setSelectedRosterIds(safeRosterIds);
+      setSelectedStarterIds(safeStarterIds);
+    } catch (err: any) {
+      setError(err?.message || "讀取預設名單時發生未知錯誤");
+
+      const fallback = getFallbackSelections(players);
+      setLastGameRosterIds(fallback.rosterIds);
+      setLastGameStarterIds(fallback.starterIds);
+      setSelectedRosterIds(fallback.rosterIds);
+      setSelectedStarterIds(fallback.starterIds);
+    } finally {
+      setPageLoading(false);
+    }
   }
 
   useEffect(() => {
-    loadPlayers();
+    loadPlayersAndDefaults();
   }, []);
 
   function toggleRoster(playerId: string) {
@@ -157,6 +299,63 @@ export default function NewGamePage() {
     });
   }
 
+  function clearSelections() {
+    setSelectedRosterIds([]);
+    setSelectedStarterIds([]);
+  }
+
+  function applyLastGameSelection() {
+    setSelectedRosterIds(uniqueIds(lastGameRosterIds));
+    setSelectedStarterIds(uniqueIds(lastGameStarterIds));
+  }
+
+  function selectAllRoster() {
+    const allIds = players.map((p) => p.id);
+    setSelectedRosterIds(allIds);
+
+    setSelectedStarterIds((prev) => {
+      const validPrev = prev.filter((id) => allIds.includes(id)).slice(0, 5);
+
+      if (validPrev.length === 5) return validPrev;
+
+      const fillIds = allIds.filter((id) => !validPrev.includes(id));
+      return [...validPrev, ...fillIds.slice(0, 5 - validPrev.length)];
+    });
+  }
+
+  function autoPickStarters() {
+    const rosterPlayers = players.filter((p) => selectedRosterIds.includes(p.id));
+
+    if (rosterPlayers.length === 0) {
+      setSelectedStarterIds([]);
+      return;
+    }
+
+    const picked: string[] = [];
+
+    for (const position of POSITION_ORDER) {
+      const player = rosterPlayers.find(
+        (p) =>
+          normalizePosition(p.position) === position && !picked.includes(p.id)
+      );
+
+      if (player) {
+        picked.push(player.id);
+      }
+    }
+
+    if (picked.length < 5) {
+      for (const player of rosterPlayers) {
+        if (!picked.includes(player.id)) {
+          picked.push(player.id);
+        }
+        if (picked.length === 5) break;
+      }
+    }
+
+    setSelectedStarterIds(picked.slice(0, 5));
+  }
+
   const rosterPlayers = useMemo(
     () => players.filter((p) => selectedRosterIds.includes(p.id)),
     [players, selectedRosterIds]
@@ -183,6 +382,13 @@ export default function NewGamePage() {
 
     return groups;
   }, [players]);
+
+  const readyToStart =
+    !!gameDate &&
+    !!gameTime &&
+    selectedRosterIds.length >= 5 &&
+    selectedStarterIds.length === 5 &&
+    selectedStarterIds.every((id) => selectedRosterIds.includes(id));
 
   async function createGame() {
     setLoading(true);
@@ -353,22 +559,27 @@ export default function NewGamePage() {
     <div className="min-h-screen bg-neutral-950 p-6 text-white">
       <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold">建立新比賽</h1>
+          <div>
+            <h1 className="text-2xl font-bold">建立新比賽</h1>
+            <div className="mt-1 text-sm text-white/55">
+              盡量讓你少點幾下，快速進入主紀錄頁
+            </div>
+          </div>
           <LogoutButton />
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-4">
-          <div>
-            <div className="mb-2 text-sm text-white/60">對手名稱</div>
-            <input
-              value={opponent}
-              onChange={(e) => setOpponent(e.target.value)}
-              placeholder="輸入對手"
-              className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
-            />
-          </div>
-
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="md:col-span-1">
+              <div className="mb-2 text-sm text-white/60">對手名稱</div>
+              <input
+                value={opponent}
+                onChange={(e) => setOpponent(e.target.value)}
+                placeholder="輸入對手"
+                className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
+              />
+            </div>
+
             <div>
               <div className="mb-2 text-sm text-white/60">比賽日期</div>
               <input
@@ -388,15 +599,60 @@ export default function NewGamePage() {
                 className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
               />
             </div>
+          </div>
 
-            <div>
-              <div className="mb-2 text-sm text-white/60">比賽地點</div>
-              <input
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="例如：學校體育館"
-                className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
-              />
+          <div>
+            <div className="mb-2 text-sm text-white/60">比賽地點</div>
+            <input
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="例如：學校體育館"
+              className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-emerald-300">
+                  快速確認
+                </div>
+                <div className="mt-1 text-sm text-white/70">
+                  {readyToStart
+                    ? "已可直接建立比賽並進入主紀錄頁"
+                    : "尚未完成開賽前設定"}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 text-sm">
+                <div
+                  className={`rounded-full px-3 py-1.5 ${
+                    selectedRosterIds.length >= 5
+                      ? "bg-emerald-500/20 text-emerald-200"
+                      : "bg-white/10 text-white/60"
+                  }`}
+                >
+                  登入 {selectedRosterIds.length} 人
+                </div>
+                <div
+                  className={`rounded-full px-3 py-1.5 ${
+                    selectedStarterIds.length === 5
+                      ? "bg-emerald-500/20 text-emerald-200"
+                      : "bg-white/10 text-white/60"
+                  }`}
+                >
+                  先發 {selectedStarterIds.length}/5
+                </div>
+                <div
+                  className={`rounded-full px-3 py-1.5 ${
+                    opponent.trim()
+                      ? "bg-emerald-500/20 text-emerald-200"
+                      : "bg-white/10 text-white/60"
+                  }`}
+                >
+                  對手 {opponent.trim() ? "已填寫" : "未填"}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -410,7 +666,7 @@ export default function NewGamePage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-3 text-sm">
+            <div className="flex flex-wrap gap-2 text-sm">
               <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                 登入名單 {selectedRosterIds.length} 人
               </div>
@@ -419,6 +675,50 @@ export default function NewGamePage() {
               </div>
             </div>
           </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={applyLastGameSelection}
+              disabled={pageLoading}
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              套用上一場
+            </button>
+
+            <button
+              type="button"
+              onClick={selectAllRoster}
+              disabled={pageLoading || players.length === 0}
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              全部登入
+            </button>
+
+            <button
+              type="button"
+              onClick={autoPickStarters}
+              disabled={pageLoading || selectedRosterIds.length === 0}
+              className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              自動先發
+            </button>
+
+            <button
+              type="button"
+              onClick={clearSelections}
+              disabled={pageLoading}
+              className="rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-200 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              清空重選
+            </button>
+          </div>
+
+          {pageLoading && (
+            <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-6 text-sm text-white/60">
+              正在載入上一場預設名單...
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -662,10 +962,10 @@ export default function NewGamePage() {
 
         <button
           onClick={createGame}
-          disabled={loading}
+          disabled={loading || pageLoading || !readyToStart}
           className="w-full rounded-2xl bg-green-600 px-6 py-4 text-lg font-bold disabled:opacity-60"
         >
-          {loading ? "建立中..." : "建立比賽"}
+          {loading ? "建立中..." : "建立比賽並進入主紀錄頁"}
         </button>
 
         {error && (
