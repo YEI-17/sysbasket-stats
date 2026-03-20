@@ -203,10 +203,6 @@ export default function ViewerGamesPage() {
     () => games.filter((game) => normalizeStatus(game.status) === "直播中").length,
     [games]
   );
-  const historyGamesCount = useMemo(
-    () => games.filter((game) => normalizeStatus(game.status) !== "直播中").length,
-    [games]
-  );
   const totalGames = games.length;
   const totalPlayers = players.length;
 
@@ -232,7 +228,7 @@ export default function ViewerGamesPage() {
               <div className="badge">觀賽首頁</div>
               <h1>快速查看比賽與數據</h1>
 
-              <div className="hero-stats">
+              <div className="hero-stats three-stats">
                 <div className="hero-stat">
                   <span className="hero-stat-label">直播中</span>
                   <strong>{liveGamesCount}</strong>
@@ -244,10 +240,6 @@ export default function ViewerGamesPage() {
                 <div className="hero-stat">
                   <span className="hero-stat-label">球員人數</span>
                   <strong>{totalPlayers}</strong>
-                </div>
-                <div className="hero-stat">
-                  <span className="hero-stat-label">歷史賽事</span>
-                  <strong>{historyGamesCount}</strong>
                 </div>
               </div>
             </div>
@@ -615,8 +607,11 @@ export default function ViewerGamesPage() {
           margin-top: 20px;
         }
 
+        .three-stats .hero-stat {
+          min-width: 140px;
+        }
+
         .hero-stat {
-          min-width: 124px;
           padding: 12px 14px;
           border-radius: 18px;
           background: rgba(255,255,255,0.05);
@@ -942,6 +937,10 @@ export default function ViewerGamesPage() {
             min-width: calc(50% - 8px);
           }
 
+          .three-stats .hero-stat {
+            min-width: calc(50% - 8px);
+          }
+
           .feature-card h2 {
             font-size: 22px;
           }
@@ -964,7 +963,8 @@ export default function ViewerGamesPage() {
             font-size: 32px;
           }
 
-          .hero-stat {
+          .hero-stat,
+          .three-stats .hero-stat {
             min-width: 100%;
           }
 
@@ -980,4 +980,4 @@ export default function ViewerGamesPage() {
       `}</style>
     </main>
   );
-}
+} 
