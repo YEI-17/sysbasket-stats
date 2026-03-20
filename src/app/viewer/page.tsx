@@ -22,6 +22,41 @@ type PlayerRow = {
   active?: boolean | null;
 };
 
+type PlayerGameStatsRow = {
+  player_id: string;
+  game_id: string;
+  pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
+  plus_minus?: number | null;
+};
+
+type TeamGameStatsRow = {
+  game_id: string;
+  team_side?: string | null;
+  pts?: number | null;
+  opp_pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
+};
+
+type PlayerImpactCard = {
+  id: string;
+  name: string;
+  number: number | null;
+  position: string;
+  games: number;
+  avgPts: number;
+  avgReb: number;
+  avgAst: number;
+  avgPlusMinus: number;
+  impactScore: number;
+};
+
 function normalizeStatus(status?: string | null) {
   const s = (status ?? "").trim().toLowerCase();
 
@@ -41,11 +76,44 @@ function normalizeStatus(status?: string | null) {
   return status ?? "未設定";
 }
 
+function formatGameDate(game?: GameRow | null) {
+  const raw = game?.game_date || game?.created_at;
+  if (!raw) return "未提供日期";
+
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "未提供日期";
+
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function getMatchName(game?: GameRow | null) {
+  if (!game) return "尚無比賽資料";
+  return `${game.teamA || "我方"} vs ${game.teamB || "對手"}`;
+}
+
+function safeNumber(value?: number | null) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function round1(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function getTrendLabel(diff: number) {
+  if (diff > 0.8) return "上升中";
+  if (diff < -0.8) return "需要調整";
+  return "穩定";
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
   const [games, setGames] = useState<GameRow[]>([]);
   const [players, setPlayers] = useState<PlayerRow[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatsRow[]>([]);
+  const [teamGameStats, setTeamGameStats] = useState<TeamGameStatsRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState("");
@@ -59,7 +127,7 @@ export default function ViewerGamesPage() {
 
     setMsg("");
 
-    const [gamesRes, playersRes] = await Promise.all([
+    const [gamesRes, playersRes, pgsRes, tgsRes] = await Promise.all([
       supabase
         .from("games")
         .select("id, teamA, teamB, status, game_date, created_at")
@@ -71,6 +139,14 @@ export default function ViewerGamesPage() {
         .select("id, name, number, position, active")
         .eq("active", true)
         .order("number", { ascending: true }),
+
+      supabase
+        .from("player_game_stats")
+        .select("player_id, game_id, pts, reb, ast, stl, blk, plus_minus"),
+
+      supabase
+        .from("team_game_stats")
+        .select("game_id, team_side, pts, opp_pts, reb, ast, stl, blk"),
     ]);
 
     if (gamesRes.error) {
@@ -89,8 +165,18 @@ export default function ViewerGamesPage() {
       return;
     }
 
+    if (pgsRes.error) {
+      console.error("player_game_stats 讀取失敗：", pgsRes.error);
+    }
+
+    if (tgsRes.error) {
+      console.error("team_game_stats 讀取失敗：", tgsRes.error);
+    }
+
     setGames((gamesRes.data as GameRow[]) || []);
     setPlayers((playersRes.data as PlayerRow[]) || []);
+    setPlayerGameStats((pgsRes.data as PlayerGameStatsRow[]) || []);
+    setTeamGameStats((tgsRes.data as TeamGameStatsRow[]) || []);
 
     if (showLoading) {
       setLoading(false);
@@ -199,12 +285,189 @@ export default function ViewerGamesPage() {
   }
 
   const viewerName = useMemo(() => getViewerName() || "觀眾", []);
-  const liveGamesCount = useMemo(
-    () => games.filter((game) => normalizeStatus(game.status) === "直播中").length,
+  const liveGames = useMemo(
+    () => games.filter((game) => normalizeStatus(game.status) === "直播中"),
     [games]
   );
+  const finishedGames = useMemo(
+    () => games.filter((game) => normalizeStatus(game.status) === "已結束"),
+    [games]
+  );
+  const upcomingGames = useMemo(
+    () => games.filter((game) => normalizeStatus(game.status) === "未開始"),
+    [games]
+  );
+
+  const liveGamesCount = liveGames.length;
   const totalGames = games.length;
   const totalPlayers = players.length;
+
+  const latestLiveGame = liveGames[0] || null;
+  const latestFinishedGame = finishedGames[0] || null;
+  const latestUpcomingGame = upcomingGames[0] || null;
+
+  const latestFinishedTeamStats = useMemo(() => {
+    if (!latestFinishedGame) return null;
+    return (
+      teamGameStats.find((row) => row.game_id === latestFinishedGame.id) || null
+    );
+  }, [latestFinishedGame, teamGameStats]);
+
+  const playerImpactTop3 = useMemo<PlayerImpactCard[]>(() => {
+    const map = new Map<
+      string,
+      {
+        player: PlayerRow;
+        games: number;
+        pts: number;
+        reb: number;
+        ast: number;
+        plusMinus: number;
+        impactTotal: number;
+      }
+    >();
+
+    for (const player of players) {
+      map.set(player.id, {
+        player,
+        games: 0,
+        pts: 0,
+        reb: 0,
+        ast: 0,
+        plusMinus: 0,
+        impactTotal: 0,
+      });
+    }
+
+    for (const row of playerGameStats) {
+      const entry = map.get(row.player_id);
+      if (!entry) continue;
+
+      const pts = safeNumber(row.pts);
+      const reb = safeNumber(row.reb);
+      const ast = safeNumber(row.ast);
+      const stl = safeNumber(row.stl);
+      const blk = safeNumber(row.blk);
+      const plusMinus = safeNumber(row.plus_minus);
+
+      const impact =
+        pts * 1 +
+        reb * 1.2 +
+        ast * 1.5 +
+        stl * 2 +
+        blk * 2 +
+        plusMinus * 0.8;
+
+      entry.games += 1;
+      entry.pts += pts;
+      entry.reb += reb;
+      entry.ast += ast;
+      entry.plusMinus += plusMinus;
+      entry.impactTotal += impact;
+    }
+
+    return Array.from(map.values())
+      .filter((entry) => entry.games > 0)
+      .map((entry) => ({
+        id: entry.player.id,
+        name: entry.player.name,
+        number: entry.player.number,
+        position: entry.player.position || "未設定",
+        games: entry.games,
+        avgPts: round1(entry.pts / entry.games),
+        avgReb: round1(entry.reb / entry.games),
+        avgAst: round1(entry.ast / entry.games),
+        avgPlusMinus: round1(entry.plusMinus / entry.games),
+        impactScore: round1(entry.impactTotal / entry.games),
+      }))
+      .sort((a, b) => b.impactScore - a.impactScore)
+      .slice(0, 3);
+  }, [players, playerGameStats]);
+
+  const recentFinishedGameStats = useMemo(() => {
+    const recentFinished = finishedGames.slice(0, 6);
+
+    return recentFinished
+      .map((game) => {
+        const stats = teamGameStats.find((row) => row.game_id === game.id);
+        return {
+          game,
+          stats,
+        };
+      })
+      .filter((item) => item.stats);
+  }, [finishedGames, teamGameStats]);
+
+  const growthSummary = useMemo(() => {
+    const latest3 = recentFinishedGameStats.slice(0, 3);
+    const previous3 = recentFinishedGameStats.slice(3, 6);
+
+    const average = (
+      rows: { stats: TeamGameStatsRow | undefined | null }[],
+      key: keyof TeamGameStatsRow
+    ) => {
+      if (!rows.length) return 0;
+      const sum = rows.reduce((acc, row) => acc + safeNumber(row.stats?.[key] as number), 0);
+      return sum / rows.length;
+    };
+
+    const latestPts = average(latest3, "pts");
+    const previousPts = average(previous3, "pts");
+    const latestAst = average(latest3, "ast");
+    const previousAst = average(previous3, "ast");
+    const latestReb = average(latest3, "reb");
+    const previousReb = average(previous3, "reb");
+
+    return {
+      latestPts: round1(latestPts),
+      previousPts: round1(previousPts),
+      ptsDiff: round1(latestPts - previousPts),
+      latestAst: round1(latestAst),
+      previousAst: round1(previousAst),
+      astDiff: round1(latestAst - previousAst),
+      latestReb: round1(latestReb),
+      previousReb: round1(previousReb),
+      rebDiff: round1(latestReb - previousReb),
+    };
+  }, [recentFinishedGameStats]);
+
+  const postGameSummary = useMemo(() => {
+    if (!latestFinishedGame || !latestFinishedTeamStats) {
+      return {
+        title: "尚未建立賽後報告",
+        description: "目前還沒有可分析的已結束比賽資料。",
+        resultLabel: "等待資料",
+      };
+    }
+
+    const ourPts = safeNumber(latestFinishedTeamStats.pts);
+    const oppPts = safeNumber(latestFinishedTeamStats.opp_pts);
+    const diff = ourPts - oppPts;
+
+    let resultLabel = "平手";
+    if (diff > 0) resultLabel = "贏球";
+    if (diff < 0) resultLabel = "落敗";
+
+    let description = `最近一場比賽為 ${getMatchName(latestFinishedGame)}，比數 ${ourPts} : ${oppPts}。`;
+
+    if (diff >= 10) {
+      description += " 這是一場整體掌控度不錯的比賽，代表團隊表現穩定。";
+    } else if (diff > 0) {
+      description += " 這場比賽成功拿下勝利，代表關鍵球處理有發揮。";
+    } else if (diff <= -10) {
+      description += " 分差較大，建議從防守輪轉與失分來源去檢查。";
+    } else if (diff < 0) {
+      description += " 比賽差距不大，代表還有很高的調整空間。";
+    } else {
+      description += " 雙方表現接近，適合回頭檢查關鍵時段內容。";
+    }
+
+    return {
+      title: `${formatGameDate(latestFinishedGame)} 賽後摘要`,
+      description,
+      resultLabel,
+    };
+  }, [latestFinishedGame, latestFinishedTeamStats]);
 
   return (
     <main className="page">
@@ -226,7 +489,7 @@ export default function ViewerGamesPage() {
           <div className="hero-top">
             <div className="hero-copy">
               <div className="badge">觀賽首頁</div>
-              <h1>快速查看比賽與數據</h1>
+              <h1>快速查看比賽、洞察與成長趨勢</h1>
 
               <div className="hero-stats three-stats">
                 <div className="hero-stat">
@@ -264,82 +527,317 @@ export default function ViewerGamesPage() {
         {!loading && msg && <div className="error-card">{msg}</div>}
 
         {!loading && !msg && (
-          <section className="card-grid">
-            <button className="feature-card primary-card" onClick={handleOpenMatches}>
-              <div className="feature-card-glow orange" />
-              <div className="feature-card-number">01</div>
-              <div className="feature-badge">賽事</div>
-              <div className="feature-icon">🏀</div>
-              <h2>賽事中心</h2>
+          <>
+            <section className="insight-grid">
+              <div className="panel-card insight-card wide">
+                <div className="panel-head">
+                  <span className="panel-badge">即時洞察</span>
+                  <span className="panel-kicker orange-text">01</span>
+                </div>
 
-              <div className="feature-tags">
-                <span>直播中 {liveGamesCount}</span>
-                <span>全部 {totalGames}</span>
+                <h2>目前比賽重點</h2>
+
+                <div className="insight-list">
+                  <div className="insight-item">
+                    <div className="insight-label">直播焦點</div>
+                    <div className="insight-value">
+                      {latestLiveGame
+                        ? `${getMatchName(latestLiveGame)}`
+                        : "目前沒有直播中的比賽"}
+                    </div>
+                    <div className="insight-sub">
+                      {latestLiveGame
+                        ? `${formatGameDate(latestLiveGame)}｜狀態：${normalizeStatus(
+                            latestLiveGame.status
+                          )}`
+                        : "可在賽事中心查看全部賽況"}
+                    </div>
+                  </div>
+
+                  <div className="insight-item">
+                    <div className="insight-label">最新結束比賽</div>
+                    <div className="insight-value">
+                      {latestFinishedGame
+                        ? `${getMatchName(latestFinishedGame)}`
+                        : "尚無已結束比賽"}
+                    </div>
+                    <div className="insight-sub">
+                      {latestFinishedGame
+                        ? `${formatGameDate(latestFinishedGame)}｜可查看賽後摘要`
+                        : "結束後會自動出現在這裡"}
+                    </div>
+                  </div>
+
+                  <div className="insight-item">
+                    <div className="insight-label">下一場賽事</div>
+                    <div className="insight-value">
+                      {latestUpcomingGame
+                        ? `${getMatchName(latestUpcomingGame)}`
+                        : "目前沒有待開打賽事"}
+                    </div>
+                    <div className="insight-sub">
+                      {latestUpcomingGame
+                        ? `${formatGameDate(latestUpcomingGame)}｜狀態：${normalizeStatus(
+                            latestUpcomingGame.status
+                          )}`
+                        : "有新比賽時會顯示在這裡"}
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div className="feature-footer">
-                <span>查看賽事</span>
-                <span className="arrow">→</span>
+              <div className="panel-card impact-summary-card">
+                <div className="panel-head">
+                  <span className="panel-badge">球員影響力</span>
+                  <span className="panel-kicker violet-text">02</span>
+                </div>
+
+                <h2>本季最有影響力球員</h2>
+
+                {playerImpactTop3.length > 0 ? (
+                  <div className="leader-box">
+                    <div className="leader-name">
+                      #{playerImpactTop3[0].number ?? "-"} {playerImpactTop3[0].name}
+                    </div>
+                    <div className="leader-score">
+                      影響力分數 {playerImpactTop3[0].impactScore}
+                    </div>
+                    <div className="leader-meta">
+                      {playerImpactTop3[0].position}・{playerImpactTop3[0].games} 場
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-note">尚無球員數據可分析</div>
+                )}
+
+                <button className="mini-link violet-text" onClick={handleOpenPlayers}>
+                  前往球員頁 →
+                </button>
               </div>
-            </button>
+            </section>
 
-            <button className="feature-card" onClick={handleOpenTeamStats}>
-              <div className="feature-card-glow blue" />
-              <div className="feature-card-number">02</div>
-              <div className="feature-badge">團隊</div>
-              <div className="feature-icon">📊</div>
-              <h2>團隊數據</h2>
+            <section className="card-grid">
+              <button className="feature-card primary-card" onClick={handleOpenMatches}>
+                <div className="feature-card-glow orange" />
+                <div className="feature-card-number">01</div>
+                <div className="feature-badge">賽事</div>
+                <div className="feature-icon">🏀</div>
+                <h2>賽事中心</h2>
 
-              <div className="feature-tags">
-                <span>命中率</span>
-                <span>平均數據</span>
-                <span>整體表現</span>
+                <div className="feature-tags">
+                  <span>直播中 {liveGamesCount}</span>
+                  <span>全部 {totalGames}</span>
+                  <span>最新賽況</span>
+                </div>
+
+                <div className="feature-footer">
+                  <span>查看賽事</span>
+                  <span className="arrow">→</span>
+                </div>
+              </button>
+
+              <button className="feature-card" onClick={handleOpenTeamStats}>
+                <div className="feature-card-glow blue" />
+                <div className="feature-card-number">02</div>
+                <div className="feature-badge">團隊</div>
+                <div className="feature-icon">📊</div>
+                <h2>團隊數據</h2>
+
+                <div className="feature-tags">
+                  <span>整體表現</span>
+                  <span>近期趨勢</span>
+                  <span>賽後分析</span>
+                </div>
+
+                <div className="feature-footer blue-text">
+                  <span>查看數據</span>
+                  <span className="arrow">→</span>
+                </div>
+              </button>
+
+              <button className="feature-card" onClick={handleOpenPlayers}>
+                <div className="feature-card-glow violet" />
+                <div className="feature-card-number">03</div>
+                <div className="feature-badge">球員</div>
+                <div className="feature-icon">👤</div>
+                <h2>球員數據</h2>
+
+                <div className="feature-tags">
+                  <span>球員 {totalPlayers}</span>
+                  <span>影響力評分</span>
+                  <span>個人成長</span>
+                </div>
+
+                <div className="feature-footer violet-text">
+                  <span>查看球員</span>
+                  <span className="arrow">→</span>
+                </div>
+              </button>
+
+              <button className="feature-card" onClick={handleOpenRankings}>
+                <div className="feature-card-glow emerald" />
+                <div className="feature-card-number">04</div>
+                <div className="feature-badge">排行</div>
+                <div className="feature-icon">🏆</div>
+                <h2>數據排行榜</h2>
+
+                <div className="feature-tags">
+                  <span>得分</span>
+                  <span>籃板</span>
+                  <span>助攻</span>
+                  <span>影響力</span>
+                </div>
+
+                <div className="feature-footer emerald-text">
+                  <span>查看排行</span>
+                  <span className="arrow">→</span>
+                </div>
+              </button>
+            </section>
+
+            <section className="lower-grid">
+              <div className="panel-card">
+                <div className="panel-head">
+                  <span className="panel-badge">球員影響力排行</span>
+                  <span className="panel-kicker violet-text">Top 3</span>
+                </div>
+
+                <h2>首頁重點球員</h2>
+
+                {playerImpactTop3.length > 0 ? (
+                  <div className="rank-list">
+                    {playerImpactTop3.map((player, index) => (
+                      <div className="rank-row" key={player.id}>
+                        <div className="rank-left">
+                          <div className="rank-index">{index + 1}</div>
+                          <div>
+                            <div className="rank-name">
+                              #{player.number ?? "-"} {player.name}
+                            </div>
+                            <div className="rank-sub">
+                              {player.position}｜{player.games} 場
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rank-right">
+                          <div className="rank-score">{player.impactScore}</div>
+                          <div className="rank-meta">
+                            {player.avgPts} 分 / {player.avgReb} 籃板 / {player.avgAst} 助攻
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-note">目前沒有可顯示的球員影響力資料。</div>
+                )}
               </div>
 
-              <div className="feature-footer blue-text">
-                <span>查看數據</span>
-                <span className="arrow">→</span>
+              <div className="panel-card">
+                <div className="panel-head">
+                  <span className="panel-badge">賽後報告</span>
+                  <span className="panel-kicker blue-text">最近一場</span>
+                </div>
+
+                <h2>{postGameSummary.title}</h2>
+
+                <div className="summary-box">
+                  <div className="summary-result">{postGameSummary.resultLabel}</div>
+                  <p>{postGameSummary.description}</p>
+                </div>
+
+                {latestFinishedTeamStats && (
+                  <div className="summary-stats">
+                    <div className="mini-stat">
+                      <span>得分</span>
+                      <strong>{safeNumber(latestFinishedTeamStats.pts)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>失分</span>
+                      <strong>{safeNumber(latestFinishedTeamStats.opp_pts)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>助攻</span>
+                      <strong>{safeNumber(latestFinishedTeamStats.ast)}</strong>
+                    </div>
+                    <div className="mini-stat">
+                      <span>籃板</span>
+                      <strong>{safeNumber(latestFinishedTeamStats.reb)}</strong>
+                    </div>
+                  </div>
+                )}
               </div>
-            </button>
+            </section>
 
-            <button className="feature-card" onClick={handleOpenPlayers}>
-              <div className="feature-card-glow violet" />
-              <div className="feature-card-number">03</div>
-              <div className="feature-badge">球員</div>
-              <div className="feature-icon">👤</div>
-              <h2>球員數據</h2>
+            <section className="growth-grid">
+              <div className="panel-card growth-card">
+                <div className="panel-head">
+                  <span className="panel-badge">成長追蹤</span>
+                  <span className="panel-kicker emerald-text">近期趨勢</span>
+                </div>
 
-              <div className="feature-tags">
-                <span>球員 {totalPlayers}</span>
-                <span>個人成績</span>
-                <span>數據查看</span>
+                <h2>團隊近期變化</h2>
+
+                <div className="growth-stats">
+                  <div className="growth-item">
+                    <div className="growth-title">平均得分</div>
+                    <div className="growth-main">{growthSummary.latestPts}</div>
+                    <div
+                      className={`growth-diff ${
+                        growthSummary.ptsDiff > 0
+                          ? "up"
+                          : growthSummary.ptsDiff < 0
+                          ? "down"
+                          : ""
+                      }`}
+                    >
+                      {growthSummary.ptsDiff >= 0 ? "+" : ""}
+                      {growthSummary.ptsDiff}｜{getTrendLabel(growthSummary.ptsDiff)}
+                    </div>
+                  </div>
+
+                  <div className="growth-item">
+                    <div className="growth-title">平均助攻</div>
+                    <div className="growth-main">{growthSummary.latestAst}</div>
+                    <div
+                      className={`growth-diff ${
+                        growthSummary.astDiff > 0
+                          ? "up"
+                          : growthSummary.astDiff < 0
+                          ? "down"
+                          : ""
+                      }`}
+                    >
+                      {growthSummary.astDiff >= 0 ? "+" : ""}
+                      {growthSummary.astDiff}｜{getTrendLabel(growthSummary.astDiff)}
+                    </div>
+                  </div>
+
+                  <div className="growth-item">
+                    <div className="growth-title">平均籃板</div>
+                    <div className="growth-main">{growthSummary.latestReb}</div>
+                    <div
+                      className={`growth-diff ${
+                        growthSummary.rebDiff > 0
+                          ? "up"
+                          : growthSummary.rebDiff < 0
+                          ? "down"
+                          : ""
+                      }`}
+                    >
+                      {growthSummary.rebDiff >= 0 ? "+" : ""}
+                      {growthSummary.rebDiff}｜{getTrendLabel(growthSummary.rebDiff)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="growth-note">
+                  以上是最近 3 場相較前 3 場的團隊表現變化，能讓首頁直接顯示「有沒有進步」。
+                </div>
               </div>
-
-              <div className="feature-footer violet-text">
-                <span>查看球員</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
-
-            <button className="feature-card" onClick={handleOpenRankings}>
-              <div className="feature-card-glow emerald" />
-              <div className="feature-card-number">04</div>
-              <div className="feature-badge">排行</div>
-              <div className="feature-icon">🏆</div>
-              <h2>數據排行榜</h2>
-
-              <div className="feature-tags">
-                <span>得分</span>
-                <span>籃板</span>
-                <span>助攻</span>
-              </div>
-
-              <div className="feature-footer emerald-text">
-                <span>查看排行</span>
-                <span className="arrow">→</span>
-              </div>
-            </button>
-          </section>
+            </section>
+          </>
         )}
       </div>
 
@@ -686,6 +1184,136 @@ export default function ViewerGamesPage() {
           background: rgba(255,255,255,0.1);
         }
 
+        .insight-grid {
+          display: grid;
+          grid-template-columns: 1.4fr 0.8fr;
+          gap: 18px;
+          margin-bottom: 18px;
+        }
+
+        .panel-card {
+          position: relative;
+          overflow: hidden;
+          border-radius: 28px;
+          padding: 26px;
+          background:
+            linear-gradient(180deg, rgba(18,18,20,0.96) 0%, rgba(8,8,10,0.98) 100%);
+          border: 1px solid rgba(255,255,255,0.08);
+          box-shadow:
+            0 18px 40px rgba(0,0,0,0.34),
+            0 0 0 1px rgba(255,255,255,0.03);
+        }
+
+        .panel-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 16px;
+        }
+
+        .panel-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 8px 14px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.08);
+          color: #ffffff;
+          font-size: 12px;
+          font-weight: 900;
+          letter-spacing: 0.06em;
+        }
+
+        .panel-kicker {
+          font-size: 14px;
+          font-weight: 1000;
+        }
+
+        .panel-card h2 {
+          margin: 0 0 18px;
+          font-size: 26px;
+          font-weight: 1000;
+          letter-spacing: -0.03em;
+        }
+
+        .insight-list {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .insight-item {
+          border-radius: 20px;
+          padding: 16px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .insight-label {
+          font-size: 12px;
+          font-weight: 900;
+          color: rgba(255, 214, 170, 0.72);
+          margin-bottom: 10px;
+        }
+
+        .insight-value {
+          font-size: 18px;
+          line-height: 1.35;
+          font-weight: 900;
+          color: #fff;
+        }
+
+        .insight-sub {
+          margin-top: 8px;
+          font-size: 13px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.66);
+        }
+
+        .impact-summary-card {
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+
+        .leader-box {
+          border-radius: 20px;
+          padding: 18px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .leader-name {
+          font-size: 22px;
+          font-weight: 1000;
+          line-height: 1.3;
+        }
+
+        .leader-score {
+          margin-top: 10px;
+          font-size: 16px;
+          font-weight: 900;
+          color: #c4b5fd;
+        }
+
+        .leader-meta {
+          margin-top: 8px;
+          font-size: 13px;
+          color: rgba(255,255,255,0.68);
+        }
+
+        .mini-link {
+          margin-top: 16px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+          font-size: 14px;
+          font-weight: 900;
+        }
+
         .card-grid {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -831,12 +1459,196 @@ export default function ViewerGamesPage() {
           color: #86efac;
         }
 
+        .orange-text {
+          color: #fdba74;
+        }
+
         .arrow {
           transition: transform 0.2s ease;
         }
 
         .feature-card:hover .arrow {
           transform: translateX(4px);
+        }
+
+        .lower-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 18px;
+          margin-top: 18px;
+        }
+
+        .rank-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .rank-row {
+          display: flex;
+          justify-content: space-between;
+          gap: 14px;
+          padding: 14px 16px;
+          border-radius: 18px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .rank-left {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-width: 0;
+        }
+
+        .rank-index {
+          width: 34px;
+          height: 34px;
+          border-radius: 999px;
+          display: grid;
+          place-items: center;
+          background: rgba(168,85,247,0.14);
+          border: 1px solid rgba(196,181,253,0.22);
+          font-weight: 1000;
+          color: #ddd6fe;
+          flex-shrink: 0;
+        }
+
+        .rank-name {
+          font-size: 16px;
+          font-weight: 900;
+          color: #fff;
+          line-height: 1.3;
+        }
+
+        .rank-sub,
+        .rank-meta {
+          margin-top: 5px;
+          font-size: 12px;
+          color: rgba(255,255,255,0.66);
+        }
+
+        .rank-right {
+          text-align: right;
+          flex-shrink: 0;
+        }
+
+        .rank-score {
+          font-size: 22px;
+          font-weight: 1000;
+          color: #c4b5fd;
+        }
+
+        .summary-box {
+          border-radius: 20px;
+          padding: 18px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .summary-box p {
+          margin: 10px 0 0;
+          font-size: 14px;
+          line-height: 1.7;
+          color: rgba(255,255,255,0.78);
+        }
+
+        .summary-result {
+          font-size: 14px;
+          font-weight: 1000;
+          color: #93c5fd;
+        }
+
+        .summary-stats {
+          margin-top: 14px;
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .mini-stat {
+          padding: 14px 12px;
+          border-radius: 16px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .mini-stat span {
+          display: block;
+          font-size: 12px;
+          font-weight: 900;
+          color: rgba(255,255,255,0.62);
+          margin-bottom: 8px;
+        }
+
+        .mini-stat strong {
+          font-size: 20px;
+          font-weight: 1000;
+          color: #fff;
+        }
+
+        .growth-grid {
+          margin-top: 18px;
+        }
+
+        .growth-card {
+          padding-bottom: 24px;
+        }
+
+        .growth-stats {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+        }
+
+        .growth-item {
+          border-radius: 20px;
+          padding: 18px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.07);
+        }
+
+        .growth-title {
+          font-size: 12px;
+          font-weight: 900;
+          color: rgba(255,255,255,0.62);
+          margin-bottom: 10px;
+        }
+
+        .growth-main {
+          font-size: 30px;
+          font-weight: 1000;
+          color: #fff;
+          line-height: 1;
+        }
+
+        .growth-diff {
+          margin-top: 10px;
+          font-size: 13px;
+          font-weight: 900;
+          color: rgba(255,255,255,0.66);
+        }
+
+        .growth-diff.up {
+          color: #86efac;
+        }
+
+        .growth-diff.down {
+          color: #fca5a5;
+        }
+
+        .growth-note {
+          margin-top: 16px;
+          font-size: 13px;
+          line-height: 1.7;
+          color: rgba(255,255,255,0.68);
+        }
+
+        .empty-note {
+          padding: 14px 0;
+          color: rgba(255,255,255,0.66);
+          font-size: 14px;
+          line-height: 1.6;
         }
 
         .info-card,
@@ -878,9 +1690,28 @@ export default function ViewerGamesPage() {
           }
         }
 
+        @media (max-width: 1100px) {
+          .insight-grid,
+          .lower-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .insight-list {
+            grid-template-columns: 1fr;
+          }
+
+          .growth-stats {
+            grid-template-columns: 1fr;
+          }
+        }
+
         @media (max-width: 980px) {
           .card-grid {
             grid-template-columns: 1fr;
+          }
+
+          .summary-stats {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
 
@@ -890,7 +1721,8 @@ export default function ViewerGamesPage() {
           }
 
           .hero-card,
-          .feature-card {
+          .feature-card,
+          .panel-card {
             border-radius: 24px;
           }
 
@@ -898,8 +1730,12 @@ export default function ViewerGamesPage() {
             padding: 24px;
           }
 
-          .feature-card {
+          .feature-card,
+          .panel-card {
             padding: 22px;
+          }
+
+          .feature-card {
             min-height: 240px;
           }
 
@@ -941,7 +1777,8 @@ export default function ViewerGamesPage() {
             min-width: calc(50% - 8px);
           }
 
-          .feature-card h2 {
+          .feature-card h2,
+          .panel-card h2 {
             font-size: 22px;
           }
         }
@@ -955,7 +1792,8 @@ export default function ViewerGamesPage() {
             padding: 20px;
           }
 
-          .feature-card {
+          .feature-card,
+          .panel-card {
             padding: 20px;
           }
 
@@ -976,8 +1814,21 @@ export default function ViewerGamesPage() {
           .back-btn {
             flex: 1;
           }
+
+          .summary-stats {
+            grid-template-columns: 1fr;
+          }
+
+          .rank-row {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .rank-right {
+            text-align: left;
+          }
         }
       `}</style>
     </main>
   );
-} 
+}
