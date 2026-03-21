@@ -49,6 +49,7 @@ type PreviewStat = {
   ast: number;
   stl: number;
   blk: number;
+  eff: number;
 };
 
 function emptyPreviewStat(): PreviewStat {
@@ -59,6 +60,7 @@ function emptyPreviewStat(): PreviewStat {
     ast: 0,
     stl: 0,
     blk: 0,
+    eff: 0,
   };
 }
 
@@ -71,11 +73,21 @@ function toSafeNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function calcEfficiency(stat: {
+  pts: number;
+  reb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+}) {
+  return stat.pts + stat.reb + stat.ast + stat.stl + stat.blk;
+}
+
 export default function PlayersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [players, setPlayers] = useState<PlayerRow[]>([]);
-  const [firstTwoGameIds, setFirstTwoGameIds] = useState<string[]>([]);
+  const [games, setGames] = useState<GameRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
   const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
@@ -86,73 +98,45 @@ export default function PlayersPage() {
       setError("");
 
       try {
-        const { data: gamesData, error: gamesError } = await supabase
-          .from("games")
-          .select("id, game_date, created_at")
-          .order("game_date", { ascending: true, nullsFirst: false })
-          .order("created_at", { ascending: true, nullsFirst: false });
-
-        if (gamesError) throw gamesError;
-
-        const sortedGames = ((gamesData || []) as GameRow[])
-          .slice()
-          .sort((a, b) => {
-            const aTime = new Date(a.game_date || a.created_at || 0).getTime();
-            const bTime = new Date(b.game_date || b.created_at || 0).getTime();
-            return aTime - bTime;
-          });
-
-        const firstTwoIds = sortedGames.slice(0, 2).map((g) => g.id);
-        const laterGameIds = sortedGames.slice(2).map((g) => g.id);
-
-        const playerQuery = supabase
-          .from("players")
-          .select("id, name, number, position, active")
-          .order("number", { ascending: true, nullsFirst: false });
-
-        const eventQuery =
-          firstTwoIds.length > 0
-            ? supabase
-                .from("events")
-                .select("id, game_id, player_id, event_type, is_undone")
-                .in("game_id", firstTwoIds)
-            : Promise.resolve({ data: [], error: null } as any);
-
-        const gamePlayersQuery =
-          firstTwoIds.length > 0
-            ? supabase
-                .from("game_players")
-                .select("player_id, game_id")
-                .in("game_id", firstTwoIds)
-            : Promise.resolve({ data: [], error: null } as any);
-
-        const playerGameStatsQuery =
-          laterGameIds.length > 0
-            ? supabase
-                .from("player_game_stats")
-                .select("player_id, game_id, pts, reb, ast, stl, blk")
-                .in("game_id", laterGameIds)
-            : Promise.resolve({ data: [], error: null } as any);
-
         const [
+          { data: gamesData, error: gamesError },
           { data: playerData, error: playerError },
           { data: eventData, error: eventError },
           { data: gpData, error: gpError },
           { data: pgsData, error: pgsError },
         ] = await Promise.all([
-          playerQuery,
-          eventQuery as any,
-          gamePlayersQuery as any,
-          playerGameStatsQuery as any,
+          supabase
+            .from("games")
+            .select("id, game_date, created_at")
+            .order("game_date", { ascending: true, nullsFirst: false })
+            .order("created_at", { ascending: true, nullsFirst: false }),
+
+          supabase
+            .from("players")
+            .select("id, name, number, position, active")
+            .order("number", { ascending: true, nullsFirst: false }),
+
+          supabase
+            .from("events")
+            .select("id, game_id, player_id, event_type, is_undone"),
+
+          supabase
+            .from("game_players")
+            .select("player_id, game_id"),
+
+          supabase
+            .from("player_game_stats")
+            .select("player_id, game_id, pts, reb, ast, stl, blk"),
         ]);
 
+        if (gamesError) throw gamesError;
         if (playerError) throw playerError;
         if (eventError) throw eventError;
         if (gpError) throw gpError;
         if (pgsError) throw pgsError;
 
+        setGames((gamesData || []) as GameRow[]);
         setPlayers((playerData || []) as PlayerRow[]);
-        setFirstTwoGameIds(firstTwoIds);
         setEvents((eventData || []) as EventRow[]);
         setGamePlayers((gpData || []) as GamePlayerRow[]);
         setPlayerGameStats((pgsData || []) as PlayerGameStatRow[]);
@@ -174,6 +158,14 @@ export default function PlayersPage() {
       map.set(player.id, emptyPreviewStat());
     }
 
+    const ensureStat = (playerId: string) => {
+      if (!map.has(playerId)) {
+        map.set(playerId, emptyPreviewStat());
+      }
+      return map.get(playerId)!;
+    };
+
+    // 用來紀錄每個球員打了哪些比賽
     const playedGameSetMap = new Map<string, Set<string>>();
 
     const ensurePlayedSet = (playerId: string) => {
@@ -183,99 +175,138 @@ export default function PlayersPage() {
       return playedGameSetMap.get(playerId)!;
     };
 
-    const ensureStat = (playerId: string) => {
-      if (!map.has(playerId)) {
-        map.set(playerId, emptyPreviewStat());
-      }
-      return map.get(playerId)!;
-    };
-
-    // 前兩場：用 game_players + events
+    // 先記錄 game_players，作為出賽場次基礎
     for (const row of gamePlayers) {
       if (!row.player_id || !row.game_id) continue;
       ensurePlayedSet(row.player_id).add(row.game_id);
       ensureStat(row.player_id);
     }
 
+    // 先把 player_game_stats 做成 map
+    const playerGameStatsMap = new Map<string, PlayerGameStatRow>();
+    for (const row of playerGameStats) {
+      if (!row.player_id || !row.game_id) continue;
+      playerGameStatsMap.set(`${row.player_id}__${row.game_id}`, row);
+    }
+
+    // 把 events 依 player_id + game_id 分組，留作 fallback
+    const eventGroupMap = new Map<string, EventRow[]>();
     for (const ev of events) {
       if (!ev.player_id || !ev.game_id) continue;
       if (ev.is_undone) continue;
 
+      const key = `${ev.player_id}__${ev.game_id}`;
+      if (!eventGroupMap.has(key)) {
+        eventGroupMap.set(key, []);
+      }
+      eventGroupMap.get(key)!.push(ev);
+
       ensurePlayedSet(ev.player_id).add(ev.game_id);
+      ensureStat(ev.player_id);
+    }
 
-      const stat = ensureStat(ev.player_id);
+    // 建立所有 player-game key
+    const allPlayerGameKeys = new Set<string>();
 
-      switch (ev.event_type) {
-        case "fg2_made":
-          stat.pts += 2;
-          break;
-        case "fg3_made":
-          stat.pts += 3;
-          break;
-        case "ft_made":
-          stat.pts += 1;
-          break;
-        case "reb":
-          stat.reb += 1;
-          break;
-        case "ast":
-          stat.ast += 1;
-          break;
-        case "stl":
-          stat.stl += 1;
-          break;
-        case "blk":
-          stat.blk += 1;
-          break;
-        default:
-          break;
+    for (const row of gamePlayers) {
+      if (!row.player_id || !row.game_id) continue;
+      allPlayerGameKeys.add(`${row.player_id}__${row.game_id}`);
+    }
+
+    for (const row of playerGameStats) {
+      if (!row.player_id || !row.game_id) continue;
+      allPlayerGameKeys.add(`${row.player_id}__${row.game_id}`);
+    }
+
+    for (const ev of events) {
+      if (!ev.player_id || !ev.game_id) continue;
+      if (ev.is_undone) continue;
+      allPlayerGameKeys.add(`${ev.player_id}__${ev.game_id}`);
+    }
+
+    // 每個 player-game 先吃 player_game_stats，沒有再 fallback 用 events 計算
+    for (const key of allPlayerGameKeys) {
+      const [playerId, gameId] = key.split("__");
+      if (!playerId || !gameId) continue;
+
+      const stat = ensureStat(playerId);
+      const pgs = playerGameStatsMap.get(key);
+
+      if (pgs) {
+        stat.pts += toSafeNumber(pgs.pts);
+        stat.reb += toSafeNumber(pgs.reb);
+        stat.ast += toSafeNumber(pgs.ast);
+        stat.stl += toSafeNumber(pgs.stl);
+        stat.blk += toSafeNumber(pgs.blk);
+        continue;
+      }
+
+      const evs = eventGroupMap.get(key) || [];
+      for (const ev of evs) {
+        switch (ev.event_type) {
+          case "fg2_made":
+            stat.pts += 2;
+            break;
+          case "fg3_made":
+            stat.pts += 3;
+            break;
+          case "ft_made":
+            stat.pts += 1;
+            break;
+          case "reb":
+            stat.reb += 1;
+            break;
+          case "ast":
+            stat.ast += 1;
+            break;
+          case "stl":
+            stat.stl += 1;
+            break;
+          case "blk":
+            stat.blk += 1;
+            break;
+          default:
+            break;
+        }
       }
     }
 
-    // 後面場次：改讀 player_game_stats
-    for (const row of playerGameStats) {
-      if (!row.player_id || !row.game_id) continue;
-
-      ensurePlayedSet(row.player_id).add(row.game_id);
-
-      const stat = ensureStat(row.player_id);
-      stat.pts += toSafeNumber(row.pts);
-      stat.reb += toSafeNumber(row.reb);
-      stat.ast += toSafeNumber(row.ast);
-      stat.stl += toSafeNumber(row.stl);
-      stat.blk += toSafeNumber(row.blk);
-    }
-
     for (const [playerId, gameSet] of playedGameSetMap.entries()) {
-      ensureStat(playerId).gp = gameSet.size;
+      const stat = ensureStat(playerId);
+      stat.gp = gameSet.size;
+      stat.eff = calcEfficiency(stat);
     }
 
     return map;
-  }, [players, events, gamePlayers, playerGameStats]);
+  }, [players, events, gamePlayers, playerGameStats, games]);
 
   const sortedPlayers = useMemo(() => {
     return [...players].sort((a, b) => {
       const aStat = statMap.get(a.id) || emptyPreviewStat();
       const bStat = statMap.get(b.id) || emptyPreviewStat();
 
-      // 先比總得分高低
+      if (bStat.eff !== aStat.eff) {
+        return bStat.eff - aStat.eff;
+      }
+
       if (bStat.pts !== aStat.pts) {
         return bStat.pts - aStat.pts;
       }
 
-      // 得分一樣時，比出賽場次
-      if (bStat.gp !== aStat.gp) {
-        return bStat.gp - aStat.gp;
+      if (bStat.ast !== aStat.ast) {
+        return bStat.ast - aStat.ast;
       }
 
-      // 再來比背號
+      if (bStat.reb !== aStat.reb) {
+        return bStat.reb - aStat.reb;
+      }
+
       const aNumber = a.number ?? 9999;
       const bNumber = b.number ?? 9999;
       if (aNumber !== bNumber) {
         return aNumber - bNumber;
       }
 
-      // 最後比名字
       return (a.name || "").localeCompare(b.name || "", "zh-Hant");
     });
   }, [players, statMap]);
@@ -308,26 +339,9 @@ export default function PlayersPage() {
           }}
         >
           <div style={{ display: "grid", gap: 6 }}>
-            <div
-              style={{
-                fontSize: 14,
-                color: "rgba(255,255,255,0.58)",
-                fontWeight: 700,
-                letterSpacing: 0.6,
-              }}
-            >
-              TEAM ROSTER
-            </div>
-            <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>球員列表</h1>
-            <div
-              style={{
-                color: "rgba(255,255,255,0.6)",
-                fontSize: 14,
-                fontWeight: 600,
-              }}
-            >
-              依總得分高到低排序；同分時依出賽場次排序
-            </div>
+            <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>
+              球員數據
+            </h1>
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -365,18 +379,6 @@ export default function PlayersPage() {
           </div>
         ) : null}
 
-        {!loading && firstTwoGameIds.length > 0 ? (
-          <div
-            style={{
-              fontSize: 13,
-              color: "rgba(255,255,255,0.55)",
-              fontWeight: 700,
-            }}
-          >
-            前兩場比賽維持舊邏輯，其餘場次使用 player_game_stats
-          </div>
-        ) : null}
-
         {loading ? (
           <div
             style={{
@@ -400,76 +402,73 @@ export default function PlayersPage() {
                   style={{ textDecoration: "none", color: "#fff" }}
                 >
                   <article className="playerCard">
-                    <div style={{ display: "grid", gap: 12 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "flex-start",
-                          gap: 12,
-                        }}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontSize: 16,
-                              color: "rgba(255,255,255,0.55)",
-                              fontWeight: 800,
-                              letterSpacing: 0.3,
-                            }}
-                          >
-                            #{player.number ?? "-"}
-                          </div>
-
-                          <div
-                            style={{
-                              marginTop: 4,
-                              fontSize: 22,
-                              lineHeight: 1.15,
-                              fontWeight: 900,
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            {player.name}
-                          </div>
-
-                          <div
-                            style={{
-                              marginTop: 10,
-                              display: "flex",
-                              gap: 8,
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <span
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 999,
-                                background: "rgba(255,255,255,0.07)",
-                                border: "1px solid rgba(255,255,255,0.08)",
-                                fontSize: 12,
-                                fontWeight: 800,
-                              }}
-                            >
-                              {player.position || "未設定位置"}
-                            </span>
-                          </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        gap: 12,
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: 16,
+                            color: "rgba(255,255,255,0.65)",
+                            fontWeight: 800,
+                          }}
+                        >
+                          #{player.number ?? "-"}
                         </div>
 
                         <div
                           style={{
-                            flexShrink: 0,
-                            padding: "8px 12px",
-                            borderRadius: 999,
-                            background: "rgba(245,158,11,0.14)",
-                            border: "1px solid rgba(245,158,11,0.22)",
-                            color: "#fbbf24",
-                            fontSize: 12,
+                            marginTop: 4,
+                            fontSize: 22,
+                            lineHeight: 1.15,
                             fontWeight: 900,
+                            wordBreak: "break-word",
                           }}
                         >
-                          球員頁 →
+                          {player.name}
                         </div>
+
+                        <div
+                          style={{
+                            marginTop: 10,
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              background: "rgba(255,255,255,0.07)",
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {player.position || "未設定位置"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          flexShrink: 0,
+                          padding: "8px 12px",
+                          borderRadius: 999,
+                          background: "rgba(245,158,11,0.14)",
+                          border: "1px solid rgba(245,158,11,0.22)",
+                          color: "#fbbf24",
+                          fontSize: 12,
+                          fontWeight: 900,
+                        }}
+                      >
+                        效率值 {stat.eff}
                       </div>
                     </div>
 
@@ -481,19 +480,15 @@ export default function PlayersPage() {
                       }}
                     >
                       {[
-                        { label: "GP", value: String(stat.gp) },
-                        { label: "TOTAL PTS", value: String(stat.pts) },
-                        { label: "AVG PTS", value: avg(stat.pts, stat.gp) },
-                        { label: "AVG REB", value: avg(stat.reb, stat.gp) },
-                        { label: "AVG AST", value: avg(stat.ast, stat.gp) },
-                        { label: "AVG STL", value: avg(stat.stl, stat.gp) },
-                        { label: "AVG BLK", value: avg(stat.blk, stat.gp) },
+                        { label: "場均得分", value: avg(stat.pts, stat.gp) },
+                        { label: "場均助攻", value: avg(stat.ast, stat.gp) },
+                        { label: "場均籃板", value: avg(stat.reb, stat.gp) },
                       ].map((item) => (
                         <div key={item.label} className="statBox">
                           <div
                             style={{
-                              fontSize: 11,
-                              color: "rgba(255,255,255,0.56)",
+                              fontSize: 12,
+                              color: "rgba(255,255,255,0.62)",
                               fontWeight: 800,
                             }}
                           >
@@ -502,7 +497,7 @@ export default function PlayersPage() {
                           <div
                             style={{
                               marginTop: 6,
-                              fontSize: 22,
+                              fontSize: 24,
                               fontWeight: 900,
                               lineHeight: 1,
                             }}
@@ -516,22 +511,11 @@ export default function PlayersPage() {
                     <div
                       style={{
                         display: "flex",
-                        justifyContent: "space-between",
+                        justifyContent: "flex-end",
                         alignItems: "center",
-                        gap: 12,
                         paddingTop: 4,
                       }}
                     >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "rgba(255,255,255,0.62)",
-                          fontWeight: 700,
-                        }}
-                      >
-                        點擊查看完整球員頁
-                      </div>
-
                       <div
                         style={{
                           borderRadius: 999,
@@ -542,7 +526,7 @@ export default function PlayersPage() {
                           fontWeight: 900,
                         }}
                       >
-                        查看 →
+                        查看球員頁
                       </div>
                     </div>
                   </article>
@@ -588,7 +572,7 @@ export default function PlayersPage() {
           padding: 12px;
           background: rgba(255, 255, 255, 0.035);
           border: 1px solid rgba(255, 255, 255, 0.06);
-          min-height: 78px;
+          min-height: 86px;
           display: flex;
           flex-direction: column;
           justify-content: center;
