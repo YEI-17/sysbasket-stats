@@ -269,7 +269,10 @@ function getStarterIdsFallback(params: {
 
   const q1TeamAEvents = sortEventsStable(
     validEvents.filter(
-      (e) => normalizeTeamSide(e.team_side) === "teamA" && e.quarter === 1 && !!e.player_id
+      (e) =>
+        normalizeTeamSide(e.team_side) === "teamA" &&
+        e.quarter === 1 &&
+        !!e.player_id
     )
   );
 
@@ -368,8 +371,8 @@ function didPlayerAppear(stat: StatLine, plusMinus: number, hasShift: boolean) {
   );
 }
 
-function logSyncDebug(label: string, payload?: unknown) {
-  console.log(`[syncAggregateStats] ${label}`, payload ?? "");
+function logFinalizeDebug(label: string, payload?: unknown) {
+  console.log(`[finalizeGameStats] ${label}`, payload ?? "");
 }
 
 export default function LiveGamePage() {
@@ -400,9 +403,6 @@ export default function LiveGamePage() {
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
   const autoQuarterAdvanceLockRef = useRef(false);
-  const syncingStatsRef = useRef(false);
-  const pendingSyncRef = useRef(false);
-  const aggregateSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cooldownRef = useRef<Record<string, number>>({});
   const eventsReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -427,18 +427,6 @@ export default function LiveGamePage() {
     if (ref.current) clearTimeout(ref.current);
     ref.current = setTimeout(() => {
       void fn();
-    }, delay);
-  }
-
-  function scheduleAggregateSync(delay = 180) {
-    if (!game?.id) return;
-
-    if (aggregateSyncTimerRef.current) {
-      clearTimeout(aggregateSyncTimerRef.current);
-    }
-
-    aggregateSyncTimerRef.current = setTimeout(() => {
-      void syncAggregateStats();
     }, delay);
   }
 
@@ -665,7 +653,6 @@ export default function LiveGamePage() {
         async () => {
           scheduleReload(eventsReloadTimerRef, async () => {
             await loadEvents(gameId);
-            scheduleAggregateSync(220);
           }, 80);
         }
       )
@@ -706,7 +693,6 @@ export default function LiveGamePage() {
         async () => {
           scheduleReload(gamePlayersReloadTimerRef, async () => {
             await loadGamePlayers(gameId);
-            scheduleAggregateSync(220);
           }, 80);
         }
       )
@@ -721,7 +707,6 @@ export default function LiveGamePage() {
         async () => {
           scheduleReload(playerShiftsReloadTimerRef, async () => {
             await loadPlayerShifts(gameId);
-            scheduleAggregateSync(220);
           }, 80);
         }
       )
@@ -741,10 +726,9 @@ export default function LiveGamePage() {
       if (gameReloadTimerRef.current) clearTimeout(gameReloadTimerRef.current);
       if (gamePlayersReloadTimerRef.current) clearTimeout(gamePlayersReloadTimerRef.current);
       if (playerShiftsReloadTimerRef.current) clearTimeout(playerShiftsReloadTimerRef.current);
-      if (aggregateSyncTimerRef.current) clearTimeout(aggregateSyncTimerRef.current);
       supabase.removeChannel(channel);
     };
-  }, [gameId, game?.id]);
+  }, [gameId]);
 
   useEffect(() => {
     if (!clock?.is_running || !game) {
@@ -855,239 +839,208 @@ export default function LiveGamePage() {
     return Array.from(lineup).slice(0, 5);
   }, [starterIds, validEvents]);
 
-  async function syncAggregateStats() {
-    if (!game?.id) return;
+  async function buildFinalStatsPayload(currentGameId: string) {
+    const [
+      { data: latestEvents, error: eventsError },
+      { data: latestGamePlayers, error: gamePlayersError },
+      { data: latestPlayerShifts, error: playerShiftsError },
+    ] = await Promise.all([
+      supabase
+        .from("events")
+        .select(
+          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+        )
+        .eq("game_id", currentGameId)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("game_players")
+        .select("id, game_id, player_id, team_side, is_starter")
+        .eq("game_id", currentGameId),
+      supabase
+        .from("player_shifts")
+        .select(
+          "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
+        )
+        .eq("game_id", currentGameId),
+    ]);
 
-    if (syncingStatsRef.current) {
-      pendingSyncRef.current = true;
-      return;
+    if (eventsError) {
+      throw new Error(`讀取 events 失敗：${eventsError.message}`);
+    }
+    if (gamePlayersError) {
+      throw new Error(`讀取 game_players 失敗：${gamePlayersError.message}`);
+    }
+    if (playerShiftsError) {
+      throw new Error(`讀取 player_shifts 失敗：${playerShiftsError.message}`);
     }
 
-    syncingStatsRef.current = true;
+    const valid = sortEventsStable((latestEvents ?? []).filter((e) => !e.is_undone));
+    const currentGamePlayers = (latestGamePlayers ?? []) as GamePlayerRow[];
+    const currentPlayerShifts = (latestPlayerShifts ?? []) as PlayerShiftRow[];
 
-    try {
-      do {
-        pendingSyncRef.current = false;
+    const normalizedGamePlayers = currentGamePlayers.map((gp) => ({
+      ...gp,
+      team_side: normalizeTeamSide(gp.team_side) ?? "teamA",
+    })) as GamePlayerRow[];
 
-        const currentGameId = game.id;
+    const teamAIds = normalizedGamePlayers
+      .filter((gp) => gp.team_side === "teamA")
+      .map((gp) => gp.player_id);
 
-        logSyncDebug("start", {
-          gameId: currentGameId,
-        });
+    logFinalizeDebug("snapshot", {
+      gameId: currentGameId,
+      totalEvents: latestEvents?.length ?? 0,
+      validEvents: valid.length,
+      totalGamePlayers: currentGamePlayers.length,
+      teamAIds,
+      totalPlayerShifts: currentPlayerShifts.length,
+    });
 
-        const [
-          { data: latestEvents, error: eventsError },
-          { data: latestGamePlayers, error: gamePlayersError },
-          { data: latestPlayerShifts, error: playerShiftsError },
-        ] = await Promise.all([
-          supabase
-            .from("events")
-            .select(
-              "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-            )
-            .eq("game_id", currentGameId)
-            .order("created_at", { ascending: true }),
-          supabase
-            .from("game_players")
-            .select("id, game_id, player_id, team_side, is_starter")
-            .eq("game_id", currentGameId),
-          supabase
-            .from("player_shifts")
-            .select(
-              "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
-            )
-            .eq("game_id", currentGameId),
-        ]);
-
-        if (eventsError) {
-          logSyncDebug("read events failed", eventsError);
-          setError(`同步球員數據失敗：讀取 events 失敗：${eventsError.message}`);
-          return;
-        }
-
-        if (gamePlayersError) {
-          logSyncDebug("read game_players failed", gamePlayersError);
-          setError(`同步球員數據失敗：讀取 game_players 失敗：${gamePlayersError.message}`);
-          return;
-        }
-
-        if (playerShiftsError) {
-          logSyncDebug("read player_shifts failed", playerShiftsError);
-          setError(`同步球員數據失敗：讀取 player_shifts 失敗：${playerShiftsError.message}`);
-          return;
-        }
-
-        const valid = sortEventsStable((latestEvents ?? []).filter((e) => !e.is_undone));
-        const currentGamePlayers = (latestGamePlayers ?? []) as GamePlayerRow[];
-        const currentPlayerShifts = (latestPlayerShifts ?? []) as PlayerShiftRow[];
-
-        const normalizedGamePlayers = currentGamePlayers.map((gp) => ({
-          ...gp,
-          team_side: normalizeTeamSide(gp.team_side) ?? "teamA",
-        })) as GamePlayerRow[];
-
-        const teamAIds = normalizedGamePlayers
-          .filter((gp) => gp.team_side === "teamA")
-          .map((gp) => gp.player_id);
-
-        logSyncDebug("snapshot", {
-          totalEvents: latestEvents?.length ?? 0,
-          validEvents: valid.length,
-          totalGamePlayers: currentGamePlayers.length,
-          teamAIds,
-          totalPlayerShifts: currentPlayerShifts.length,
-        });
-
-        if (currentGamePlayers.length === 0) {
-          logSyncDebug("skip because game_players empty");
-          scheduleAggregateSync(350);
-          return;
-        }
-
-        if (teamAIds.length === 0) {
-          logSyncDebug("skip because teamAIds empty", currentGamePlayers);
-          scheduleAggregateSync(350);
-          return;
-        }
-
-        const starters = getStarterIdsFallback({
-          gamePlayers: normalizedGamePlayers,
-          validEvents: valid.map((e) => ({
-            ...e,
-            team_side: normalizeTeamSide(e.team_side),
-          })),
-        });
-
-        const plusMinusMap = computePlusMinusMap({
-          teamAIds,
-          starterIds: starters,
-          validEvents: valid.map((e) => ({
-            ...e,
-            team_side: normalizeTeamSide(e.team_side),
-          })),
-        });
-
-        const playerStatMap = new Map<string, StatLine>();
-
-        for (const playerId of teamAIds) {
-          playerStatMap.set(playerId, emptyStat());
-        }
-
-        const teamStat = emptyStat();
-        let oppPts = 0;
-
-        for (const rawEvent of valid) {
-          const e = {
-            ...rawEvent,
-            team_side: normalizeTeamSide(rawEvent.team_side),
-          };
-
-          if (e.team_side === "teamA") {
-            applyEventToStat(teamStat, e.event_type);
-
-            if (!e.player_id) continue;
-
-            if (!playerStatMap.has(e.player_id)) {
-              logSyncDebug("event player_id not in roster", {
-                eventId: e.id,
-                eventType: e.event_type,
-                playerId: e.player_id,
-              });
-              continue;
-            }
-
-            const stat = playerStatMap.get(e.player_id)!;
-            applyEventToStat(stat, e.event_type);
-            continue;
-          }
-
-          if (e.team_side === "teamB") {
-            oppPts += getPoints(e.event_type);
-          }
-        }
-
-        const playerRows = teamAIds.map((playerId) => {
-          const stat = playerStatMap.get(playerId) ?? emptyStat();
-          const plusMinus = plusMinusMap[playerId] ?? 0;
-          const hasShift = currentPlayerShifts.some(
-            (s) => s.player_id === playerId && s.game_id === currentGameId
-          );
-
-          return {
-            game_id: currentGameId,
-            player_id: playerId,
-            team_side: "teamA",
-            gp: didPlayerAppear(stat, plusMinus, hasShift) ? 1 : 0,
-            pts: stat.pts,
-            fg2m: stat.fg2m,
-            fg2a: stat.fg2a,
-            fg3m: stat.fg3m,
-            fg3a: stat.fg3a,
-            ftm: stat.ftm,
-            fta: stat.fta,
-            reb: stat.reb,
-            ast: stat.ast,
-            stl: stat.stl,
-            blk: stat.blk,
-            tov: stat.tov,
-            pf: stat.pf,
-            plus_minus: plusMinus,
-          };
-        });
-
-        const teamRow = {
-          game_id: currentGameId,
-          team_side: "teamA",
-          pts: teamStat.pts,
-          fg2m: teamStat.fg2m,
-          fg2a: teamStat.fg2a,
-          fg3m: teamStat.fg3m,
-          fg3a: teamStat.fg3a,
-          ftm: teamStat.ftm,
-          fta: teamStat.fta,
-          reb: teamStat.reb,
-          ast: teamStat.ast,
-          stl: teamStat.stl,
-          blk: teamStat.blk,
-          tov: teamStat.tov,
-          pf: teamStat.pf,
-          opp_pts: oppPts,
-        };
-
-        logSyncDebug("rows ready", {
-          playerRowsCount: playerRows.length,
-          teamRow,
-        });
-
-        const { error: playerStatError } = await supabase
-          .from("player_game_stats")
-          .upsert(playerRows, { onConflict: "game_id,player_id" });
-
-        if (playerStatError) {
-          logSyncDebug("player_game_stats upsert failed", playerStatError);
-          setError(`同步球員數據失敗：${playerStatError.message}`);
-          return;
-        }
-
-        const { error: teamStatError } = await supabase
-          .from("team_game_stats")
-          .upsert(teamRow, { onConflict: "game_id,team_side" });
-
-        if (teamStatError) {
-          logSyncDebug("team_game_stats upsert failed", teamStatError);
-          setError(`同步團隊數據失敗：${teamStatError.message}`);
-          return;
-        }
-
-        logSyncDebug("success", {
-          gameId: currentGameId,
-          teamPts: teamStat.pts,
-          oppPts,
-        });
-      } while (pendingSyncRef.current);
-    } finally {
-      syncingStatsRef.current = false;
+    if (currentGamePlayers.length === 0) {
+      throw new Error("game_players 為空，無法產生最終統計");
     }
+
+    if (teamAIds.length === 0) {
+      throw new Error("teamA 球員名單為空，無法產生最終統計");
+    }
+
+    const normalizedValidEvents = valid.map((e) => ({
+      ...e,
+      team_side: normalizeTeamSide(e.team_side),
+    }));
+
+    const starters = getStarterIdsFallback({
+      gamePlayers: normalizedGamePlayers,
+      validEvents: normalizedValidEvents,
+    });
+
+    const plusMinusMap = computePlusMinusMap({
+      teamAIds,
+      starterIds: starters,
+      validEvents: normalizedValidEvents,
+    });
+
+    const playerStatMap = new Map<string, StatLine>();
+
+    for (const playerId of teamAIds) {
+      playerStatMap.set(playerId, emptyStat());
+    }
+
+    const teamStat = emptyStat();
+    let oppPts = 0;
+
+    for (const rawEvent of valid) {
+      const e = {
+        ...rawEvent,
+        team_side: normalizeTeamSide(rawEvent.team_side),
+      };
+
+      if (e.team_side === "teamA") {
+        applyEventToStat(teamStat, e.event_type);
+
+        if (!e.player_id) continue;
+
+        if (!playerStatMap.has(e.player_id)) {
+          logFinalizeDebug("event player_id not in roster", {
+            eventId: e.id,
+            eventType: e.event_type,
+            playerId: e.player_id,
+          });
+          continue;
+        }
+
+        const stat = playerStatMap.get(e.player_id)!;
+        applyEventToStat(stat, e.event_type);
+        continue;
+      }
+
+      if (e.team_side === "teamB") {
+        oppPts += getPoints(e.event_type);
+      }
+    }
+
+    const playerRows = teamAIds.map((playerId) => {
+      const stat = playerStatMap.get(playerId) ?? emptyStat();
+      const plusMinus = plusMinusMap[playerId] ?? 0;
+      const hasShift = currentPlayerShifts.some(
+        (s) => s.player_id === playerId && s.game_id === currentGameId
+      );
+
+      return {
+        game_id: currentGameId,
+        player_id: playerId,
+        team_side: "teamA",
+        gp: didPlayerAppear(stat, plusMinus, hasShift) ? 1 : 0,
+        pts: stat.pts,
+        fg2m: stat.fg2m,
+        fg2a: stat.fg2a,
+        fg3m: stat.fg3m,
+        fg3a: stat.fg3a,
+        ftm: stat.ftm,
+        fta: stat.fta,
+        reb: stat.reb,
+        ast: stat.ast,
+        stl: stat.stl,
+        blk: stat.blk,
+        tov: stat.tov,
+        pf: stat.pf,
+        plus_minus: plusMinus,
+      };
+    });
+
+    const teamRow = {
+      game_id: currentGameId,
+      team_side: "teamA",
+      pts: teamStat.pts,
+      fg2m: teamStat.fg2m,
+      fg2a: teamStat.fg2a,
+      fg3m: teamStat.fg3m,
+      fg3a: teamStat.fg3a,
+      ftm: teamStat.ftm,
+      fta: teamStat.fta,
+      reb: teamStat.reb,
+      ast: teamStat.ast,
+      stl: teamStat.stl,
+      blk: teamStat.blk,
+      tov: teamStat.tov,
+      pf: teamStat.pf,
+      opp_pts: oppPts,
+    };
+
+    return {
+      playerRows,
+      teamRow,
+    };
+  }
+
+  async function finalizeGameStats(currentGameId: string) {
+    logFinalizeDebug("start", { gameId: currentGameId });
+
+    const { playerRows, teamRow } = await buildFinalStatsPayload(currentGameId);
+
+    const { error: playerStatError } = await supabase
+      .from("player_game_stats")
+      .upsert(playerRows, { onConflict: "game_id,player_id" });
+
+    if (playerStatError) {
+      logFinalizeDebug("player_game_stats upsert failed", playerStatError);
+      throw new Error(`寫入 player_game_stats 失敗：${playerStatError.message}`);
+    }
+
+    const { error: teamStatError } = await supabase
+      .from("team_game_stats")
+      .upsert(teamRow, { onConflict: "game_id,team_side" });
+
+    if (teamStatError) {
+      logFinalizeDebug("team_game_stats upsert failed", teamStatError);
+      throw new Error(`寫入 team_game_stats 失敗：${teamStatError.message}`);
+    }
+
+    logFinalizeDebug("success", {
+      gameId: currentGameId,
+      playerRowsCount: playerRows.length,
+      teamRow,
+    });
   }
 
   async function startClock() {
@@ -1223,8 +1176,10 @@ export default function LiveGamePage() {
     setError("");
 
     try {
+      let pausedClock = clock;
+
       if (clock) {
-        const pausedClock = { ...clock, is_running: false };
+        pausedClock = { ...clock, is_running: false };
         setClock(pausedClock);
         await persistClock(pausedClock);
 
@@ -1247,7 +1202,7 @@ export default function LiveGamePage() {
         }
       }
 
-      const { error } = await supabase
+      const { error: gameUpdateError } = await supabase
         .from("games")
         .update({
           status: "finished",
@@ -1255,10 +1210,16 @@ export default function LiveGamePage() {
         })
         .eq("id", game.id);
 
-      if (error) {
-        setError(`結束比賽失敗：${error.message}`);
+      if (gameUpdateError) {
+        setError(`結束比賽失敗：${gameUpdateError.message}`);
         return;
       }
+
+      await loadPlayerShifts(game.id);
+      await loadEvents(game.id);
+      await loadGamePlayers(game.id);
+
+      await finalizeGameStats(game.id);
 
       setGame((prev) =>
         prev
@@ -1269,8 +1230,10 @@ export default function LiveGamePage() {
             }
           : prev
       );
-
-      scheduleAggregateSync(250);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "完賽統計失敗";
+      setError(message);
+      return;
     } finally {
       setEndingGame(false);
     }
@@ -1322,7 +1285,7 @@ export default function LiveGamePage() {
     } = {
       game_id: game.id,
       quarter: clock.quarter,
-      event_type:eventType,
+      event_type: eventType,
       team_side: teamSide,
     };
 
@@ -1356,9 +1319,7 @@ export default function LiveGamePage() {
         ...events.filter((e) => e.id !== data.id),
         data,
       ]);
-
       setEvents(nextEvents);
-      scheduleAggregateSync(220);
     }
   }
 
@@ -1399,7 +1360,6 @@ export default function LiveGamePage() {
     );
 
     setEvents(nextEvents);
-    scheduleAggregateSync(220);
   }
 
   useEffect(() => {
@@ -1488,12 +1448,6 @@ export default function LiveGamePage() {
     void ensureStarterShiftsForCurrentQuarter(gameId, 1, starterIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameId, starterIds.join(","), clock?.quarter]);
-
-  useEffect(() => {
-    if (!game || !gamePlayers.length) return;
-    scheduleAggregateSync(260);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, game?.id, gamePlayers, playerShifts]);
 
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId) ?? null,
@@ -1662,9 +1616,7 @@ export default function LiveGamePage() {
         const existingIds = new Set(events.map((e) => e.id));
         const nextItems = data.filter((e) => !existingIds.has(e.id));
         const nextEvents = sortEventsStable([...events, ...nextItems]);
-
         setEvents(nextEvents);
-        scheduleAggregateSync(220);
       }
     } finally {
       setSubmittingSub(false);
@@ -1698,471 +1650,390 @@ export default function LiveGamePage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#030303] text-white">
-      <div className="mx-auto max-w-[1800px] p-2 md:p-3">
-        <div className="flex min-h-[calc(100vh-16px)] flex-col gap-2 md:gap-3">
-          <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] px-3 py-2.5 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-lg font-black md:text-2xl">
-                  {game?.teamA || "我方"} <span className="text-white/50">vs</span>{" "}
-                  {game?.teamB || "對手"}
-                </div>
-
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  <div
-                    className={`rounded-full px-2.5 py-1 text-[11px] font-black ${
-                      game?.status === "finished"
-                        ? "bg-red-500/15 text-red-300"
-                        : clock?.is_running
-                        ? "bg-emerald-500/15 text-emerald-300"
-                        : "bg-yellow-500/15 text-yellow-300"
-                    }`}
-                  >
-                    {game?.status === "finished"
-                      ? "比賽已結束"
-                      : clock?.is_running
-                      ? "計時中"
-                      : "暫停中"}
-                  </div>
-
-                  <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
-                    {getQuarterLabel(clock?.quarter ?? 1)}
-                  </div>
-
-                  <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
-                    觀看 {viewerCount}
-                  </div>
-
-                  {recentQuarterScore && (
-                    <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
-                      本節 {recentQuarterScore.home}:{recentQuarterScore.away}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Link
-                  href={`/games/${gameId}/board`}
-                  className="rounded-2xl bg-indigo-600 px-3 py-2 text-xs font-black transition hover:bg-indigo-500"
-                >
-                  數據頁
-                </Link>
-                <LogoutButton />
-              </div>
+    <div className="min-h-screen bg-slate-950 text-white">
+      <div className="mx-auto max-w-7xl px-4 py-5 md:px-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link
+              href="/games"
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-bold hover:bg-white/10"
+            >
+              返回賽事中心
+            </Link>
+            <div className="text-sm text-white/70">
+              觀看人數：<span className="font-bold text-white">{viewerCount}</span>
             </div>
+          </div>
+          <LogoutButton />
+        </div>
 
-            <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-[20px] border border-white/10 bg-black/35 px-3 py-2.5">
+        {error ? (
+          <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="grid gap-4 lg:grid-cols-[1.2fr_0.95fr_1fr]">
+          <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="truncate text-sm text-white/55">主隊</div>
-                <div className="truncate text-lg font-black md:text-2xl">
-                  {game?.teamA || "我方"}
+                <div className="text-xs font-bold tracking-[0.2em] text-white/45">
+                  即時記錄
+                </div>
+                <div className="mt-1 text-2xl font-black">
+                  {game?.teamA || "我方"} vs {game?.teamB || "對手"}
                 </div>
               </div>
 
-              <div className="text-center">
-                <div className="text-[10px] font-black text-white/60">
+              <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
+                <div className="text-xs text-white/50">
                   {getQuarterLabel(clock?.quarter ?? 1)}
                 </div>
-                <div className="mt-0.5 text-[38px] font-black leading-none tracking-[0.06em] md:text-[52px]">
+                <div className="text-3xl font-black">
                   {formatTime(clock?.seconds_left ?? REGULAR_SECONDS)}
                 </div>
-                <div className="mt-1 text-[11px] text-white/55">
-                  {teamScore.scoreA} : {teamScore.scoreB}
-                </div>
-              </div>
-
-              <div className="min-w-0 text-right">
-                <div className="truncate text-sm text-white/55">客隊</div>
-                <div className="truncate text-lg font-black md:text-2xl">
-                  {game?.teamB || "對手"}
-                </div>
               </div>
             </div>
-          </div>
 
-          <div className="grid flex-1 gap-2 md:gap-3 lg:grid-cols-[1.08fr_0.92fr]">
-            <div className="flex flex-col gap-2 md:gap-3">
-              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-black">快速紀錄</div>
-                    <div className="text-[11px] text-white/45">常用事件集中在主區</div>
-                  </div>
+            <div className="mb-4 grid grid-cols-2 gap-3">
+              <div className="rounded-2xl border border-white/10 bg-emerald-500/10 p-4 text-center">
+                <div className="text-sm text-white/60">{game?.teamA || "我方"}</div>
+                <div className="text-5xl font-black">{teamScore.scoreA}</div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-slate-500/10 p-4 text-center">
+                <div className="text-sm text-white/60">{game?.teamB || "對手"}</div>
+                <div className="text-5xl font-black">{teamScore.scoreB}</div>
+              </div>
+            </div>
 
+            <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-5">
+              <button onClick={startClock} className={actionBtnClass("score")}>
+                開始
+              </button>
+              <button onClick={pauseClock} className={actionBtnClass("miss")}>
+                暫停
+              </button>
+              <button onClick={resetClock} className={actionBtnClass("ghost")}>
+                重設本節
+              </button>
+              <button onClick={() => adjustClock(-1)} className={actionBtnClass("ghost")}>
+                -1 秒
+              </button>
+              <button onClick={() => adjustClock(1)} className={actionBtnClass("ghost")}>
+                +1 秒
+              </button>
+            </div>
+
+            <div className="mb-4 grid grid-cols-2 gap-2">
+              <button onClick={nextQuarter} className={actionBtnClass("def")}>
+                下一節
+              </button>
+              <button
+                onClick={endGame}
+                disabled={endingGame}
+                className={actionBtnClass("warn")}
+              >
+                {endingGame ? "結束中..." : "結束比賽並寫入統計"}
+              </button>
+            </div>
+
+            <div className="mb-5 rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="mb-2 text-sm font-bold text-white/80">更新我方隊名</div>
+              <div className="flex gap-2">
+                <input
+                  value={editingTeamA}
+                  onChange={(e) => setEditingTeamA(e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 outline-none placeholder:text-white/25"
+                  placeholder="輸入我方隊名"
+                />
+                <button
+                  onClick={saveTeamAName}
+                  disabled={savingTeamA}
+                  className="rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-bold hover:bg-white/15 disabled:opacity-50"
+                >
+                  {savingTeamA ? "儲存中" : "儲存"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-lg font-black">場上球員</div>
+              <div className="text-sm text-white/55">
+                目前選中：
+                <span className="ml-1 font-bold text-white">
+                  {selectedPlayer ? `${selectedPlayer.number ?? "-"} ${selectedPlayer.name}` : "未選擇"}
+                </span>
+              </div>
+            </div>
+
+            <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-5">
+              {onCourtPlayers.map((player) => {
+                const active = player.id === selectedPlayerId;
+                return (
                   <button
-                    onClick={undoLastEvent}
-                    className="rounded-xl bg-red-500/20 px-3 py-2 text-xs font-bold text-red-300"
+                    key={player.id}
+                    onClick={() => setSelectedPlayerId(player.id)}
+                    className={`rounded-2xl border px-3 py-3 text-left transition ${
+                      active
+                        ? "border-emerald-400/40 bg-emerald-500/15"
+                        : "border-white/10 bg-white/5 hover:bg-white/10"
+                    }`}
                   >
-                    復原上一筆
+                    <div className="text-xs text-white/50">#{player.number ?? "-"}</div>
+                    <div className="text-sm font-black">{player.name}</div>
+                    <div className="text-xs text-white/45">{player.position || "未設定位置"}</div>
                   </button>
-                </div>
+                );
+              })}
+            </div>
 
-                <div className="mb-3 rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5">
-                  <div className="text-[11px] text-white/45">目前紀錄球員</div>
-                  <div className="mt-1 text-base font-black text-emerald-200 md:text-lg">
-                    {selectedPlayer
-                      ? `#${selectedPlayer.number ?? "-"} ${selectedPlayer.name}`
-                      : "未選球員"}
-                  </div>
-                </div>
-
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                <div className="mb-3 text-sm font-black text-white/80">我方紀錄</div>
                 <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => addEvent("fg2_made", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("score")}
-                  >
-                    2分進
+                  <button onClick={() => addEvent("fg2_made")} className={actionBtnClass("score")}>
+                    2 分進
                   </button>
-                  <button
-                    onClick={() => addEvent("fg2_miss", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("miss")}
-                  >
-                    2分不進
+                  <button onClick={() => addEvent("fg2_miss")} className={actionBtnClass("miss")}>
+                    2 分失
                   </button>
-                  <button
-                    onClick={() => addEvent("reb", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("ghost")}
-                  >
+                  <button onClick={() => addEvent("fg3_made")} className={actionBtnClass("score")}>
+                    3 分進
+                  </button>
+                  <button onClick={() => addEvent("fg3_miss")} className={actionBtnClass("miss")}>
+                    3 分失
+                  </button>
+                  <button onClick={() => addEvent("ft_made")} className={actionBtnClass("score")}>
+                    罰球進
+                  </button>
+                  <button onClick={() => addEvent("ft_miss")} className={actionBtnClass("miss")}>
+                    罰球失
+                  </button>
+                  <button onClick={() => addEvent("reb")} className={actionBtnClass("def")}>
                     籃板
                   </button>
-
-                  <button
-                    onClick={() => addEvent("fg3_made", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("score")}
-                  >
-                    3分進
-                  </button>
-                  <button
-                    onClick={() => addEvent("fg3_miss", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("miss")}
-                  >
-                    3分不進
-                  </button>
-                  <button
-                    onClick={() => addEvent("ast", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("def")}
-                  >
+                  <button onClick={() => addEvent("ast")} className={actionBtnClass("def")}>
                     助攻
                   </button>
-
-                  <button
-                    onClick={() => addEvent("ft_made", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("score")}
-                  >
-                    罰進
-                  </button>
-                  <button
-                    onClick={() => addEvent("ft_miss", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("miss")}
-                  >
-                    罰球不進
-                  </button>
-                  <button
-                    onClick={() => addEvent("stl", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("def")}
-                  >
+                  <button onClick={() => addEvent("stl")} className={actionBtnClass("def")}>
                     抄截
                   </button>
-
-                  <button
-                    onClick={() => addEvent("blk", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("def")}
-                  >
+                  <button onClick={() => addEvent("blk")} className={actionBtnClass("def")}>
                     阻攻
                   </button>
-                  <button
-                    onClick={() => addEvent("pf", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("warn")}
-                  >
-                    犯規
-                  </button>
-                  <button
-                    onClick={() => addEvent("tov", "teamA")}
-                    disabled={game?.status === "finished"}
-                    className={actionBtnClass("warn")}
-                  >
+                  <button onClick={() => addEvent("tov")} className={actionBtnClass("warn")}>
                     失誤
                   </button>
-                </div>
-
-                <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr]">
-                  <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                    <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
-                      對手快速加分
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        onClick={() => addEvent("ft_made", "teamB")}
-                        disabled={game?.status === "finished"}
-                        className={actionBtnClass("ghost")}
-                      >
-                        對手 +1
-                      </button>
-                      <button
-                        onClick={() => addEvent("fg2_made", "teamB")}
-                        disabled={game?.status === "finished"}
-                        className={actionBtnClass("ghost")}
-                      >
-                        對手 +2
-                      </button>
-                      <button
-                        onClick={() => addEvent("fg3_made", "teamB")}
-                        disabled={game?.status === "finished"}
-                        className={actionBtnClass("ghost")}
-                      >
-                        對手 +3
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                    <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40">
-                      本場各節比分
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {Object.keys(quarterScores)
-                        .map(Number)
-                        .sort((a, b) => a - b)
-                        .map((q) => (
-                          <div
-                            key={q}
-                            className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-white/75"
-                          >
-                            {getQuarterLabel(q)} {quarterScores[q].home}:{quarterScores[q].away}
-                          </div>
-                        ))}
-                    </div>
-                  </div>
+                  <button onClick={() => addEvent("pf")} className={actionBtnClass("warn")}>
+                    犯規
+                  </button>
                 </div>
               </div>
 
-              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-                <div className="mb-2 text-sm font-black">比賽控制</div>
-
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                <div className="mb-3 text-sm font-black text-white/80">對手紀錄</div>
                 <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={startClock}
-                    disabled={game?.status === "finished"}
-                    className="rounded-2xl bg-emerald-600 px-3 py-2.5 text-sm font-black hover:bg-emerald-500 disabled:opacity-50"
+                    onClick={() => addEvent("fg2_made", "teamB")}
+                    className={actionBtnClass("score")}
                   >
-                    開始
+                    2 分進
                   </button>
                   <button
-                    onClick={pauseClock}
-                    className="rounded-2xl bg-amber-500 px-3 py-2.5 text-sm font-black text-white hover:bg-amber-400"
+                    onClick={() => addEvent("fg2_miss", "teamB")}
+                    className={actionBtnClass("miss")}
                   >
-                    暫停
+                    2 分失
                   </button>
                   <button
-                    onClick={nextQuarter}
-                    disabled={game?.status === "finished"}
-                    className="rounded-2xl bg-blue-600 px-3 py-2.5 text-sm font-black hover:bg-blue-500 disabled:opacity-50"
+                    onClick={() => addEvent("fg3_made", "teamB")}
+                    className={actionBtnClass("score")}
                   >
-                    下一節
-                  </button>
-
-                  <button
-                    onClick={() => adjustClock(-10)}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
-                  >
-                    -10秒
+                    3 分進
                   </button>
                   <button
-                    onClick={() => adjustClock(-1)}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
+                    onClick={() => addEvent("fg3_miss", "teamB")}
+                    className={actionBtnClass("miss")}
                   >
-                    -1秒
+                    3 分失
                   </button>
                   <button
-                    onClick={() => adjustClock(1)}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
+                    onClick={() => addEvent("ft_made", "teamB")}
+                    className={actionBtnClass("score")}
                   >
-                    +1秒
-                  </button>
-
-                  <button
-                    onClick={() => adjustClock(10)}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
-                  >
-                    +10秒
+                    罰球進
                   </button>
                   <button
-                    onClick={resetClock}
-                    className="rounded-2xl bg-red-600 px-3 py-2.5 text-sm font-black hover:bg-red-500"
+                    onClick={() => addEvent("ft_miss", "teamB")}
+                    className={actionBtnClass("miss")}
                   >
-                    重設本節
-                  </button>
-                  <button
-                    onClick={endGame}
-                    disabled={endingGame || game?.status === "finished"}
-                    className="rounded-2xl bg-rose-700 px-3 py-2.5 text-sm font-black hover:bg-rose-600 disabled:opacity-50"
-                  >
-                    {game?.status === "finished"
-                      ? "已結束"
-                      : endingGame
-                      ? "結束中..."
-                      : "結束比賽"}
+                    罰球失
                   </button>
                 </div>
 
-                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-                  <input
-                    value={editingTeamA}
-                    onChange={(e) => setEditingTeamA(e.target.value)}
-                    placeholder="輸入我方隊名"
-                    className="rounded-2xl border border-white/10 bg-neutral-900 px-4 py-2.5 text-sm outline-none transition focus:border-blue-400/50"
-                  />
-                  <button
-                    onClick={saveTeamAName}
-                    disabled={savingTeamA}
-                    className="rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-black hover:bg-blue-500 disabled:opacity-60"
-                  >
-                    {savingTeamA ? "儲存中..." : "更新隊名"}
-                  </button>
-                </div>
+                <button
+                  onClick={undoLastEvent}
+                  className="mt-3 w-full rounded-2xl border border-white/10 bg-white/10 px-3 py-3 text-sm font-black hover:bg-white/15"
+                >
+                  復原上一筆
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+            <div className="mb-3 text-lg font-black">換人</div>
+
+            <div className="mb-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="mb-2 text-sm font-bold text-white/70">下場球員</div>
+              <div className="grid grid-cols-2 gap-2">
+                {onCourtPlayers.map((player) => {
+                  const checked = subOutPlayerIds.includes(player.id);
+                  return (
+                    <button
+                      key={player.id}
+                      onClick={() => toggleSubOut(player.id)}
+                      className={`rounded-2xl border px-3 py-3 text-left transition ${
+                        checked
+                          ? "border-rose-400/40 bg-rose-500/15"
+                          : "border-white/10 bg-white/5 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="text-xs text-white/50">#{player.number ?? "-"}</div>
+                      <div className="text-sm font-black">{player.name}</div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="flex flex-col gap-2 md:gap-3">
-              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-                <div className="mb-2 text-sm font-black">場上五人</div>
+            <div className="mb-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="mb-2 text-sm font-bold text-white/70">
+                上場球員 {needSubInCount > 0 ? `(還需選 ${needSubInCount} 人)` : ""}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {benchPlayers.map((player) => {
+                  const checked = subInPlayerIds.includes(player.id);
+                  return (
+                    <button
+                      key={player.id}
+                      onClick={() => toggleSubIn(player.id)}
+                      className={`rounded-2xl border px-3 py-3 text-left transition ${
+                        checked
+                          ? "border-sky-400/40 bg-sky-500/15"
+                          : "border-white/10 bg-white/5 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="text-xs text-white/50">#{player.number ?? "-"}</div>
+                      <div className="text-sm font-black">{player.name}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {onCourtPlayers.map((p) => {
-                    const selected = selectedPlayerId === p.id;
-                    const selectedOut = subOutPlayerIds.includes(p.id);
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={clearSubSelection} className={actionBtnClass("ghost")}>
+                清除選擇
+              </button>
+              <button
+                onClick={makeSubstitution}
+                disabled={submittingSub}
+                className={actionBtnClass("def")}
+              >
+                {submittingSub ? "換人中..." : "確認換人"}
+              </button>
+            </div>
 
-                    return (
-                      <div
-                        key={p.id}
-                        className={`rounded-2xl border p-2 transition ${
-                          selectedOut
-                            ? "border-orange-400 bg-orange-500/15"
-                            : selected
-                            ? "border-emerald-300 bg-emerald-500/15 shadow-[0_0_18px_rgba(52,211,153,0.14)]"
-                            : "border-white/10 bg-white/[0.04]"
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setSelectedPlayerId(p.id)}
-                          className="w-full text-left"
-                        >
-                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
-                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-                          <div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
-                            {p.position || "未設定"}
+            <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
+              <div className="mb-2 text-sm font-black text-white/75">本節比分</div>
+              <div className="flex items-center justify-between text-sm">
+                <span>{game?.teamA || "我方"}</span>
+                <span className="font-black">{recentQuarterScore?.home ?? 0}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-sm">
+                <span>{game?.teamB || "對手"}</span>
+                <span className="font-black">{recentQuarterScore?.away ?? 0}</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/10 bg-white/5 p-4">
+            <div className="mb-3 text-lg font-black">比賽摘要</div>
+
+            <div className="mb-4 overflow-hidden rounded-2xl border border-white/10">
+              <table className="w-full text-sm">
+                <thead className="bg-white/5 text-white/60">
+                  <tr>
+                    <th className="px-3 py-2 text-left">節次</th>
+                    <th className="px-3 py-2 text-right">{game?.teamA || "我方"}</th>
+                    <th className="px-3 py-2 text-right">{game?.teamB || "對手"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(quarterScores).map(([quarter, score]) => (
+                    <tr key={quarter} className="border-t border-white/10">
+                      <td className="px-3 py-2">{getQuarterLabel(Number(quarter))}</td>
+                      <td className="px-3 py-2 text-right font-bold">{score.home}</td>
+                      <td className="px-3 py-2 text-right font-bold">{score.away}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mb-3 text-sm font-black text-white/75">事件紀錄</div>
+            <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
+              {validEvents.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 px-4 py-8 text-center text-sm text-white/45">
+                  尚未有紀錄
+                </div>
+              ) : (
+                [...validEvents].reverse().map((e) => {
+                  const player = players.find((p) => p.id === e.player_id);
+                  const teamSide = normalizeTeamSide(e.team_side);
+                  const labelMap: Record<string, string> = {
+                    fg2_made: "2 分進",
+                    fg2_miss: "2 分失",
+                    fg3_made: "3 分進",
+                    fg3_miss: "3 分失",
+                    ft_made: "罰球進",
+                    ft_miss: "罰球失",
+                    reb: "籃板",
+                    ast: "助攻",
+                    stl: "抄截",
+                    blk: "阻攻",
+                    tov: "失誤",
+                    pf: "犯規",
+                    sub_in: "上場",
+                    sub_out: "下場",
+                  };
+
+                  return (
+                    <div
+                      key={e.id}
+                      className="rounded-2xl border border-white/10 bg-black/20 px-3 py-3"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-black">
+                            {labelMap[e.event_type] || e.event_type}
                           </div>
-                          <div className="mt-1 text-[10px] font-bold text-white/45">
-                            {selectedOut ? "已選下場" : selected ? "目前紀錄" : shortName(p.name)}
+                          <div className="truncate text-xs text-white/50">
+                            {teamSide === "teamA" ? game?.teamA || "我方" : game?.teamB || "對手"}
+                            {player ? `・#${player.number ?? "-"} ${shortName(player.name)}` : ""}
                           </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => toggleSubOut(p.id)}
-                          className={`mt-2 w-full rounded-xl px-2 py-1.5 text-xs font-black ${
-                            selectedOut ? "bg-orange-500 text-white" : "bg-white/10 text-white/80"
-                          }`}
-                        >
-                          {selectedOut ? "取消下場" : "選下場"}
-                        </button>
+                        </div>
+                        <div className="shrink-0 text-xs text-white/45">
+                          {getQuarterLabel(e.quarter)}
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.07),rgba(255,255,255,0.03)_42%,rgba(255,255,255,0.02)_100%)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.34)]">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-sm font-black">換人區</div>
-                  <div className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-black text-white/80">
-                    還需 {needSubInCount} 人
-                  </div>
-                </div>
-
-                {benchPlayers.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4 text-sm text-white/50">
-                    沒有場下球員
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {benchPlayers.map((p) => {
-                      const selectedIn = subInPlayerIds.includes(p.id);
-                      const selectable =
-                        subOutPlayerIds.length > 0 &&
-                        (selectedIn || subInPlayerIds.length < subOutPlayerIds.length);
-
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => toggleSubIn(p.id)}
-                          disabled={!selectable}
-                          className={`rounded-2xl border p-2 text-left transition ${
-                            selectedIn
-                              ? "border-sky-300 bg-sky-500/18 shadow-[0_0_18px_rgba(56,189,248,0.14)]"
-                              : selectable
-                              ? "border-white/10 bg-white/[0.04]"
-                              : "border-white/10 bg-white/[0.04] opacity-45"
-                          }`}
-                        >
-                          <div className="text-lg font-black leading-none">#{p.number ?? "-"}</div>
-                          <div className="mt-1 truncate text-sm font-semibold">{p.name}</div>
-                          <div className="mt-0.5 text-[10px] font-bold text-cyan-300/80">
-                            {p.position || "未設定"}
-                          </div>
-                          <div className="mt-1 text-[10px] font-bold text-white/45">
-                            {selectedIn ? "已選上場" : selectable ? "可上場" : "待命"}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    onClick={clearSubSelection}
-                    className="rounded-2xl bg-white/10 px-3 py-2.5 text-sm font-black hover:bg-white/15"
-                  >
-                    清除換人
-                  </button>
-                  <button
-                    onClick={makeSubstitution}
-                    disabled={
-                      submittingSub ||
-                      game?.status === "finished" ||
-                      subOutPlayerIds.length === 0 ||
-                      subOutPlayerIds.length !== subInPlayerIds.length
-                    }
-                    className="rounded-2xl bg-sky-600 px-3 py-2.5 text-sm font-black hover:bg-sky-500 disabled:opacity-50"
-                  >
-                    {submittingSub ? "換人中..." : "確認換人"}
-                  </button>
-                </div>
-              </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
-          </div>
-
-          {error && (
-            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-              {error}
-            </div>
-          )}
+          </section>
         </div>
       </div>
     </div>
