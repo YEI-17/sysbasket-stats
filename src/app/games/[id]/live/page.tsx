@@ -797,15 +797,8 @@ export default function LiveGamePage() {
     return Array.from(lineup).slice(0, 5);
   }, [starterIds, validEvents]);
 
-  async function syncAggregateStats(sourceEvents?: EventRow[]) {
-  if (!game) return;
-  if (!gamePlayers.length) return;
-
-  if (sourceEvents) {
-    latestSyncEventsRef.current = sourceEvents;
-  } else {
-    latestSyncEventsRef.current = events;
-  }
+  async function syncAggregateStats() {
+  if (!game?.id) return;
 
   if (syncingStatsRef.current) {
     pendingSyncRef.current = true;
@@ -817,16 +810,63 @@ export default function LiveGamePage() {
   try {
     do {
       pendingSyncRef.current = false;
+      setError("");
 
-      const baseEvents = latestSyncEventsRef.current ?? events;
-      const valid = sortEventsStable(baseEvents.filter((e) => !e.is_undone));
+      const gameId = game.id;
 
-      const teamAIds = gamePlayers
+      const [
+        { data: latestEvents, error: eventsError },
+        { data: latestGamePlayers, error: gamePlayersError },
+        { data: latestPlayerShifts, error: playerShiftsError },
+      ] = await Promise.all([
+        supabase
+          .from("events")
+          .select(
+            "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+          )
+          .eq("game_id", gameId)
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("game_players")
+          .select("id, game_id, player_id, team_side, is_starter")
+          .eq("game_id", gameId),
+        supabase
+          .from("player_shifts")
+          .select(
+            "id, game_id, player_id, quarter, team_side, in_seconds_left, out_seconds_left"
+          )
+          .eq("game_id", gameId),
+      ]);
+
+      if (eventsError) {
+        setError(`同步球員數據失敗：讀取 events 失敗：${eventsError.message}`);
+        return;
+      }
+
+      if (gamePlayersError) {
+        setError(`同步球員數據失敗：讀取 game_players 失敗：${gamePlayersError.message}`);
+        return;
+      }
+
+      if (playerShiftsError) {
+        setError(`同步球員數據失敗：讀取 player_shifts 失敗：${playerShiftsError.message}`);
+        return;
+      }
+
+      const valid = sortEventsStable((latestEvents ?? []).filter((e) => !e.is_undone));
+      const currentGamePlayers = (latestGamePlayers ?? []) as GamePlayerRow[];
+      const currentPlayerShifts = (latestPlayerShifts ?? []) as PlayerShiftRow[];
+
+      const teamAIds = currentGamePlayers
         .filter((gp) => gp.team_side === "teamA")
         .map((gp) => gp.player_id);
 
+      if (teamAIds.length === 0) {
+        return;
+      }
+
       const starters = getStarterIdsFallback({
-        gamePlayers,
+        gamePlayers: currentGamePlayers,
         validEvents: valid,
       });
 
@@ -864,6 +904,7 @@ export default function LiveGamePage() {
 
       const playerRows = teamAIds.map((playerId) => {
         const stat = playerStatMap.get(playerId) ?? emptyStat();
+
         const appeared =
           stat.pts > 0 ||
           stat.fg2m > 0 ||
@@ -879,10 +920,12 @@ export default function LiveGamePage() {
           stat.tov > 0 ||
           stat.pf > 0 ||
           plusMinusMap[playerId] !== 0 ||
-          playerShifts.some((s) => s.player_id === playerId && s.game_id === game.id);
+          currentPlayerShifts.some(
+            (s) => s.player_id === playerId && s.game_id === gameId
+          );
 
         return {
-          game_id: game.id,
+          game_id: gameId,
           player_id: playerId,
           team_side: "teamA",
           gp: appeared ? 1 : 0,
@@ -904,7 +947,7 @@ export default function LiveGamePage() {
       });
 
       const teamRow = {
-        game_id: game.id,
+        game_id: gameId,
         team_side: "teamA",
         pts: teamStat.pts,
         fg2m: teamStat.fg2m,
@@ -922,15 +965,13 @@ export default function LiveGamePage() {
         opp_pts: oppPts,
       };
 
-      if (playerRows.length > 0) {
-        const { error: playerStatError } = await supabase
-          .from("player_game_stats")
-          .upsert(playerRows, { onConflict: "game_id,player_id" });
+      const { error: playerStatError } = await supabase
+        .from("player_game_stats")
+        .upsert(playerRows, { onConflict: "game_id,player_id" });
 
-        if (playerStatError) {
-          setError(`同步球員數據失敗：${playerStatError.message}`);
-          return;
-        }
+      if (playerStatError) {
+        setError(`同步球員數據失敗：${playerStatError.message}`);
+        return;
       }
 
       const { error: teamStatError } = await supabase
@@ -1214,7 +1255,7 @@ export default function LiveGamePage() {
   ]);
 
   setEvents(nextEvents);
-  await syncAggregateStats(nextEvents);
+  await syncAggregateStats();
 }
   }
 
@@ -1255,7 +1296,7 @@ export default function LiveGamePage() {
 );
 
 setEvents(nextEvents);
-await syncAggregateStats(nextEvents);
+await syncAggregateStats();
   }
 
   useEffect(() => {
@@ -1520,7 +1561,7 @@ await syncAggregateStats(nextEvents);
   const nextEvents = sortEventsStable([...events, ...nextItems]);
 
   setEvents(nextEvents);
-  await syncAggregateStats(nextEvents);
+  await syncAggregateStats();
 }
     } finally {
       setSubmittingSub(false);
