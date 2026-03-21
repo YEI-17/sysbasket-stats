@@ -494,75 +494,52 @@ export default function PlayerProfilePage() {
       return ta - tb;
     });
 
-    const legacyGameIds = new Set(allGamesSortedAsc.slice(0, 2).map((g) => g.id));
+    
     const bucket = new Map<string, PerGameStat>();
-
-    // 前兩場：維持原本球員個人數據從 events 統計
-    for (const game of allGamesSortedAsc) {
-      if (!legacyGameIds.has(game.id)) continue;
-
-      const gameEvents = gameEventsMap.get(game.id) || [];
-      const playerEvents = gameEvents.filter((ev) => ev.player_id === playerId && !ev.is_undone);
-      if (playerEvents.length === 0) continue;
-
-      const gp = gpMap.get(game.id);
-      const teamSide =
-        (gp?.team_side || inferTeamSideFromEvents(playerId, gameEvents) || "teamA") as TeamSide;
-      const isStarter = gp?.is_starter ?? inferStarterFromEvents(playerId, gameEvents);
-      const opponent =
-        teamSide === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
-
-      const stat = emptyGameStat();
-      for (const ev of sortEventsAsc(playerEvents)) {
-        applyEventToStat(stat, ev.event_type);
-      }
-
-      bucket.set(game.id, {
-        gameId: game.id,
-        dateLabel: formatDate(game.game_date || game.created_at),
-        opponent,
-        teamSide,
-        isStarter,
-        plusMinus: computePlusMinusForGame({
-          playerId,
-          teamSide,
-          isStarter,
-          gameEvents,
-        }),
-        stat,
-      });
-    }
-
+    
     // 第三場之後：數據讀 player_game_stats，但正負值仍用整場 events 正確計算
     for (const game of allGamesSortedAsc) {
-      if (legacyGameIds.has(game.id)) continue;
+  const gameEvents = gameEventsMap.get(game.id) || [];
+  const row = pgsMap.get(game.id);
 
-      const row = pgsMap.get(game.id);
-      if (!row) continue;
+  const gp = gpMap.get(game.id);
+  const teamSide =
+    (gp?.team_side || inferTeamSideFromEvents(playerId, gameEvents) || "teamA") as TeamSide;
+  const isStarter = gp?.is_starter ?? inferStarterFromEvents(playerId, gameEvents);
+  const opponent =
+    teamSide === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
 
-      const gameEvents = gameEventsMap.get(game.id) || [];
-      const gp = gpMap.get(game.id);
-      const teamSide =
-        (gp?.team_side || inferTeamSideFromEvents(playerId, gameEvents) || "teamA") as TeamSide;
-      const isStarter = gp?.is_starter ?? inferStarterFromEvents(playerId, gameEvents);
-      const opponent =
-        teamSide === "teamA" ? game.teamB || "對手未設定" : game.teamA || "對手未設定";
+  let stat: Omit<Stat, "gp">;
 
-      bucket.set(game.id, {
-        gameId: game.id,
-        dateLabel: formatDate(game.game_date || game.created_at),
-        opponent,
-        teamSide,
-        isStarter,
-        plusMinus: computePlusMinusForGame({
-          playerId,
-          teamSide,
-          isStarter,
-          gameEvents,
-        }),
-        stat: normalizePgsRowToStat(row),
-      });
+  if (row) {
+    stat = normalizePgsRowToStat(row);
+  } else {
+    const playerEvents = gameEvents.filter(
+      (ev) => ev.player_id === playerId && !ev.is_undone
+    );
+    if (playerEvents.length === 0) continue;
+
+    stat = emptyGameStat();
+    for (const ev of sortEventsAsc(playerEvents)) {
+      applyEventToStat(stat, ev.event_type);
     }
+  }
+
+  bucket.set(game.id, {
+    gameId: game.id,
+    dateLabel: formatDate(game.game_date || game.created_at),
+    opponent,
+    teamSide,
+    isStarter,
+    plusMinus: computePlusMinusForGame({
+      playerId,
+      teamSide,
+      isStarter,
+      gameEvents,
+    }),
+    stat,
+  });
+}
 
     return [...bucket.values()].sort((a, b) => {
       const ga = gameMap.get(a.gameId);
