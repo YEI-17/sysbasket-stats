@@ -506,19 +506,6 @@ export default function ViewerGamesPage() {
                 </div>
               </div>
             </div>
-
-            <div className="action-group">
-              <button
-                onClick={() => void handleRefresh()}
-                className="refresh-btn"
-                disabled={refreshing}
-              >
-                {refreshing ? "重新整理中..." : "重新整理"}
-              </button>
-              <button onClick={handleBack} className="back-btn">
-                返回
-              </button>
-            </div>
           </div>
         </section>
 
