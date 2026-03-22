@@ -40,6 +40,13 @@ type PlayerGameStatRow = {
   ast?: number | null;
   stl?: number | null;
   blk?: number | null;
+  fg2m?: number | null;
+  fg2a?: number | null;
+  fg3m?: number | null;
+  fg3a?: number | null;
+  ftm?: number | null;
+  fta?: number | null;
+  tov?: number | null;
 };
 
 type PreviewStat = {
@@ -49,6 +56,13 @@ type PreviewStat = {
   ast: number;
   stl: number;
   blk: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  tov: number;
   eff: number;
 };
 
@@ -60,6 +74,13 @@ function emptyPreviewStat(): PreviewStat {
     ast: 0,
     stl: 0,
     blk: 0,
+    fg2m: 0,
+    fg2a: 0,
+    fg3m: 0,
+    fg3a: 0,
+    ftm: 0,
+    fta: 0,
+    tov: 0,
     eff: 0,
   };
 }
@@ -79,8 +100,28 @@ function calcEfficiency(stat: {
   ast: number;
   stl: number;
   blk: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  tov: number;
 }) {
-  return stat.pts + stat.reb + stat.ast + stat.stl + stat.blk;
+  const missedFg =
+    Math.max(0, stat.fg2a - stat.fg2m) + Math.max(0, stat.fg3a - stat.fg3m);
+  const missedFt = Math.max(0, stat.fta - stat.ftm);
+
+  return (
+    stat.pts +
+    stat.reb +
+    stat.ast +
+    stat.stl +
+    stat.blk -
+    missedFg -
+    missedFt -
+    stat.tov
+  );
 }
 
 export default function PlayersPage() {
@@ -90,7 +131,9 @@ export default function PlayersPage() {
   const [games, setGames] = useState<GameRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
-  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatRow[]>(
+    []
+  );
 
   useEffect(() => {
     async function load() {
@@ -120,13 +163,13 @@ export default function PlayersPage() {
             .from("events")
             .select("id, game_id, player_id, event_type, is_undone"),
 
-          supabase
-            .from("game_players")
-            .select("player_id, game_id"),
+          supabase.from("game_players").select("player_id, game_id"),
 
           supabase
             .from("player_game_stats")
-            .select("player_id, game_id, pts, reb, ast, stl, blk"),
+            .select(
+              "player_id, game_id, pts, reb, ast, stl, blk, fg2m, fg2a, fg3m, fg3a, ftm, fta, tov"
+            ),
         ]);
 
         if (gamesError) throw gamesError;
@@ -165,7 +208,6 @@ export default function PlayersPage() {
       return map.get(playerId)!;
     };
 
-    // 用來紀錄每個球員打了哪些比賽
     const playedGameSetMap = new Map<string, Set<string>>();
 
     const ensurePlayedSet = (playerId: string) => {
@@ -175,21 +217,18 @@ export default function PlayersPage() {
       return playedGameSetMap.get(playerId)!;
     };
 
-    // 先記錄 game_players，作為出賽場次基礎
     for (const row of gamePlayers) {
       if (!row.player_id || !row.game_id) continue;
       ensurePlayedSet(row.player_id).add(row.game_id);
       ensureStat(row.player_id);
     }
 
-    // 先把 player_game_stats 做成 map
     const playerGameStatsMap = new Map<string, PlayerGameStatRow>();
     for (const row of playerGameStats) {
       if (!row.player_id || !row.game_id) continue;
       playerGameStatsMap.set(`${row.player_id}__${row.game_id}`, row);
     }
 
-    // 把 events 依 player_id + game_id 分組，留作 fallback
     const eventGroupMap = new Map<string, EventRow[]>();
     for (const ev of events) {
       if (!ev.player_id || !ev.game_id) continue;
@@ -205,7 +244,6 @@ export default function PlayersPage() {
       ensureStat(ev.player_id);
     }
 
-    // 建立所有 player-game key
     const allPlayerGameKeys = new Set<string>();
 
     for (const row of gamePlayers) {
@@ -224,7 +262,6 @@ export default function PlayersPage() {
       allPlayerGameKeys.add(`${ev.player_id}__${ev.game_id}`);
     }
 
-    // 每個 player-game 先吃 player_game_stats，沒有再 fallback 用 events 計算
     for (const key of allPlayerGameKeys) {
       const [playerId, gameId] = key.split("__");
       if (!playerId || !gameId) continue;
@@ -238,6 +275,13 @@ export default function PlayersPage() {
         stat.ast += toSafeNumber(pgs.ast);
         stat.stl += toSafeNumber(pgs.stl);
         stat.blk += toSafeNumber(pgs.blk);
+        stat.fg2m += toSafeNumber(pgs.fg2m);
+        stat.fg2a += toSafeNumber(pgs.fg2a);
+        stat.fg3m += toSafeNumber(pgs.fg3m);
+        stat.fg3a += toSafeNumber(pgs.fg3a);
+        stat.ftm += toSafeNumber(pgs.ftm);
+        stat.fta += toSafeNumber(pgs.fta);
+        stat.tov += toSafeNumber(pgs.tov);
         continue;
       }
 
@@ -246,12 +290,27 @@ export default function PlayersPage() {
         switch (ev.event_type) {
           case "fg2_made":
             stat.pts += 2;
+            stat.fg2m += 1;
+            stat.fg2a += 1;
+            break;
+          case "fg2_missed":
+            stat.fg2a += 1;
             break;
           case "fg3_made":
             stat.pts += 3;
+            stat.fg3m += 1;
+            stat.fg3a += 1;
+            break;
+          case "fg3_missed":
+            stat.fg3a += 1;
             break;
           case "ft_made":
             stat.pts += 1;
+            stat.ftm += 1;
+            stat.fta += 1;
+            break;
+          case "ft_missed":
+            stat.fta += 1;
             break;
           case "reb":
             stat.reb += 1;
@@ -264,6 +323,10 @@ export default function PlayersPage() {
             break;
           case "blk":
             stat.blk += 1;
+            break;
+          case "turnover":
+          case "tov":
+            stat.tov += 1;
             break;
           default:
             break;
