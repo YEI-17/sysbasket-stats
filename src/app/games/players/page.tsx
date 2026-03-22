@@ -288,49 +288,59 @@ export default function PlayersPage() {
       const evs = eventGroupMap.get(key) || [];
       for (const ev of evs) {
         switch (ev.event_type) {
-          case "fg2_made":
-            stat.pts += 2;
-            stat.fg2m += 1;
-            stat.fg2a += 1;
-            break;
-          case "fg2_missed":
-            stat.fg2a += 1;
-            break;
-          case "fg3_made":
-            stat.pts += 3;
-            stat.fg3m += 1;
-            stat.fg3a += 1;
-            break;
-          case "fg3_missed":
-            stat.fg3a += 1;
-            break;
-          case "ft_made":
-            stat.pts += 1;
-            stat.ftm += 1;
-            stat.fta += 1;
-            break;
-          case "ft_missed":
-            stat.fta += 1;
-            break;
-          case "reb":
-            stat.reb += 1;
-            break;
-          case "ast":
-            stat.ast += 1;
-            break;
-          case "stl":
-            stat.stl += 1;
-            break;
-          case "blk":
-            stat.blk += 1;
-            break;
-          case "turnover":
-          case "tov":
-            stat.tov += 1;
-            break;
-          default:
-            break;
-        }
+  case "fg2_made":
+    stat.pts += 2;
+    stat.fg2m += 1;
+    stat.fg2a += 1;
+    break;
+
+  case "fg2_miss":
+    stat.fg2a += 1;
+    break;
+
+  case "fg3_made":
+    stat.pts += 3;
+    stat.fg3m += 1;
+    stat.fg3a += 1;
+    break;
+
+  case "fg3_miss":
+    stat.fg3a += 1;
+    break;
+
+  case "ft_made":
+    stat.pts += 1;
+    stat.ftm += 1;
+    stat.fta += 1;
+    break;
+
+  case "ft_miss":
+    stat.fta += 1;
+    break;
+
+  case "reb":
+    stat.reb += 1;
+    break;
+
+  case "ast":
+    stat.ast += 1;
+    break;
+
+  case "stl":
+    stat.stl += 1;
+    break;
+
+  case "blk":
+    stat.blk += 1;
+    break;
+
+  case "tov":
+    stat.tov += 1;
+    break;
+
+  default:
+    break;
+}
       }
     }
 
