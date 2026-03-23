@@ -391,169 +391,281 @@ export default function NewGamePage() {
     selectedStarterIds.every((id) => selectedRosterIds.includes(id));
 
   async function createGame() {
-    setLoading(true);
-    setError("");
+  setLoading(true);
+  setError("");
 
-    try {
-      if (!gameDate) {
-        setError("請選擇比賽日期");
-        setLoading(false);
-        return;
-      }
-
-      if (!gameTime) {
-        setError("請選擇比賽時間");
-        setLoading(false);
-        return;
-      }
-
-      if (selectedRosterIds.length < 5) {
-        setError("登入名單至少要 5 人");
-        setLoading(false);
-        return;
-      }
-
-      if (selectedStarterIds.length !== 5) {
-        setError("請選滿先發五人");
-        setLoading(false);
-        return;
-      }
-
-      const allStartersInRoster = selectedStarterIds.every((id) =>
-        selectedRosterIds.includes(id)
-      );
-
-      if (!allStartersInRoster) {
-        setError("先發五人必須都在登入名單內");
-        setLoading(false);
-        return;
-      }
-
-      const startTimeISO = buildStartTimeISO(gameDate, gameTime);
-
-      if (!startTimeISO) {
-        setError("比賽時間格式錯誤");
-        setLoading(false);
-        return;
-      }
-
-      const { error: closeError } = await supabase
-        .from("games")
-        .update({ status: "finished", is_live: false })
-        .eq("status", "live");
-
-      if (closeError) {
-        setError("關閉舊比賽失敗：" + closeError.message);
-        setLoading(false);
-        return;
-      }
-
-      const { data: game, error: gameError } = await supabase
-        .from("games")
-        .insert({
-          teamA: "我們",
-          teamB: opponent.trim() || "對手",
-          game_date: gameDate,
-          start_time: startTimeISO,
-          location: location.trim() || null,
-          status: "live",
-          is_live: true,
-          home_score: 0,
-          away_score: 0,
-          current_quarter: 1,
-        })
-        .select()
-        .single();
-
-      if (gameError || !game) {
-        setError("建立比賽失敗：" + (gameError?.message || "無法取得比賽資料"));
-        setLoading(false);
-        return;
-      }
-
-      const { error: clockError } = await supabase.from("game_clock").insert({
-        game_id: game.id,
-        quarter: 1,
-        seconds_left: 600,
-        is_running: false,
-      });
-
-      if (clockError) {
-        setError("建立時間失敗：" + clockError.message);
-        setLoading(false);
-        return;
-      }
-
-      const gamePlayersPayload = selectedRosterIds.map((playerId) => {
-        const player = players.find((p) => p.id === playerId);
-
-        return {
-          game_id: game.id,
-          player_id: playerId,
-          team_side: "teamA",
-          is_starter: selectedStarterIds.includes(playerId),
-          position: player?.position ?? null,
-        };
-      });
-
-      const { error: gamePlayersError } = await supabase
-        .from("game_players")
-        .insert(gamePlayersPayload);
-
-      if (gamePlayersError) {
-        setError("寫入登入名單失敗：" + gamePlayersError.message);
-        setLoading(false);
-        return;
-      }
-
-      const starterEventsPayload = selectedStarterIds.map((playerId) => ({
-        game_id: game.id,
-        player_id: playerId,
-        quarter: 1,
-        event_type: "sub_in",
-        team_side: "teamA",
-        clock_seconds_left: 600,
-        points_delta: 0,
-        note: "starter",
-        is_undone: false,
-      }));
-
-      const { error: starterEventsError } = await supabase
-        .from("events")
-        .insert(starterEventsPayload);
-
-      if (starterEventsError) {
-        setError("寫入先發事件失敗：" + starterEventsError.message);
-        setLoading(false);
-        return;
-      }
-
-      const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
-        game_id: game.id,
-        player_id: playerId,
-        team_side: "teamA",
-        quarter: 1,
-        in_seconds_left: 600,
-        out_seconds_left: null,
-      }));
-
-      const { error: starterShiftsError } = await supabase
-        .from("player_shifts")
-        .insert(starterShiftsPayload);
-
-      if (starterShiftsError) {
-        setError("寫入先發上場時間失敗：" + starterShiftsError.message);
-        setLoading(false);
-        return;
-      }
-
-      router.push(`/games/${game.id}/live`);
-    } catch (err: any) {
-      setError(err?.message || "發生未知錯誤");
+  try {
+    if (!gameDate) {
+      setError("請選擇比賽日期");
+      setLoading(false);
+      return;
     }
 
-    setLoading(false);
+    if (!gameTime) {
+      setError("請選擇比賽時間");
+      setLoading(false);
+      return;
+    }
+
+    if (selectedRosterIds.length < 5) {
+      setError("登入名單至少要 5 人");
+      setLoading(false);
+      return;
+    }
+
+    if (selectedStarterIds.length !== 5) {
+      setError("請選滿先發五人");
+      setLoading(false);
+      return;
+    }
+
+    const allStartersInRoster = selectedStarterIds.every((id) =>
+      selectedRosterIds.includes(id)
+    );
+
+    if (!allStartersInRoster) {
+      setError("先發五人必須都在登入名單內");
+      setLoading(false);
+      return;
+    }
+
+    const startTimeISO = buildStartTimeISO(gameDate, gameTime);
+
+    if (!startTimeISO) {
+      setError("比賽時間格式錯誤");
+      setLoading(false);
+      return;
+    }
+
+    const { error: closeError } = await supabase
+      .from("games")
+      .update({ status: "finished", is_live: false })
+      .eq("status", "live");
+
+    if (closeError) {
+      setError("關閉舊比賽失敗：" + closeError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: game, error: gameError } = await supabase
+      .from("games")
+      .insert({
+        teamA: "我們",
+        teamB: opponent.trim() || "對手",
+        game_date: gameDate,
+        start_time: startTimeISO,
+        location: location.trim() || null,
+        status: "live",
+        is_live: true,
+        home_score: 0,
+        away_score: 0,
+        current_quarter: 1,
+      })
+      .select()
+      .single();
+
+    if (gameError || !game) {
+      setError("建立比賽失敗：" + (gameError?.message || "無法取得比賽資料"));
+      setLoading(false);
+      return;
+    }
+
+    const { error: clockError } = await supabase.from("game_clock").insert({
+      game_id: game.id,
+      quarter: 1,
+      seconds_left: 600,
+      is_running: false,
+    });
+
+    if (clockError) {
+      setError("建立時間失敗：" + clockError.message);
+      setLoading(false);
+      return;
+    }
+
+    const gamePlayersPayload = selectedRosterIds.map((playerId) => {
+      const player = players.find((p) => p.id === playerId);
+
+      return {
+        game_id: game.id,
+        player_id: playerId,
+        team_side: "teamA",
+        is_starter: selectedStarterIds.includes(playerId),
+        position: player?.position ?? null,
+      };
+    });
+
+    const { error: gamePlayersError } = await supabase
+      .from("game_players")
+      .insert(gamePlayersPayload);
+
+    if (gamePlayersError) {
+      setError("寫入登入名單失敗：" + gamePlayersError.message);
+      setLoading(false);
+      return;
+    }
+
+    const starterEventsPayload = selectedStarterIds.map((playerId) => ({
+      game_id: game.id,
+      player_id: playerId,
+      quarter: 1,
+      event_type: "sub_in",
+      team_side: "teamA",
+      clock_seconds_left: 600,
+      points_delta: 0,
+      note: "starter",
+      is_undone: false,
+    }));
+
+    const { error: starterEventsError } = await supabase
+      .from("events")
+      .insert(starterEventsPayload);
+
+    if (starterEventsError) {
+      setError("寫入先發事件失敗：" + starterEventsError.message);
+      setLoading(false);
+      return;
+    }
+
+    const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
+      game_id: game.id,
+      player_id: playerId,
+      team_side: "teamA",
+      quarter: 1,
+      in_seconds_left: 600,
+      out_seconds_left: null,
+    }));
+
+    const { error: starterShiftsError } = await supabase
+      .from("player_shifts")
+      .insert(starterShiftsPayload);
+
+    if (starterShiftsError) {
+      setError("寫入先發上場時間失敗：" + starterShiftsError.message);
+      setLoading(false);
+      return;
+    }
+
+    const initPlayerStatsPayload = selectedRosterIds.map((playerId) => ({
+      game_id: game.id,
+      player_id: playerId,
+      team_side: "teamA",
+      gp: selectedStarterIds.includes(playerId) ? 1 : 0,
+      pts: 0,
+      fg2m: 0,
+      fg2a: 0,
+      fg3m: 0,
+      fg3a: 0,
+      ftm: 0,
+      fta: 0,
+      reb: 0,
+      ast: 0,
+      stl: 0,
+      blk: 0,
+      tov: 0,
+      pf: 0,
+      plus_minus: 0,
+      minutes_played: 0,
+      pts_per_10_min: 0,
+      reb_per_10_min: 0,
+      ast_per_10_min: 0,
+      stl_per_10_min: 0,
+      blk_per_10_min: 0,
+      tov_per_10_min: 0,
+      scoring_share: 0,
+      reb_share: 0,
+      ast_share: 0,
+    }));
+
+    const { error: initPlayerStatsError } = await supabase
+      .from("player_game_stats")
+      .upsert(initPlayerStatsPayload, { onConflict: "game_id,player_id" });
+
+    if (initPlayerStatsError) {
+      setError("建立球員統計初始資料失敗：" + initPlayerStatsError.message);
+      setLoading(false);
+      return;
+    }
+
+    const initTeamStatsPayload = {
+      game_id: game.id,
+      team_side: "teamA",
+      pts: 0,
+      fg2m: 0,
+      fg2a: 0,
+      fg3m: 0,
+      fg3a: 0,
+      ftm: 0,
+      fta: 0,
+      reb: 0,
+      ast: 0,
+      stl: 0,
+      blk: 0,
+      tov: 0,
+      pf: 0,
+      opp_pts: 0,
+      team_possessions: 0,
+      opp_possessions: 0,
+      off_rating: 0,
+      def_rating: 0,
+      net_rating: 0,
+      off_reb: 0,
+      def_reb: 0,
+      total_reb: 0,
+      opp_off_reb: 0,
+      opp_def_reb: 0,
+      opp_total_reb: 0,
+      reb_rate: 0,
+      opp_reb_rate: 0,
+      opp_tov: 0,
+      tov_rate: 0,
+      opp_tov_rate: 0,
+      result: null,
+    };
+
+    const { error: initTeamStatsError } = await supabase
+      .from("team_game_stats")
+      .upsert(initTeamStatsPayload, { onConflict: "game_id,team_side" });
+
+    if (initTeamStatsError) {
+      setError("建立團隊統計初始資料失敗：" + initTeamStatsError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { error: initInsightError } = await supabase
+      .from("game_insights")
+      .upsert(
+        {
+          game_id: game.id,
+          summary: null,
+          key_problem_1: null,
+          key_problem_2: null,
+          key_problem_3: null,
+          positive_1: null,
+          positive_2: null,
+          positive_3: null,
+          focus_1: null,
+          focus_2: null,
+          focus_3: null,
+        },
+        { onConflict: "game_id" }
+      );
+
+    if (initInsightError) {
+      setError("建立首頁洞察初始資料失敗：" + initInsightError.message);
+      setLoading(false);
+      return;
+    }
+
+    router.push(`/games/${game.id}/live`);
+  } catch (err: any) {
+    setError(err?.message || "發生未知錯誤");
   }
+
+  setLoading(false);
+}
 
   return (
     <div className="min-h-screen bg-neutral-950 p-6 text-white">
