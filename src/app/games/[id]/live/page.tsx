@@ -551,6 +551,16 @@ export default function LiveGamePage() {
     return data;
   }
 
+async function handleRebuildThisGame() {
+  if (!game?.id) return;
+  try {
+    await finalizeGameStats(game.id);
+    alert("本場資料已補算完成");
+  } catch (err: any) {
+    alert(err?.message || "補算失敗");
+  }
+}
+
   async function loadPlayerShifts(targetGameId: string) {
     const { data, error } = await supabase
       .from("player_shifts")
@@ -2159,6 +2169,10 @@ async function syncDerivedStatsSilently(currentGameId: string) {
                 {submittingSub ? "換人中..." : "確認換人"}
               </button>
             </div>
+
+            <button onClick={handleRebuildThisGame}>
+              補算本場資料
+            </button>
 
             <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
               <div className="mb-2 text-sm font-black text-white/75">本節比分</div>
