@@ -753,6 +753,11 @@ export default function ViewerGamesPage() {
     router.push("/games/rank");
   }
 
+function handleOpenLineups() {
+  if (!latestGame?.id) return;
+  router.push(`/games/${latestGame.id}/lineups`);
+}
+
   return (
     <main className="page">
       <div className="shell">
@@ -958,6 +963,9 @@ export default function ViewerGamesPage() {
               </button>
               <button className="menu-btn" onClick={handleOpenRankings}>
                 排行榜
+              </button>
+              <button className="menu-btn" onClick={handleOpenLineups}>
+                陣容分析
               </button>
             </section>
           </>
