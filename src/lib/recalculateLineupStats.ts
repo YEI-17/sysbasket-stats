@@ -324,7 +324,9 @@ export async function recalculateLineupStats(gameId: string) {
 
     const qLen = quarterLength(currentQuarter);
     const eventClockRaw =
-      typeof event.clock_seconds_left === "number" ? event.clock_seconds_left : prevClock;
+      typeof event.clock_seconds_left === "number"
+        ? event.clock_seconds_left
+        : prevClock;
 
     const eventClock = Math.max(0, Math.min(qLen, eventClockRaw));
     const segmentSeconds = prevClock - eventClock;
@@ -392,12 +394,13 @@ export async function recalculateLineupStats(gameId: string) {
     source: (typeof lineupRows)[number]
   ) {
     const ids = uniqSorted(comboIds);
-    const key = `${comboSize}:${makeKey(ids)}`;
+    const pureKey = makeKey(ids);
+    const key = `${comboSize}:${pureKey}`;
 
     if (!comboMap.has(key)) {
       comboMap.set(key, {
         combo_size: comboSize,
-        combo_key: makeKey(ids),
+        combo_key: pureKey,
         player_ids: ids,
         player_names: formatNames(ids, playerMap),
         seconds_played: 0,
@@ -411,7 +414,9 @@ export async function recalculateLineupStats(gameId: string) {
     row.seconds_played += source.seconds_played;
     row.points_for += source.points_for;
     row.points_against += source.points_against;
-    row.est_possessions = Number((row.est_possessions + source.est_possessions).toFixed(2));
+    row.est_possessions = Number(
+      (row.est_possessions + source.est_possessions).toFixed(2)
+    );
   }
 
   for (const row of lineupRows) {
@@ -455,8 +460,37 @@ export async function recalculateLineupStats(gameId: string) {
     })
     .filter((row) => row.seconds_played > 0 && row.player_ids.length > 0);
 
-  const pairRows = comboRows.filter((row) => row.combo_size === 2);
-  const trioRows = comboRows.filter((row) => row.combo_size === 3);
+  const pairRows = comboRows
+    .filter((row) => row.combo_size === 2)
+    .map((row) => ({
+      game_id: row.game_id,
+      combo_key: row.combo_key,
+      player_ids: row.player_ids,
+      player_names: row.player_names,
+      seconds_played: row.seconds_played,
+      est_possessions: row.est_possessions,
+      points_for: row.points_for,
+      points_against: row.points_against,
+      plus_minus: row.plus_minus,
+      off_rating: row.off_rating,
+      is_official: row.is_official,
+    }));
+
+  const trioRows = comboRows
+    .filter((row) => row.combo_size === 3)
+    .map((row) => ({
+      game_id: row.game_id,
+      combo_key: row.combo_key,
+      player_ids: row.player_ids,
+      player_names: row.player_names,
+      seconds_played: row.seconds_played,
+      est_possessions: row.est_possessions,
+      points_for: row.points_for,
+      points_against: row.points_against,
+      plus_minus: row.plus_minus,
+      off_rating: row.off_rating,
+      is_official: row.is_official,
+    }));
 
   const { error: deleteLineupError } = await supabase
     .from("lineup_stats")
@@ -476,9 +510,23 @@ export async function recalculateLineupStats(gameId: string) {
     throw new Error(deleteComboError.message);
   }
 
-  // 若你 DB 已經有這兩張表，這段會一起重建
-  await supabase.from("lineup_pair_stats").delete().eq("game_id", gameId);
-  await supabase.from("lineup_trio_stats").delete().eq("game_id", gameId);
+  const { error: deletePairError } = await supabase
+    .from("lineup_pair_stats")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deletePairError) {
+    throw new Error(deletePairError.message);
+  }
+
+  const { error: deleteTrioError } = await supabase
+    .from("lineup_trio_stats")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteTrioError) {
+    throw new Error(deleteTrioError.message);
+  }
 
   if (lineupRows.length > 0) {
     const { error: insertLineupError } = await supabase
@@ -503,21 +551,7 @@ export async function recalculateLineupStats(gameId: string) {
   if (pairRows.length > 0) {
     const { error: insertPairError } = await supabase
       .from("lineup_pair_stats")
-      .insert(
-        pairRows.map((row) => ({
-          game_id: row.game_id,
-          combo_key: row.combo_key,
-          player_ids: row.player_ids,
-          player_names: row.player_names,
-          seconds_played: row.seconds_played,
-          est_possessions: row.est_possessions,
-          points_for: row.points_for,
-          points_against: row.points_against,
-          plus_minus: row.plus_minus,
-          off_rating: row.off_rating,
-          is_official: row.is_official,
-        }))
-      );
+      .insert(pairRows);
 
     if (insertPairError) {
       throw new Error(insertPairError.message);
@@ -527,21 +561,7 @@ export async function recalculateLineupStats(gameId: string) {
   if (trioRows.length > 0) {
     const { error: insertTrioError } = await supabase
       .from("lineup_trio_stats")
-      .insert(
-        trioRows.map((row) => ({
-          game_id: row.game_id,
-          combo_key: row.combo_key,
-          player_ids: row.player_ids,
-          player_names: row.player_names,
-          seconds_played: row.seconds_played,
-          est_possessions: row.est_possessions,
-          points_for: row.points_for,
-          points_against: row.points_against,
-          plus_minus: row.plus_minus,
-          off_rating: row.off_rating,
-          is_official: row.is_official,
-        }))
-      );
+      .insert(trioRows);
 
     if (insertTrioError) {
       throw new Error(insertTrioError.message);
