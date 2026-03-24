@@ -12,6 +12,7 @@ type GameRow = {
   status?: string | null;
   game_date?: string | null;
   created_at?: string | null;
+  quarters?: number | null;
 };
 
 type EventRow = {
@@ -63,7 +64,7 @@ type TeamGameSummaryRow = {
   blk: number;
   tov: number;
   pf: number;
-  result: "W" | "L";
+  result: "W" | "L" | "D";
   updated_at?: string | null;
 };
 
@@ -78,7 +79,7 @@ type GameItem = {
   id: string;
   date: string;
   opponent: string;
-  result: "W" | "L";
+  result: "W" | "L" | "D";
   score: string;
   myScore: number;
   oppScore: number;
@@ -88,6 +89,23 @@ type TrendItem = {
   label: string;
   value: number;
 };
+
+function normalizeStatus(status?: string | null) {
+  const s = String(status || "")
+    .trim()
+    .toLowerCase();
+
+  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
+    return "已結束";
+  }
+  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
+    return "直播中";
+  }
+  if (["scheduled", "upcoming", "pending"].includes(s)) {
+    return "未開始";
+  }
+  return status ?? "未設定";
+}
 
 function normalizeTeamSide(side?: string | null): "teamA" | "teamB" | null {
   if (!side) return null;
@@ -123,6 +141,10 @@ function sortGamesDesc(list: GameRow[]) {
     const tb = new Date(b.game_date || b.created_at || 0).getTime();
     return tb - ta;
   });
+}
+
+function isOfficialFinishedGame(game: GameRow) {
+  return normalizeStatus(game.status) === "已結束" && (game.quarters ?? 4) >= 4;
 }
 
 function buildFallbackTeamStatsFromEvents(
@@ -234,7 +256,7 @@ function buildFallbackTeamStatsFromEvents(
     blk,
     tov,
     pf,
-    result: pts > oppPts ? "W" : "L",
+    result: pts > oppPts ? "W" : pts < oppPts ? "L" : "D",
   };
 }
 
@@ -281,7 +303,7 @@ function buildTeamSummaryFromGameStats(
       id: game.id,
       date: formatDate(game.game_date, game.created_at),
       opponent: game.teamB || "對手",
-      result: stat.pts > stat.opp_pts ? "W" : "L",
+      result: stat.pts > stat.opp_pts ? "W" : stat.pts < stat.opp_pts ? "L" : "D",
       score: `${stat.pts} - ${stat.opp_pts}`,
       myScore: stat.pts,
       oppScore: stat.opp_pts,
@@ -313,6 +335,22 @@ function buildTeamSummaryFromGameStats(
   };
 }
 
+function isValidTeamStatsRow(row: TeamGameSummaryRow) {
+  return (
+    row.pts > 0 ||
+    row.opp_pts > 0 ||
+    row.fg2a > 0 ||
+    row.fg3a > 0 ||
+    row.fta > 0 ||
+    row.reb > 0 ||
+    row.ast > 0 ||
+    row.stl > 0 ||
+    row.blk > 0 ||
+    row.tov > 0 ||
+    row.pf > 0
+  );
+}
+
 export default function TeamStatsPage() {
   const [games, setGames] = useState<GameRow[]>([]);
   const [teamGameStats, setTeamGameStats] = useState<TeamGameSummaryRow[]>([]);
@@ -321,7 +359,7 @@ export default function TeamStatsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    loadAll();
+    void loadAll();
   }, []);
 
   async function loadAll() {
@@ -330,7 +368,7 @@ export default function TeamStatsPage() {
 
     const { data: gamesData, error: gamesError } = await supabase
       .from("games")
-      .select("id, teamA, teamB, status, game_date, created_at")
+      .select("id, teamA, teamB, status, game_date, created_at, quarters")
       .order("game_date", { ascending: false })
       .order("created_at", { ascending: false });
 
@@ -341,7 +379,7 @@ export default function TeamStatsPage() {
       return;
     }
 
-    const safeGames = sortGamesDesc((gamesData ?? []) as GameRow[]);
+    const safeGames = sortGamesDesc(((gamesData ?? []) as GameRow[]).filter(isOfficialFinishedGame));
     const gameIds = safeGames.map((g) => g.id);
 
     if (gameIds.length === 0) {
@@ -367,107 +405,89 @@ export default function TeamStatsPage() {
     }
 
     const safeTeamStats = ((teamStatsData ?? []) as TeamGameStatsRow[]).map(
-  (row): TeamGameSummaryRow & { updated_at?: string | null } => ({
-    game_id: row.game_id,
-    team_side: "teamA",
-    pts: row.pts ?? 0,
-    opp_pts: row.opp_pts ?? 0,
-    fg2m: row.fg2m ?? 0,
-    fg2a: row.fg2a ?? 0,
-    fg3m: row.fg3m ?? 0,
-    fg3a: row.fg3a ?? 0,
-    ftm: row.ftm ?? 0,
-    fta: row.fta ?? 0,
-    reb: row.reb ?? 0,
-    ast: row.ast ?? 0,
-    stl: row.stl ?? 0,
-    blk: row.blk ?? 0,
-    tov: row.tov ?? 0,
-    pf: row.pf ?? 0,
-    result: row.result === "W" ? "W" : "L",
-    updated_at: row.updated_at ?? null,
-  })
-);
+      (row): TeamGameSummaryRow => ({
+        game_id: row.game_id,
+        team_side: "teamA",
+        pts: row.pts ?? 0,
+        opp_pts: row.opp_pts ?? 0,
+        fg2m: row.fg2m ?? 0,
+        fg2a: row.fg2a ?? 0,
+        fg3m: row.fg3m ?? 0,
+        fg3a: row.fg3a ?? 0,
+        ftm: row.ftm ?? 0,
+        fta: row.fta ?? 0,
+        reb: row.reb ?? 0,
+        ast: row.ast ?? 0,
+        stl: row.stl ?? 0,
+        blk: row.blk ?? 0,
+        tov: row.tov ?? 0,
+        pf: row.pf ?? 0,
+        result:
+          row.result === "W" ? "W" : row.result === "L" ? "L" : row.pts === row.opp_pts ? "D" : "L",
+        updated_at: row.updated_at ?? null,
+      })
+    );
 
-    function isValidTeamStatsRow(row: TeamGameSummaryRow) {
-  return (
-    row.pts > 0 ||
-    row.opp_pts > 0 ||
-    row.fg2a > 0 ||
-    row.fg3a > 0 ||
-    row.fta > 0 ||
-    row.reb > 0 ||
-    row.ast > 0 ||
-    row.stl > 0 ||
-    row.blk > 0 ||
-    row.tov > 0 ||
-    row.pf > 0
-  );
-}
+    const statsMap = new Map<string, TeamGameSummaryRow>();
 
-const statsMap = new Map<string, TeamGameSummaryRow>();
+    for (const row of safeTeamStats) {
+      const prev = statsMap.get(row.game_id);
 
-for (const row of safeTeamStats) {
-  const prev = statsMap.get(row.game_id);
+      if (!prev) {
+        statsMap.set(row.game_id, row);
+        continue;
+      }
 
-  if (!prev) {
-    statsMap.set(row.game_id, row);
-    continue;
-  }
+      const prevValid = isValidTeamStatsRow(prev);
+      const currValid = isValidTeamStatsRow(row);
 
-  const prevValid = isValidTeamStatsRow(prev);
-  const currValid = isValidTeamStatsRow(row);
+      if (!prevValid && currValid) {
+        statsMap.set(row.game_id, row);
+        continue;
+      }
 
-  if (!prevValid && currValid) {
-    statsMap.set(row.game_id, row);
-    continue;
-  }
+      if (prevValid === currValid) {
+        const prevTs = new Date(prev.updated_at || 0).getTime();
+        const currTs = new Date(row.updated_at || 0).getTime();
+        if (currTs > prevTs) {
+          statsMap.set(row.game_id, row);
+        }
+      }
+    }
 
-  if (prevValid === currValid) {
-    const prevTs = new Date(prev.updated_at || 0).getTime();
-    const currTs = new Date(row.updated_at || 0).getTime();
-    if (currTs > prevTs) {
+    const missingOrInvalidGameIds = gameIds.filter((id) => {
+      const row = statsMap.get(id);
+      return !row || !isValidTeamStatsRow(row);
+    });
+
+    let fallbackStats: TeamGameSummaryRow[] = [];
+
+    if (missingOrInvalidGameIds.length > 0) {
+      const { data: fallbackEventsData, error: fallbackEventsError } = await supabase
+        .from("events")
+        .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone")
+        .in("game_id", missingOrInvalidGameIds)
+        .order("created_at", { ascending: true });
+
+      if (fallbackEventsError) {
+        console.error("load fallback events error:", fallbackEventsError);
+        setError("載入舊比賽事件資料失敗");
+        setLoading(false);
+        return;
+      }
+
+      const safeEvents = (fallbackEventsData ?? []) as EventRow[];
+
+      fallbackStats = missingOrInvalidGameIds.map((gameId) =>
+        buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
+      );
+    }
+
+    for (const row of fallbackStats) {
       statsMap.set(row.game_id, row);
     }
-  }
-}
 
-const missingOrInvalidGameIds = gameIds.filter((id) => {
-  const row = statsMap.get(id);
-  return !row || !isValidTeamStatsRow(row);
-});
-
-let fallbackStats: TeamGameSummaryRow[] = [];
-
-if (missingOrInvalidGameIds.length > 0) {
-  const { data: fallbackEventsData, error: fallbackEventsError } =
-    await supabase
-      .from("events")
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone"
-      )
-      .in("game_id", missingOrInvalidGameIds)
-      .order("created_at", { ascending: true });
-
-  if (fallbackEventsError) {
-    console.error("load fallback events error:", fallbackEventsError);
-    setError("載入舊比賽事件資料失敗");
-    setLoading(false);
-    return;
-  }
-
-  const safeEvents = (fallbackEventsData ?? []) as EventRow[];
-
-  fallbackStats = missingOrInvalidGameIds.map((gameId) =>
-    buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
-  );
-}
-
-for (const row of fallbackStats) {
-  statsMap.set(row.game_id, row);
-}
-
-const mergedStats = Array.from(statsMap.values());
+    const mergedStats = Array.from(statsMap.values());
 
     setGames(safeGames);
     setTeamGameStats(mergedStats);
@@ -528,1003 +548,163 @@ const mergedStats = Array.from(statsMap.values());
     return Math.max(...summary.recentGames.map((g) => g.myScore));
   }, [summary.recentGames]);
 
-  const minOppPts = useMemo(() => {
-    if (!summary.recentGames.length) return 0;
-    return Math.min(...summary.recentGames.map((g) => g.oppScore));
-  }, [summary.recentGames]);
-
-  const avgDiff = useMemo(() => {
-    if (!summary.recentGames.length) return "0.0";
-    const total = summary.recentGames.reduce(
-      (acc, g) => acc + (g.myScore - g.oppScore),
-      0
-    );
-    return (total / summary.recentGames.length).toFixed(1);
-  }, [summary.recentGames]);
-
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        color: "#fff",
-        background: `
-          radial-gradient(circle at top, rgba(255,152,67,0.16) 0%, rgba(255,152,67,0.06) 18%, rgba(0,0,0,0) 36%),
-          radial-gradient(circle at 20% 0%, rgba(255,120,40,0.10) 0%, rgba(0,0,0,0) 28%),
-          linear-gradient(180deg, #090909 0%, #050505 100%)
-        `,
-        padding: 20,
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1420,
-          margin: "0 auto",
-          display: "grid",
-          gap: 18,
-        }}
-      >
-        <section
-          style={{
-            position: "relative",
-            overflow: "hidden",
-            background:
-              "linear-gradient(180deg, rgba(20,14,10,0.96) 0%, rgba(10,8,7,0.98) 100%)",
-            border: "1px solid rgba(255,170,90,0.14)",
-            borderRadius: 30,
-            padding: 24,
-            boxShadow:
-              "0 24px 60px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,200,140,0.06)",
-            backdropFilter: "blur(14px)",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              right: -60,
-              top: -60,
-              width: 240,
-              height: 240,
-              borderRadius: "50%",
-              background:
-                "radial-gradient(circle, rgba(255,145,56,0.22) 0%, rgba(255,145,56,0) 70%)",
-              pointerEvents: "none",
-            }}
-          />
-          <div
-            style={{
-              display: "flex",
-              gap: 16,
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              position: "relative",
-              zIndex: 1,
-            }}
-          >
-            <div style={{ display: "grid", gap: 6 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  letterSpacing: 1.8,
-                  color: "rgba(255,189,125,0.72)",
-                  fontWeight: 800,
-                }}
-              >
-                TEAM PERFORMANCE
-              </div>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: "clamp(30px, 4vw, 46px)",
-                  lineHeight: 1.02,
-                  fontWeight: 950,
-                  letterSpacing: -1.2,
-                  color: "#fff7f0",
-                  textShadow: "0 0 24px rgba(255,145,56,0.12)",
-                }}
-              >
-                團隊數據
-              </h1>
-              <div
-                style={{
-                  fontSize: 14,
-                  color: "rgba(255,232,214,0.64)",
-                }}
-              >
-                檢視整體進攻、防守與命中率表現
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                flexWrap: "wrap",
-                alignItems: "center",
-              }}
-            >
-              <select
-                value={selectedRange}
-                onChange={(e) => setSelectedRange(e.target.value)}
-                style={{
-                  height: 46,
-                  borderRadius: 14,
-                  padding: "0 15px",
-                  background: "rgba(255,255,255,0.04)",
-                  color: "#fff3ea",
-                  border: "1px solid rgba(255,170,90,0.16)",
-                  outline: "none",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
-                }}
-              >
-                <option style={{ color: "#000" }}>全部比賽</option>
-                <option style={{ color: "#000" }}>最近5場</option>
-                <option style={{ color: "#000" }}>最近10場</option>
-              </select>
-
-              <div
-                style={{
-                  transform: "scale(1.02)",
-                  transformOrigin: "center",
-                }}
-              >
-                <LogoutButton />
-              </div>
-            </div>
+    <main className="min-h-screen bg-neutral-950 text-white">
+      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 md:px-6 lg:px-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-3xl font-black tracking-tight">團隊數據</div>
+            <div className="mt-1 text-white/60">只統計正式賽（4節以上）</div>
           </div>
-        </section>
 
-        {error ? (
-          <section
-            style={{
-              background: "rgba(120,20,20,0.22)",
-              border: "1px solid rgba(255,120,120,0.28)",
-              borderRadius: 20,
-              padding: 16,
-              color: "#ffd2d2",
-              fontWeight: 700,
-            }}
-          >
-            {error}
-          </section>
-        ) : null}
-
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-            gap: 14,
-          }}
-        >
-          {overviewStats.map((item, idx) => (
-            <div
-              key={item.sub}
-              style={{
-                position: "relative",
-                overflow: "hidden",
-                background: item.highlight
-                  ? "linear-gradient(180deg, rgba(255,150,64,0.22) 0%, rgba(26,15,10,0.98) 100%)"
-                  : "linear-gradient(180deg, rgba(18,13,10,0.96) 0%, rgba(10,8,7,0.98) 100%)",
-                border: item.highlight
-                  ? "1px solid rgba(255,170,90,0.30)"
-                  : "1px solid rgba(255,170,90,0.12)",
-                borderRadius: 24,
-                padding: 18,
-                minHeight: 142,
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                boxShadow:
-                  item.highlight
-                    ? "0 18px 36px rgba(255,120,40,0.15), inset 0 1px 0 rgba(255,230,200,0.06)"
-                    : "0 14px 30px rgba(0,0,0,0.28)",
-              }}
+          <div className="flex items-center gap-3">
+            <Link
+              href="/viewer"
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/80 transition hover:bg-white/10"
             >
-              {idx === 0 ? (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: -24,
-                    right: -24,
-                    width: 88,
-                    height: 88,
-                    borderRadius: "50%",
-                    background:
-                      "radial-gradient(circle, rgba(255,160,70,0.20) 0%, rgba(255,160,70,0) 72%)",
-                  }}
-                />
-              ) : null}
+              返回首頁
+            </Link>
+            <LogoutButton />
+          </div>
+        </div>
 
-              <div
-                style={{
-                  fontSize: 13,
-                  color: "rgba(255,224,198,0.70)",
-                  fontWeight: 700,
-                  position: "relative",
-                  zIndex: 1,
-                }}
-              >
-                {item.label}
-              </div>
-
-              <div
-                style={{
-                  fontSize: "clamp(29px, 4vw, 40px)",
-                  fontWeight: 950,
-                  letterSpacing: -1.1,
-                  lineHeight: 1,
-                  color: item.highlight ? "#ffd6b2" : "#fff8f2",
-                  position: "relative",
-                  zIndex: 1,
-                }}
-              >
-                {loading ? "..." : item.value}
-              </div>
-
-              <div
-                style={{
-                  fontSize: 12,
-                  color:
-                    item.sub === "Opp PPG"
-                      ? "rgba(255,170,170,0.96)"
-                      : "rgba(255,190,135,0.62)",
-                  fontWeight: 800,
-                  letterSpacing: 1.1,
-                  position: "relative",
-                  zIndex: 1,
-                }}
-              >
-                {item.sub}
-              </div>
-            </div>
+        <div className="flex flex-wrap gap-3">
+          {["全部比賽", "最近5場", "最近10場"].map((label) => (
+            <button
+              key={label}
+              onClick={() => setSelectedRange(label)}
+              className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
+                selectedRange === label
+                  ? "bg-orange-500 text-white"
+                  : "bg-white/5 text-white/70 hover:bg-white/10"
+              }`}
+            >
+              {label}
+            </button>
           ))}
-        </section>
+        </div>
 
-        <section
-          className="team-mid-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.06fr 0.94fr",
-            gap: 18,
-          }}
-        >
-          <div
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.12)",
-              borderRadius: 28,
-              padding: 20,
-              boxShadow:
-                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: "rgba(255,186,127,0.58)",
-                letterSpacing: 1.2,
-                marginBottom: 4,
-                fontWeight: 800,
-              }}
-            >
-              RECENT GAMES
-            </div>
-            <div
-              style={{
-                fontSize: 22,
-                fontWeight: 900,
-                letterSpacing: -0.5,
-                marginBottom: 16,
-                color: "#fff7f0",
-              }}
-            >
-              最近比賽
-            </div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              {summary.recentGames.slice(0, 5).map((game) => (
+        {loading ? (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-8 text-center text-lg font-bold">
+            讀取中...
+          </div>
+        ) : error ? (
+          <div className="rounded-3xl border border-red-500/20 bg-red-500/10 p-8 text-center text-lg font-bold text-red-200">
+            {error}
+          </div>
+        ) : (
+          <>
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {overviewStats.map((item) => (
                 <div
-                  key={game.id}
-                  className="recent-row"
-                  style={{
-                    borderRadius: 18,
-                    padding: 14,
-                    background:
-                      "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
-                    border: "1px solid rgba(255,170,90,0.10)",
-                    display: "grid",
-                    gridTemplateColumns: "84px 1fr 90px 70px",
-                    alignItems: "center",
-                    gap: 10,
-                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
-                  }}
+                  key={item.label}
+                  className={`rounded-3xl border p-5 ${
+                    item.highlight
+                      ? "border-orange-500/30 bg-orange-500/10"
+                      : "border-white/10 bg-white/5"
+                  }`}
                 >
-                  <div
-                    style={{
-                      fontSize: 13,
-                      color: "rgba(255,218,190,0.54)",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {game.date}
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: 16,
-                      fontWeight: 800,
-                      color: "#fff8f3",
-                    }}
-                  >
-                    vs {game.opponent}
-                  </div>
-
-                  <div
-                    style={{
-                      textAlign: "center",
-                      fontWeight: 900,
-                      color: "#ffe7d3",
-                    }}
-                  >
-                    {game.score}
-                  </div>
-
-                  <div
-                    style={{
-                      justifySelf: "end",
-                      minWidth: 54,
-                      height: 34,
-                      borderRadius: 999,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      background:
-                        game.result === "W"
-                          ? "rgba(60, 210, 125, 0.16)"
-                          : "rgba(255, 102, 102, 0.14)",
-                      color:
-                        game.result === "W"
-                          ? "rgba(138,255,186,0.96)"
-                          : "rgba(255,162,162,0.96)",
-                      border:
-                        game.result === "W"
-                          ? "1px solid rgba(90,255,154,0.18)"
-                          : "1px solid rgba(255,120,120,0.18)",
-                    }}
-                  >
-                    {game.result}
-                  </div>
+                  <div className="text-sm font-semibold text-white/60">{item.label}</div>
+                  <div className="mt-3 text-4xl font-black">{item.value}</div>
+                  <div className="mt-1 text-sm font-semibold text-white/45">{item.sub}</div>
                 </div>
               ))}
-            </div>
-          </div>
+            </section>
 
-          <div
-            style={{
-              position: "relative",
-              overflow: "hidden",
-              background:
-                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.12)",
-              borderRadius: 28,
-              padding: 20,
-              boxShadow:
-                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
-              display: "grid",
-              gap: 18,
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: -30,
-                bottom: -40,
-                width: 180,
-                height: 180,
-                borderRadius: "50%",
-                background:
-                  "radial-gradient(circle, rgba(255,145,56,0.12) 0%, rgba(255,145,56,0) 72%)",
-                pointerEvents: "none",
-              }}
-            />
+            <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                <div className="mb-4 text-xl font-black">最近得分趨勢</div>
 
-            <div style={{ position: "relative", zIndex: 1 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,186,127,0.58)",
-                  letterSpacing: 1.2,
-                  marginBottom: 4,
-                  fontWeight: 800,
-                }}
-              >
-                TREND
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 900,
-                  letterSpacing: -0.5,
-                  color: "#fff7f0",
-                }}
-              >
-                團隊得分趨勢
-              </div>
-            </div>
+                {trendData.length === 0 ? (
+                  <div className="py-8 text-center text-white/50">目前沒有資料</div>
+                ) : (
+                  <div className="flex h-72 items-end gap-3">
+                    {trendData.map((item) => {
+                      const barHeight =
+                        maxPts > 0 ? Math.max(18, (item.value / maxPts) * 220) : 18;
 
-            <div
-              style={{
-                position: "relative",
-                zIndex: 1,
-                height: 220,
-                borderRadius: 22,
-                padding: "18px 16px 14px",
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.01) 100%)",
-                border: "1px solid rgba(255,170,90,0.10)",
-                display: "flex",
-                alignItems: "end",
-                gap: 14,
-              }}
-            >
-              {trendData.map((item) => {
-                const height = maxPts
-                  ? Math.max(26, (item.value / maxPts) * 150)
-                  : 26;
-
-                return (
-                  <div
-                    key={item.label}
-                    style={{
-                      flex: 1,
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "end",
-                      gap: 8,
-                      height: "100%",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "rgba(255,232,214,0.82)",
-                        fontWeight: 800,
-                      }}
-                    >
-                      {item.value}
-                    </div>
-
-                    <div
-                      style={{
-                        width: "100%",
-                        maxWidth: 58,
-                        height,
-                        minHeight: 26,
-                        borderRadius: "16px 16px 8px 8px",
-                        background:
-                          "linear-gradient(180deg, rgba(255,182,92,0.98) 0%, rgba(255,126,38,0.92) 60%, rgba(191,79,18,0.92) 100%)",
-                        boxShadow:
-                          "0 12px 22px rgba(255,120,40,0.22), inset 0 1px 0 rgba(255,236,212,0.28)",
-                      }}
-                    />
-
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "rgba(255,202,160,0.48)",
-                        fontWeight: 800,
-                      }}
-                    >
-                      {item.label}
-                    </div>
+                      return (
+                        <div key={item.label} className="flex flex-1 flex-col items-center gap-2">
+                          <div className="text-sm font-bold text-white/70">{item.value}</div>
+                          <div
+                            className="w-full rounded-t-2xl bg-orange-500 transition-all"
+                            style={{ height: `${barHeight}px` }}
+                          />
+                          <div className="text-xs font-bold text-white/45">{item.label}</div>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-
-            <div
-              style={{
-                position: "relative",
-                zIndex: 1,
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 10,
-              }}
-            >
-              <MiniInfoCard title="最高得分" value={String(maxPts)} sub="MAX PTS" />
-              <MiniInfoCard title="最低失分" value={String(minOppPts)} sub="BEST DEF" />
-              <MiniInfoCard title="平均分差" value={avgDiff} sub="AVG DIFF" />
-            </div>
-          </div>
-        </section>
-
-        <section
-          className="team-bottom-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.1fr 0.9fr 0.9fr",
-            gap: 18,
-          }}
-        >
-          <div
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.12)",
-              borderRadius: 28,
-              padding: 22,
-              boxShadow:
-                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
-              display: "grid",
-              gap: 16,
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,186,127,0.58)",
-                  letterSpacing: 1.2,
-                  marginBottom: 4,
-                  fontWeight: 800,
-                }}
-              >
-                TEAM IDENTITY
+                )}
               </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 900,
-                  letterSpacing: -0.5,
-                  color: "#fff7f0",
-                }}
-              >
-                團隊表現重點
+
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                <div className="mb-4 text-xl font-black">整體概況</div>
+
+                <div className="grid gap-3">
+                  <div className="rounded-2xl bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-white/55">統計場次</div>
+                    <div className="mt-2 text-3xl font-black">{summary.gp}</div>
+                  </div>
+
+                  <div className="rounded-2xl bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-white/55">總得分</div>
+                    <div className="mt-2 text-3xl font-black">{summary.totalPts}</div>
+                  </div>
+
+                  <div className="rounded-2xl bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-white/55">總失分</div>
+                    <div className="mt-2 text-3xl font-black">{summary.totalOppPts}</div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </section>
 
-            <div style={{ display: "grid", gap: 12 }}>
-              <InsightRow
-                label="進攻輸出"
-                value={`${summary.avgPts} PPG`}
-                hint="整體得分能力"
-              />
-              <InsightRow
-                label="防守表現"
-                value={`${summary.oppAvgPts} Opp PPG`}
-                hint="對手平均得分"
-              />
-              <InsightRow
-                label="團隊連結"
-                value={`${summary.avgAst} APG`}
-                hint="助攻帶動進攻"
-              />
-              <InsightRow
-                label="失誤控制"
-                value={`${summary.avgTov} TOV`}
-                hint="球權穩定度"
-              />
-            </div>
-          </div>
+            <section className="rounded-3xl border border-white/10 bg-white/5 p-5">
+              <div className="mb-4 text-xl font-black">近期比賽</div>
 
-          <div
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.12)",
-              borderRadius: 28,
-              padding: 22,
-              boxShadow:
-                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
-              display: "grid",
-              gap: 16,
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,186,127,0.58)",
-                  letterSpacing: 1.2,
-                  marginBottom: 4,
-                  fontWeight: 800,
-                }}
-              >
-                SHOOTING PROFILE
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 900,
-                  letterSpacing: -0.5,
-                  color: "#fff7f0",
-                }}
-              >
-                命中率概況
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 12 }}>
-              <RateCard
-                title="2分命中率"
-                value={summary.fg2Pct}
-                sub={`${summary.totalFg2m}/${summary.totalFg2a}`}
-              />
-              <RateCard
-                title="3分命中率"
-                value={summary.fg3Pct}
-                sub={`${summary.totalFg3m}/${summary.totalFg3a}`}
-              />
-              <RateCard
-                title="罰球命中率"
-                value={summary.ftPct}
-                sub={`${summary.totalFtm}/${summary.totalFta}`}
-              />
-            </div>
-          </div>
-
-          <div
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(17,12,10,0.96) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.12)",
-              borderRadius: 28,
-              padding: 22,
-              boxShadow:
-                "0 20px 42px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,220,180,0.04)",
-              display: "grid",
-              gap: 16,
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,186,127,0.58)",
-                  letterSpacing: 1.2,
-                  marginBottom: 4,
-                  fontWeight: 800,
-                }}
-              >
-                FORM
-              </div>
-              <div
-                style={{
-                  fontSize: 22,
-                  fontWeight: 900,
-                  letterSpacing: -0.5,
-                  color: "#fff7f0",
-                }}
-              >
-                近期狀態
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, 1fr)",
-                gap: 12,
-              }}
-            >
-              <MiniHighlight title="出賽" value={String(summary.gp)} />
-              <MiniHighlight title="最高得分" value={String(maxPts)} />
-              <MiniHighlight title="最低失分" value={String(minOppPts)} />
-              <MiniHighlight title="平均分差" value={avgDiff} />
-            </div>
-
-            <div
-              style={{
-                borderRadius: 18,
-                padding: 14,
-                background: "rgba(255,145,56,0.05)",
-                border: "1px solid rgba(255,170,90,0.10)",
-                color: "rgba(255,232,214,0.76)",
-                fontSize: 14,
-                lineHeight: 1.7,
-              }}
-            >
-              {Number(summary.avgPts) >= Number(summary.oppAvgPts)
-                ? "目前整體進攻輸出略高於失分，團隊表現偏正向。"
-                : "目前整體失分略高於得分，建議優先改善防守與失誤控制。"}
-            </div>
-          </div>
-
-          <div
-            style={{
-              gridColumn: "1 / -1",
-              background:
-                "linear-gradient(180deg, rgba(16,11,9,0.92) 0%, rgba(9,8,7,0.98) 100%)",
-              border: "1px solid rgba(255,170,90,0.10)",
-              borderRadius: 24,
-              padding: 16,
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 10,
-              boxShadow:
-                "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,220,180,0.03)",
-            }}
-          >
-            <StatChip label="GP" value={String(summary.gp)} />
-            <StatChip label="PPG" value={summary.avgPts} />
-            <StatChip label="RPG" value={summary.avgReb} />
-            <StatChip label="APG" value={summary.avgAst} />
-            <StatChip label="TOV" value={summary.avgTov} />
-            <StatChip label="2PT%" value={summary.fg2Pct} />
-            <StatChip label="3PT%" value={summary.fg3Pct} />
-            <StatChip label="FT%" value={summary.ftPct} />
-            <StatChip label="Opp PPG" value={summary.oppAvgPts} />
-          </div>
-        </section>
+              {summary.recentGames.length === 0 ? (
+                <div className="py-8 text-center text-white/50">目前沒有比賽資料</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className="text-left text-sm text-white/45">
+                        <th className="px-3 py-2">日期</th>
+                        <th className="px-3 py-2">對手</th>
+                        <th className="px-3 py-2">結果</th>
+                        <th className="px-3 py-2">比分</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.recentGames.map((game) => (
+                        <tr key={game.id} className="rounded-2xl bg-white/5">
+                          <td className="px-3 py-3 text-sm font-semibold">{game.date}</td>
+                          <td className="px-3 py-3 font-bold">{game.opponent}</td>
+                          <td className="px-3 py-3">
+                            <span
+                              className={`rounded-full px-3 py-1 text-xs font-black ${
+                                game.result === "W"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : game.result === "L"
+                                  ? "bg-red-500/20 text-red-300"
+                                  : "bg-white/10 text-white/70"
+                              }`}
+                            >
+                              {game.result}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-lg font-black">{game.score}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </>
+        )}
       </div>
-
-      <style jsx>{`
-        @media (max-width: 1100px) {
-          .team-bottom-grid {
-            grid-template-columns: 1fr !important;
-          }
-        }
-
-        @media (max-width: 980px) {
-          .team-mid-grid {
-            grid-template-columns: 1fr !important;
-          }
-        }
-
-        @media (max-width: 720px) {
-          .recent-row {
-            grid-template-columns: 1fr !important;
-          }
-        }
-      `}</style>
     </main>
-  );
-}
-
-function MiniInfoCard({
-  title,
-  value,
-  sub,
-}: {
-  title: string;
-  value: string;
-  sub: string;
-}) {
-  return (
-    <div
-      style={{
-        borderRadius: 18,
-        padding: 14,
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
-        border: "1px solid rgba(255,170,90,0.10)",
-        display: "grid",
-        gap: 6,
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
-      }}
-    >
-      <div
-        style={{
-          fontSize: 12,
-          color: "rgba(255,206,163,0.56)",
-          fontWeight: 800,
-        }}
-      >
-        {title}
-      </div>
-      <div
-        style={{
-          fontSize: 26,
-          fontWeight: 950,
-          letterSpacing: -0.9,
-          lineHeight: 1,
-          color: "#fff3e8",
-        }}
-      >
-        {value}
-      </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "rgba(255,186,127,0.44)",
-          fontWeight: 800,
-          letterSpacing: 0.9,
-        }}
-      >
-        {sub}
-      </div>
-    </div>
-  );
-}
-
-function InsightRow({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-}) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr auto",
-        gap: 12,
-        alignItems: "center",
-        padding: 14,
-        borderRadius: 18,
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
-        border: "1px solid rgba(255,170,90,0.10)",
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: 13,
-            color: "rgba(255,210,170,0.56)",
-            fontWeight: 800,
-            marginBottom: 3,
-          }}
-        >
-          {label}
-        </div>
-        <div
-          style={{
-            fontSize: 13,
-            color: "rgba(255,236,220,0.54)",
-            fontWeight: 600,
-          }}
-        >
-          {hint}
-        </div>
-      </div>
-
-      <div
-        style={{
-          fontSize: 20,
-          fontWeight: 950,
-          color: "#ffe0c6",
-          letterSpacing: -0.5,
-          whiteSpace: "nowrap",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function RateCard({
-  title,
-  value,
-  sub,
-}: {
-  title: string;
-  value: string;
-  sub: string;
-}) {
-  return (
-    <div
-      style={{
-        borderRadius: 20,
-        padding: 16,
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
-        border: "1px solid rgba(255,170,90,0.10)",
-        display: "grid",
-        gap: 8,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 13,
-          color: "rgba(255,206,163,0.56)",
-          fontWeight: 800,
-        }}
-      >
-        {title}
-      </div>
-      <div
-        style={{
-          fontSize: 30,
-          fontWeight: 950,
-          letterSpacing: -1,
-          lineHeight: 1,
-          color: "#fff3e8",
-        }}
-      >
-        {value}
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          color: "rgba(255,186,127,0.46)",
-          fontWeight: 800,
-        }}
-      >
-        {sub}
-      </div>
-    </div>
-  );
-}
-
-function MiniHighlight({
-  title,
-  value,
-}: {
-  title: string;
-  value: string;
-}) {
-  return (
-    <div
-      style={{
-        borderRadius: 18,
-        padding: 14,
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.015) 100%)",
-        border: "1px solid rgba(255,170,90,0.10)",
-        display: "grid",
-        gap: 6,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 12,
-          color: "rgba(255,206,163,0.56)",
-          fontWeight: 800,
-        }}
-      >
-        {title}
-      </div>
-      <div
-        style={{
-          fontSize: 24,
-          fontWeight: 950,
-          letterSpacing: -0.7,
-          lineHeight: 1,
-          color: "#fff3e8",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function StatChip({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div
-      style={{
-        height: 40,
-        padding: "0 14px",
-        borderRadius: 999,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        background: "rgba(255,145,56,0.05)",
-        border: "1px solid rgba(255,170,90,0.10)",
-        color: "#ffe8d5",
-        fontWeight: 800,
-        fontSize: 13,
-      }}
-    >
-      <span style={{ color: "rgba(255,195,145,0.70)" }}>{label}</span>
-      <span>{value}</span>
-    </div>
   );
 }

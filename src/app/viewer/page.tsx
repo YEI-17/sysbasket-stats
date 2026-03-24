@@ -1,5 +1,6 @@
 "use client";
 
+import { calcTeamStatsFromEvents } from "@/lib/statsFromEvents";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -85,6 +86,29 @@ type PlayerCard = {
   ast10: number;
 };
 
+type EventFallbackRow = {
+  game_id: string;
+  event_type: string;
+  team_side?: string | null;
+  is_undone?: boolean | null;
+};
+
+type TeamStatLike = {
+  game_id: string;
+  pts?: number | null;
+  opp_pts?: number | null;
+  reb?: number | null;
+  ast?: number | null;
+  stl?: number | null;
+  blk?: number | null;
+  off_rating?: number | null;
+  def_rating?: number | null;
+  net_rating?: number | null;
+  reb_rate?: number | null;
+  tov_rate?: number | null;
+  result?: string | null;
+};
+
 function normalizeStatus(status?: string | null) {
   const s = (status ?? "").trim().toLowerCase();
 
@@ -145,17 +169,60 @@ function avg(values: number[]) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+function isUsableTeamStat(stat?: TeamStatLike | null) {
+  if (!stat) return false;
+  return (
+    safeNumber(stat.pts) > 0 ||
+    safeNumber(stat.opp_pts) > 0 ||
+    safeNumber(stat.reb) > 0 ||
+    safeNumber(stat.ast) > 0 ||
+    safeNumber(stat.stl) > 0 ||
+    safeNumber(stat.blk) > 0
+  );
+}
+
+function buildFallbackTeamStat(
+  gameId: string,
+  events: EventFallbackRow[]
+): TeamStatLike {
+  const base = calcTeamStatsFromEvents(events, gameId);
+
+  return {
+    game_id: gameId,
+    pts: safeNumber(base?.pts),
+    opp_pts: safeNumber(base?.opp_pts),
+    reb: safeNumber(base?.reb),
+    ast: safeNumber(base?.ast),
+    stl: safeNumber(base?.stl),
+    blk: safeNumber(base?.blk),
+    off_rating: 0,
+    def_rating: 0,
+    net_rating: 0,
+    reb_rate: 0,
+    tov_rate: 0,
+    result:
+      safeNumber(base?.pts) > safeNumber(base?.opp_pts)
+        ? "W"
+        : safeNumber(base?.pts) < safeNumber(base?.opp_pts)
+        ? "L"
+        : "D",
+  };
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
   const [games, setGames] = useState<GameRow[]>([]);
   const [players, setPlayers] = useState<PlayerRow[]>([]);
-  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatsRow[]>([]);
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatsRow[]>(
+    []
+  );
   const [teamGameStats, setTeamGameStats] = useState<TeamGameStatsRow[]>([]);
   const [insights, setInsights] = useState<InsightRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<
     { game_id: string; player_id: string; is_starter?: boolean | null }[]
   >([]);
+  const [events, setEvents] = useState<EventFallbackRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
@@ -163,42 +230,51 @@ export default function ViewerGamesPage() {
     setLoading(true);
     setMsg("");
 
-    const [gamesRes, playersRes, pgsRes, tgsRes, insightsRes, gamePlayersRes] =
-      await Promise.all([
-        supabase
-          .from("games")
-          .select(
-            "id, teamA, teamB, status, game_date, created_at, game_category, target_score, game_format"
-          )
-          .order("game_date", { ascending: false, nullsFirst: false })
-          .order("created_at", { ascending: false }),
+    const [
+      gamesRes,
+      playersRes,
+      pgsRes,
+      tgsRes,
+      insightsRes,
+      gamePlayersRes,
+      eventsRes,
+    ] = await Promise.all([
+      supabase
+        .from("games")
+        .select(
+          "id, teamA, teamB, status, game_date, created_at, game_category, target_score, game_format"
+        )
+        .order("game_date", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false }),
 
-        supabase
-          .from("players")
-          .select("id, name, number, position, active")
-          .eq("active", true)
-          .order("number", { ascending: true }),
+      supabase
+        .from("players")
+        .select("id, name, number, position, active")
+        .eq("active", true)
+        .order("number", { ascending: true }),
 
-        supabase
-          .from("player_game_stats")
-          .select(
-            "player_id, game_id, pts, reb, ast, stl, blk, plus_minus, minutes_played, pts_per_10_min, reb_per_10_min, ast_per_10_min"
-          ),
+      supabase
+        .from("player_game_stats")
+        .select(
+          "player_id, game_id, pts, reb, ast, stl, blk, plus_minus, minutes_played, pts_per_10_min, reb_per_10_min, ast_per_10_min"
+        ),
 
-        supabase
-          .from("team_game_stats")
-          .select(
-            "game_id, team_side, pts, opp_pts, reb, ast, stl, blk, off_rating, def_rating, net_rating, reb_rate, tov_rate, result"
-          ),
+      supabase
+        .from("team_game_stats")
+        .select(
+          "game_id, team_side, pts, opp_pts, reb, ast, stl, blk, off_rating, def_rating, net_rating, reb_rate, tov_rate, result"
+        ),
 
-        supabase
-          .from("game_insights")
-          .select(
-            "game_id, summary, key_problem_1, key_problem_2, key_problem_3, positive_1, positive_2, positive_3, focus_1, focus_2, focus_3"
-          ),
+      supabase
+        .from("game_insights")
+        .select(
+          "game_id, summary, key_problem_1, key_problem_2, key_problem_3, positive_1, positive_2, positive_3, focus_1, focus_2, focus_3"
+        ),
 
-        supabase.from("game_players").select("game_id, player_id, is_starter"),
-      ]);
+      supabase.from("game_players").select("game_id, player_id, is_starter"),
+
+      supabase.from("events").select("game_id, event_type, team_side, is_undone"),
+    ]);
 
     if (gamesRes.error) {
       console.error(gamesRes.error);
@@ -212,6 +288,7 @@ export default function ViewerGamesPage() {
     if (tgsRes.error) console.error(tgsRes.error);
     if (insightsRes.error) console.error(insightsRes.error);
     if (gamePlayersRes.error) console.error(gamePlayersRes.error);
+    if (eventsRes.error) console.error(eventsRes.error);
 
     setGames((gamesRes.data as GameRow[]) || []);
     setPlayers((playersRes.data as PlayerRow[]) || []);
@@ -225,6 +302,7 @@ export default function ViewerGamesPage() {
         is_starter?: boolean | null;
       }[]) || []
     );
+    setEvents((eventsRes.data as EventFallbackRow[]) || []);
     setLoading(false);
   }, []);
 
@@ -305,10 +383,17 @@ export default function ViewerGamesPage() {
 
   const latestGame = finishedGames[0] || games[0] || null;
 
-  const latestTeamStats = useMemo(() => {
-    if (!latestGame) return null;
-    return teamGameStats.find((row) => row.game_id === latestGame.id) || null;
-  }, [latestGame, teamGameStats]);
+  const latestTeamStats = useMemo<TeamStatLike | null>(() => {
+  if (!latestGame) return null;
+
+  const stat = teamGameStats.find((row) => row.game_id === latestGame.id);
+
+  if (stat && isUsableTeamStat(stat)) {
+    return stat;
+  }
+
+  return buildFallbackTeamStat(latestGame.id, events);
+}, [latestGame, teamGameStats, events]);
 
   const latestInsight = useMemo(() => {
     if (!latestGame) return null;
@@ -316,14 +401,19 @@ export default function ViewerGamesPage() {
   }, [latestGame, insights]);
 
   const recentFiveStats = useMemo(() => {
-    return finishedGames
-      .slice(0, 5)
-      .map((game) => ({
+    return finishedGames.slice(0, 5).map((game) => {
+      const stat = teamGameStats.find((row) => row.game_id === game.id);
+
+      if (isUsableTeamStat(stat)) {
+        return { game, stats: stat as TeamStatLike };
+      }
+
+      return {
         game,
-        stats: teamGameStats.find((row) => row.game_id === game.id) || null,
-      }))
-      .filter((item) => item.stats);
-  }, [finishedGames, teamGameStats]);
+        stats: buildFallbackTeamStat(game.id, events),
+      };
+    });
+  }, [finishedGames, teamGameStats, events]);
 
   const recentThreeStats = recentFiveStats.slice(0, 3);
   const previousThreeStats = recentFiveStats.slice(3, 6);
@@ -343,17 +433,33 @@ export default function ViewerGamesPage() {
   }, [recentThreeStats]);
 
   const trendCards = useMemo(() => {
-    const recentOff = avg(recentThreeStats.map((x) => safeNumber(x.stats?.off_rating)));
-    const prevOff = avg(previousThreeStats.map((x) => safeNumber(x.stats?.off_rating)));
+    const recentOff = avg(
+      recentThreeStats.map((x) => safeNumber(x.stats?.off_rating))
+    );
+    const prevOff = avg(
+      previousThreeStats.map((x) => safeNumber(x.stats?.off_rating))
+    );
 
-    const recentDef = avg(recentThreeStats.map((x) => safeNumber(x.stats?.def_rating)));
-    const prevDef = avg(previousThreeStats.map((x) => safeNumber(x.stats?.def_rating)));
+    const recentDef = avg(
+      recentThreeStats.map((x) => safeNumber(x.stats?.def_rating))
+    );
+    const prevDef = avg(
+      previousThreeStats.map((x) => safeNumber(x.stats?.def_rating))
+    );
 
-    const recentReb = avg(recentThreeStats.map((x) => safeNumber(x.stats?.reb_rate)));
-    const prevReb = avg(previousThreeStats.map((x) => safeNumber(x.stats?.reb_rate)));
+    const recentReb = avg(
+      recentThreeStats.map((x) => safeNumber(x.stats?.reb_rate))
+    );
+    const prevReb = avg(
+      previousThreeStats.map((x) => safeNumber(x.stats?.reb_rate))
+    );
 
-    const recentTov = avg(recentThreeStats.map((x) => safeNumber(x.stats?.tov_rate)));
-    const prevTov = avg(previousThreeStats.map((x) => safeNumber(x.stats?.tov_rate)));
+    const recentTov = avg(
+      recentThreeStats.map((x) => safeNumber(x.stats?.tov_rate))
+    );
+    const prevTov = avg(
+      previousThreeStats.map((x) => safeNumber(x.stats?.tov_rate))
+    );
 
     return [
       {
@@ -388,34 +494,39 @@ export default function ViewerGamesPage() {
       .filter((row) => row.game_id === latestGame.id)
       .map((row) => {
         const player = players.find((p) => p.id === row.player_id);
+        const minutes = safeNumber(row.minutes_played);
+        const pts = safeNumber(row.pts);
+        const reb = safeNumber(row.reb);
+        const ast = safeNumber(row.ast);
+
         return {
           id: row.player_id,
           name: player?.name || "未命名",
           number: player?.number ?? null,
           plusMinus: safeNumber(row.plus_minus),
-          pts: safeNumber(row.pts),
-          reb: safeNumber(row.reb),
-          ast: safeNumber(row.ast),
-          minutes: round1(safeNumber(row.minutes_played)),
+          pts,
+          reb,
+          ast,
+          minutes: round1(minutes),
           pts10: round1(
             row.pts_per_10_min != null
               ? safeNumber(row.pts_per_10_min)
-              : safeNumber(row.minutes_played) > 0
-              ? (safeNumber(row.pts) / safeNumber(row.minutes_played)) * 10
+              : minutes > 0
+              ? (pts / minutes) * 10
               : 0
           ),
           reb10: round1(
             row.reb_per_10_min != null
               ? safeNumber(row.reb_per_10_min)
-              : safeNumber(row.minutes_played) > 0
-              ? (safeNumber(row.reb) / safeNumber(row.minutes_played)) * 10
+              : minutes > 0
+              ? (reb / minutes) * 10
               : 0
           ),
           ast10: round1(
             row.ast_per_10_min != null
               ? safeNumber(row.ast_per_10_min)
-              : safeNumber(row.minutes_played) > 0
-              ? (safeNumber(row.ast) / safeNumber(row.minutes_played)) * 10
+              : minutes > 0
+              ? (ast / minutes) * 10
               : 0
           ),
         };
@@ -440,10 +551,16 @@ export default function ViewerGamesPage() {
         .map((gp) => gp.player_id)
     );
 
-    const currentStats = playerGameStats.filter((row) => row.game_id === latestGame.id);
+    const currentStats = playerGameStats.filter(
+      (row) => row.game_id === latestGame.id
+    );
 
-    const starterRows = currentStats.filter((row) => starterIds.has(row.player_id));
-    const benchRows = currentStats.filter((row) => !starterIds.has(row.player_id));
+    const starterRows = currentStats.filter((row) =>
+      starterIds.has(row.player_id)
+    );
+    const benchRows = currentStats.filter(
+      (row) => !starterIds.has(row.player_id)
+    );
 
     const starterAvg = starterRows.length
       ? avg(starterRows.map((row) => safeNumber(row.plus_minus)))
@@ -503,15 +620,19 @@ export default function ViewerGamesPage() {
             </div>
             <div className="hero-result">
               {latestTeamStats
-                ? safeNumber(latestTeamStats.pts) > safeNumber(latestTeamStats.opp_pts)
+                ? safeNumber(latestTeamStats.pts) >
+                  safeNumber(latestTeamStats.opp_pts)
                   ? "勝"
-                  : safeNumber(latestTeamStats.pts) < safeNumber(latestTeamStats.opp_pts)
+                  : safeNumber(latestTeamStats.pts) <
+                    safeNumber(latestTeamStats.opp_pts)
                   ? "敗"
                   : "平"
                 : "—"}
             </div>
             <div className="hero-date-row">
-              <span>{getShortDate(latestGame?.game_date || latestGame?.created_at)}</span>
+              <span>
+                {getShortDate(latestGame?.game_date || latestGame?.created_at)}
+              </span>
               <span>{getGameTypeLabel(latestGame)}</span>
             </div>
           </div>
@@ -524,19 +645,37 @@ export default function ViewerGamesPage() {
             <div className="big-stat">
               <div className="big-stat-title">進攻效率</div>
               <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.stats?.off_rating))))}
+                {round1(
+                  avg(
+                    recentThreeStats.map((x) =>
+                      safeNumber(x.stats?.off_rating)
+                    )
+                  )
+                )}
               </div>
             </div>
             <div className="big-stat">
               <div className="big-stat-title">防守效率</div>
               <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.stats?.def_rating))))}
+                {round1(
+                  avg(
+                    recentThreeStats.map((x) =>
+                      safeNumber(x.stats?.def_rating)
+                    )
+                  )
+                )}
               </div>
             </div>
             <div className="big-stat">
               <div className="big-stat-title">淨效率</div>
               <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.stats?.net_rating))))}
+                {round1(
+                  avg(
+                    recentThreeStats.map((x) =>
+                      safeNumber(x.stats?.net_rating)
+                    )
+                  )
+                )}
               </div>
             </div>
           </div>
@@ -604,13 +743,14 @@ export default function ViewerGamesPage() {
                     <div className="player-name">
                       #{player.number ?? "-"} {player.name}
                     </div>
-                    <div className="player-plus">{player.plusMinus >= 0 ? "+" : ""}{player.plusMinus}</div>
+                    <div className="player-plus">
+                      {player.plusMinus >= 0 ? "+" : ""}
+                      {player.plusMinus}
+                    </div>
                     <div className="player-line">
                       {player.pts}分 {player.reb}板 {player.ast}助
                     </div>
-                    <div className="player-line">
-                      {player.minutes}分
-                    </div>
+                    <div className="player-line">{player.minutes}分</div>
                     <div className="player-line strong">
                       {player.pts10} / {player.reb10} / {player.ast10}
                     </div>
