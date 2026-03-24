@@ -23,6 +23,7 @@ type GameRow = {
   game_date?: string | null;
   created_at?: string | null;
   status?: string | null;
+  quarters?: number | null; // 🔥 新增
 };
 
 type GamePlayerRow = {
@@ -460,11 +461,18 @@ export default function PlayerProfilePage() {
 
       const { data: gameData, error: gameError } = await supabase
         .from("games")
-        .select("id, teamA, teamB, game_date, created_at, status")
+        .select("id, teamA, teamB, game_date, created_at, status,quarters")
         .in("id", gameIds);
 
       if (gameError) throw gameError;
-      setGames((gameData || []) as GameRow[]);
+      const safeGames = ((gameData || []) as GameRow[]).filter((g) => {
+  const status = (g.status || "").toLowerCase();
+  const isFinished = ["finished", "final", "ended", "done", "completed"].includes(status);
+
+  return isFinished && (g.quarters ?? 4) >= 4;
+});
+
+setGames(safeGames);
     } catch (err: any) {
       console.error("PlayerProfilePage load error:", err);
       setError(err?.message || "載入資料失敗");
