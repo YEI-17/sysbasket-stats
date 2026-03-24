@@ -554,8 +554,12 @@ export default function LiveGamePage() {
 
 async function handleRebuildThisGame() {
   if (!game?.id) return;
+
   try {
-    await finalizeGameStats(game.id);
+    await finalizeGameStats(game.id, {
+      recalcLineups: true,
+      silent: false,
+    });
     alert("本場資料已補算完成");
   } catch (err: any) {
     alert(err?.message || "補算失敗");
@@ -1288,37 +1292,84 @@ async function handleRebuildThisGame() {
   };
 }
 
-  async function finalizeGameStats(currentGameId: string) {
-  logFinalizeDebug("start", { gameId: currentGameId });
+  async function finalizeGameStats(
+  currentGameId: string,
+  options?: {
+    recalcLineups?: boolean;
+    silent?: boolean;
+  }
+) {
+  const recalcLineups = options?.recalcLineups ?? false;
+  const silent = options?.silent ?? false;
 
-  // ✅ 1. 先查這場是不是正式賽
-  const { data: game, error: gameError } = await supabase
+  logFinalizeDebug("start", {
+    gameId: currentGameId,
+    recalcLineups,
+    silent,
+  });
+
+  const { data: gameRow, error: gameError } = await supabase
     .from("games")
     .select("id, is_official")
     .eq("id", currentGameId)
     .single();
 
-  if (gameError || !game) {
-    throw new Error("讀取比賽失敗");
+  if (gameError || !gameRow) {
+    throw new Error(`讀取比賽失敗：${gameError?.message || "找不到比賽"}`);
   }
 
   await backfillGamePlayersFromEvents(currentGameId);
 
-  // ✅ 2. 先刪掉舊的統計（超重要）
-  await supabase.from("player_game_stats").delete().eq("game_id", currentGameId);
-  await supabase.from("team_game_stats").delete().eq("game_id", currentGameId);
+  // 非正式賽：清空衍生資料後直接結束
+  if (!gameRow.is_official) {
+    const [
+      { error: deletePlayerStatsError },
+      { error: deleteTeamStatsError },
+      { error: deleteInsightsError },
+      { error: deleteLineupStatsError },
+    ] = await Promise.all([
+      supabase.from("player_game_stats").delete().eq("game_id", currentGameId),
+      supabase.from("team_game_stats").delete().eq("game_id", currentGameId),
+      supabase.from("game_insights").delete().eq("game_id", currentGameId),
+      supabase.from("lineup_stats").delete().eq("game_id", currentGameId),
+    ]);
 
-  // ✅ 3. 如果不是正式賽 → 直接結束
-  if (!game.is_official) {
+    if (deletePlayerStatsError) {
+      throw new Error(`刪除 player_game_stats 失敗：${deletePlayerStatsError.message}`);
+    }
+    if (deleteTeamStatsError) {
+      throw new Error(`刪除 team_game_stats 失敗：${deleteTeamStatsError.message}`);
+    }
+    if (deleteInsightsError) {
+      throw new Error(`刪除 game_insights 失敗：${deleteInsightsError.message}`);
+    }
+    if (deleteLineupStatsError) {
+      throw new Error(`刪除 lineup_stats 失敗：${deleteLineupStatsError.message}`);
+    }
+
     logFinalizeDebug("skip non-official game", { gameId: currentGameId });
     return;
   }
 
-  // ✅ 4. 正式賽才繼續算
+  // 先 build，成功後才覆蓋舊資料
   const { playerRows, teamRow, insightRow } =
     await buildFinalStatsPayload(currentGameId);
 
-  // ✅ 5. 寫入 player_game_stats
+  const [
+    { error: deletePlayerStatsError },
+    { error: deleteTeamStatsError },
+  ] = await Promise.all([
+    supabase.from("player_game_stats").delete().eq("game_id", currentGameId),
+    supabase.from("team_game_stats").delete().eq("game_id", currentGameId),
+  ]);
+
+  if (deletePlayerStatsError) {
+    throw new Error(`刪除 player_game_stats 舊資料失敗：${deletePlayerStatsError.message}`);
+  }
+  if (deleteTeamStatsError) {
+    throw new Error(`刪除 team_game_stats 舊資料失敗：${deleteTeamStatsError.message}`);
+  }
+
   const { error: playerStatError } = await supabase
     .from("player_game_stats")
     .insert(playerRows);
@@ -1327,7 +1378,6 @@ async function handleRebuildThisGame() {
     throw new Error(`寫入 player_game_stats 失敗：${playerStatError.message}`);
   }
 
-  // ✅ 6. 寫入 team_game_stats
   const { error: teamStatError } = await supabase
     .from("team_game_stats")
     .insert(teamRow);
@@ -1336,7 +1386,6 @@ async function handleRebuildThisGame() {
     throw new Error(`寫入 team_game_stats 失敗：${teamStatError.message}`);
   }
 
-  // ✅ 7. insight 可以選擇要不要留（不影響主邏輯）
   const { error: insightError } = await supabase
     .from("game_insights")
     .upsert(insightRow, { onConflict: "game_id" });
@@ -1345,17 +1394,27 @@ async function handleRebuildThisGame() {
     throw new Error(`寫入 game_insights 失敗：${insightError.message}`);
   }
 
-  await recalculateLineupStats(currentGameId);
+  if (recalcLineups) {
+    await recalculateLineupStats(currentGameId);
+  }
 
   logFinalizeDebug("success", {
     gameId: currentGameId,
     playerRowsCount: playerRows.length,
+    recalcLineups,
   });
+
+  if (!silent) {
+    setError("");
+  }
 }
 
 async function syncDerivedStatsSilently(currentGameId: string) {
   try {
-    await finalizeGameStats(currentGameId);
+    await finalizeGameStats(currentGameId, {
+      recalcLineups: false,
+      silent: true,
+    });
   } catch (err) {
     console.error(err);
   }
