@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import LogoutButton from "@/components/LogoutButton";
 
-const [quarters, setQuarters] = useState(4);
+
 
 type PlayerPosition = "PG" | "SG" | "SF" | "PF" | "C";
 
@@ -84,7 +84,7 @@ function uniqueIds(ids: string[]) {
 
 export default function NewGamePage() {
   const router = useRouter();
-
+  const [quarters, setQuarters] = useState(4);
   const [opponent, setOpponent] = useState("");
   const [gameDate, setGameDate] = useState(getTodayDateInputValue());
   const [gameTime, setGameTime] = useState(getCurrentTimeInputValue());
