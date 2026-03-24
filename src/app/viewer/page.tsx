@@ -71,6 +71,16 @@ type InsightRow = {
   focus_3?: string | null;
 };
 
+type EventRow = {
+  id: string;
+  game_id: string;
+  player_id?: string | null;
+  event_type: string;
+  team_side?: string | null;
+  is_undone?: boolean | null;
+  created_at?: string | null;
+};
+
 type PlayerCard = {
   id: string;
   name: string;
@@ -83,6 +93,23 @@ type PlayerCard = {
   pts10: number;
   reb10: number;
   ast10: number;
+};
+
+type ComputedTeamMetrics = {
+  points: number;
+  possessions: number;
+  offRating: number;
+  turnoverRate: number;
+  emptyRate: number;
+  ppp: number;
+  fg2m: number;
+  fg2a: number;
+  fg3m: number;
+  fg3a: number;
+  ftm: number;
+  fta: number;
+  shotMix2: number;
+  shotMix3: number;
 };
 
 function normalizeStatus(status?: string | null) {
@@ -145,6 +172,126 @@ function avg(values: number[]) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+function normalizeEventType(type?: string | null) {
+  const t = (type ?? "").trim().toLowerCase();
+
+  if (["fg2_make", "fg2_made", "2pt_make", "2pt_made"].includes(t)) {
+    return "fg2_make";
+  }
+  if (["fg2_miss", "fg2_missed", "2pt_miss", "2pt_missed"].includes(t)) {
+    return "fg2_miss";
+  }
+  if (["fg3_make", "fg3_made", "3pt_make", "3pt_made"].includes(t)) {
+    return "fg3_make";
+  }
+  if (["fg3_miss", "fg3_missed", "3pt_miss", "3pt_missed"].includes(t)) {
+    return "fg3_miss";
+  }
+  if (["ft_make", "ft_made", "free_throw_make", "free_throw_made"].includes(t)) {
+    return "ft_make";
+  }
+  if (["ft_miss", "ft_missed", "free_throw_miss", "free_throw_missed"].includes(t)) {
+    return "ft_miss";
+  }
+  if (["tov", "turnover"].includes(t)) {
+    return "tov";
+  }
+  if (["oreb", "orb", "off_reb", "offensive_rebound"].includes(t)) {
+    return "oreb";
+  }
+  if (["dreb", "drb", "def_reb", "defensive_rebound"].includes(t)) {
+    return "dreb";
+  }
+  if (["reb", "rebound"].includes(t)) {
+    return "reb";
+  }
+
+  return t;
+}
+
+function isOurTeamEvent(teamSide?: string | null) {
+  const side = (teamSide ?? "").trim().toLowerCase();
+  if (!side) return true;
+  if (["teama", "a", "our", "self", "home"].includes(side)) return true;
+  if (["teamb", "b", "opponent", "away"].includes(side)) return false;
+  return true;
+}
+
+function calcMetricsFromEvents(events: EventRow[]): ComputedTeamMetrics {
+  let fg2m = 0;
+  let fg2a = 0;
+  let fg3m = 0;
+  let fg3a = 0;
+  let ftm = 0;
+  let fta = 0;
+  let tov = 0;
+  let oreb = 0;
+
+  const usable = events.filter(
+    (e) => !e.is_undone && isOurTeamEvent(e.team_side)
+  );
+
+  for (const e of usable) {
+    const t = normalizeEventType(e.event_type);
+
+    if (t === "fg2_make") {
+      fg2m += 1;
+      fg2a += 1;
+    } else if (t === "fg2_miss") {
+      fg2a += 1;
+    } else if (t === "fg3_make") {
+      fg3m += 1;
+      fg3a += 1;
+    } else if (t === "fg3_miss") {
+      fg3a += 1;
+    } else if (t === "ft_make") {
+      ftm += 1;
+      fta += 1;
+    } else if (t === "ft_miss") {
+      fta += 1;
+    } else if (t === "tov") {
+      tov += 1;
+    } else if (t === "oreb") {
+      oreb += 1;
+    }
+  }
+
+  const points = fg2m * 2 + fg3m * 3 + ftm;
+  const fga = fg2a + fg3a;
+  const possessionsRaw = fga + tov + 0.44 * fta - oreb;
+  const possessions = possessionsRaw > 0 ? possessionsRaw : 0;
+
+  const offRating = possessions > 0 ? (points / possessions) * 100 : 0;
+  const turnoverRate = possessions > 0 ? (tov / possessions) * 100 : 0;
+
+  const estimatedScoringPossessions =
+    fg2m + fg3m + Math.min(ftm * 0.44, fta * 0.44);
+  const emptyPossessions = Math.max(0, possessions - estimatedScoringPossessions);
+  const emptyRate = possessions > 0 ? (emptyPossessions / possessions) * 100 : 0;
+  const ppp = possessions > 0 ? points / possessions : 0;
+
+  const totalFgAttempts = fg2a + fg3a;
+  const shotMix2 = totalFgAttempts > 0 ? (fg2a / totalFgAttempts) * 100 : 0;
+  const shotMix3 = totalFgAttempts > 0 ? (fg3a / totalFgAttempts) * 100 : 0;
+
+  return {
+    points: round1(points),
+    possessions: round1(possessions),
+    offRating: round1(offRating),
+    turnoverRate: round1(turnoverRate),
+    emptyRate: round1(emptyRate),
+    ppp: round1(ppp),
+    fg2m,
+    fg2a,
+    fg3m,
+    fg3a,
+    ftm,
+    fta,
+    shotMix2: round1(shotMix2),
+    shotMix3: round1(shotMix3),
+  };
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
@@ -155,6 +302,7 @@ export default function ViewerGamesPage() {
   );
   const [teamGameStats, setTeamGameStats] = useState<TeamGameStatsRow[]>([]);
   const [insights, setInsights] = useState<InsightRow[]>([]);
+  const [events, setEvents] = useState<EventRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<
     { game_id: string; player_id: string; is_starter?: boolean | null }[]
   >([]);
@@ -171,6 +319,7 @@ export default function ViewerGamesPage() {
       pgsRes,
       tgsRes,
       insightsRes,
+      eventsRes,
       gamePlayersRes,
     ] = await Promise.all([
       supabase
@@ -205,6 +354,10 @@ export default function ViewerGamesPage() {
           "game_id, summary, key_problem_1, key_problem_2, key_problem_3, positive_1, positive_2, positive_3, focus_1, focus_2, focus_3"
         ),
 
+      supabase
+        .from("events")
+        .select("id, game_id, player_id, event_type, team_side, is_undone, created_at"),
+
       supabase.from("game_players").select("game_id, player_id, is_starter"),
     ]);
 
@@ -219,6 +372,7 @@ export default function ViewerGamesPage() {
     if (pgsRes.error) console.error(pgsRes.error);
     if (tgsRes.error) console.error(tgsRes.error);
     if (insightsRes.error) console.error(insightsRes.error);
+    if (eventsRes.error) console.error(eventsRes.error);
     if (gamePlayersRes.error) console.error(gamePlayersRes.error);
 
     setGames((gamesRes.data as GameRow[]) || []);
@@ -226,6 +380,7 @@ export default function ViewerGamesPage() {
     setPlayerGameStats((pgsRes.data as PlayerGameStatsRow[]) || []);
     setTeamGameStats((tgsRes.data as TeamGameStatsRow[]) || []);
     setInsights((insightsRes.data as InsightRow[]) || []);
+    setEvents((eventsRes.data as EventRow[]) || []);
     setGamePlayers(
       (gamePlayersRes.data as {
         game_id: string;
@@ -313,9 +468,11 @@ export default function ViewerGamesPage() {
 
   const latestGame = useMemo(() => {
     if (!finishedGames.length) return null;
-    return finishedGames.find((game) =>
-      teamGameStats.some((row) => row.game_id === game.id)
-    ) || null;
+    return (
+      finishedGames.find((game) =>
+        teamGameStats.some((row) => row.game_id === game.id)
+      ) || finishedGames[0] || null
+    );
   }, [finishedGames, teamGameStats]);
 
   const latestTeamStats = useMemo<TeamGameStatsRow | null>(() => {
@@ -328,35 +485,53 @@ export default function ViewerGamesPage() {
     return insights.find((row) => row.game_id === latestGame.id) || null;
   }, [latestGame, insights]);
 
+  const computedByGame = useMemo(() => {
+    const map = new Map<string, ComputedTeamMetrics>();
+
+    for (const game of finishedGames) {
+      const gameEvents = events.filter((e) => e.game_id === game.id && !e.is_undone);
+      map.set(game.id, calcMetricsFromEvents(gameEvents));
+    }
+
+    return map;
+  }, [finishedGames, events]);
+
   const recentFiveStats = useMemo(() => {
     return finishedGames
-      .filter((game) => teamGameStats.some((row) => row.game_id === game.id))
       .slice(0, 5)
       .map((game) => ({
         game,
-        stats:
-          teamGameStats.find((row) => row.game_id === game.id) || null,
+        stats: teamGameStats.find((row) => row.game_id === game.id) || null,
+        computed: computedByGame.get(game.id) || null,
       }))
       .filter(
         (
           item
         ): item is {
           game: GameRow;
-          stats: TeamGameStatsRow;
-        } => item.stats !== null
+          stats: TeamGameStatsRow | null;
+          computed: ComputedTeamMetrics | null;
+        } => true
       );
-  }, [finishedGames, teamGameStats]);
+  }, [finishedGames, teamGameStats, computedByGame]);
 
   const recentThreeStats = recentFiveStats.slice(0, 3);
   const previousThreeStats = recentFiveStats.slice(3, 6);
+
+  const latestComputed = useMemo(() => {
+    if (!latestGame) return null;
+    return computedByGame.get(latestGame.id) || null;
+  }, [latestGame, computedByGame]);
 
   const recentRecord = useMemo(() => {
     let win = 0;
     let lose = 0;
 
-    recentThreeStats.forEach(({ stats }) => {
-      const pts = safeNumber(stats.pts);
-      const oppPts = safeNumber(stats.opp_pts);
+    recentThreeStats.forEach(({ stats, computed }) => {
+      const pts =
+        stats?.pts != null ? safeNumber(stats.pts) : safeNumber(computed?.points);
+      const oppPts = safeNumber(stats?.opp_pts);
+
       if (pts > oppPts) win += 1;
       else if (pts < oppPts) lose += 1;
     });
@@ -365,56 +540,46 @@ export default function ViewerGamesPage() {
   }, [recentThreeStats]);
 
   const trendCards = useMemo(() => {
-    const recentOff = avg(
-      recentThreeStats.map((x) => safeNumber(x.stats.off_rating))
-    );
-    const prevOff = avg(
-      previousThreeStats.map((x) => safeNumber(x.stats.off_rating))
-    );
+    function calcPack(
+      items: {
+        game: GameRow;
+        stats: TeamGameStatsRow | null;
+        computed: ComputedTeamMetrics | null;
+      }[]
+    ) {
+      const off = avg(items.map((x) => safeNumber(x.computed?.offRating)));
+      const tov = avg(items.map((x) => safeNumber(x.computed?.turnoverRate)));
+      const empty = avg(items.map((x) => safeNumber(x.computed?.emptyRate)));
+      const ppp = avg(items.map((x) => safeNumber(x.computed?.ppp)));
 
-    const recentDef = avg(
-      recentThreeStats.map((x) => safeNumber(x.stats.def_rating))
-    );
-    const prevDef = avg(
-      previousThreeStats.map((x) => safeNumber(x.stats.def_rating))
-    );
+      return { off, tov, empty, ppp };
+    }
 
-    const recentReb = avg(
-      recentThreeStats.map((x) => safeNumber(x.stats.reb_rate))
-    );
-    const prevReb = avg(
-      previousThreeStats.map((x) => safeNumber(x.stats.reb_rate))
-    );
-
-    const recentTov = avg(
-      recentThreeStats.map((x) => safeNumber(x.stats.tov_rate))
-    );
-    const prevTov = avg(
-      previousThreeStats.map((x) => safeNumber(x.stats.tov_rate))
-    );
+    const recent = calcPack(recentThreeStats);
+    const prev = calcPack(previousThreeStats);
 
     return [
       {
         label: "進攻效率",
-        value: round1(recentOff),
-        diff: round1(recentOff - prevOff),
-      },
-      {
-        label: "防守效率",
-        value: round1(recentDef),
-        diff: round1(recentDef - prevDef),
-      },
-      {
-        label: "籃板率",
-        value: round1(recentReb * 100),
-        diff: round1((recentReb - prevReb) * 100),
-        suffix: "%",
+        value: round1(recent.off),
+        diff: round1(recent.off - prev.off),
       },
       {
         label: "失誤率",
-        value: round1(recentTov * 100),
-        diff: round1((recentTov - prevTov) * 100),
+        value: round1(recent.tov),
+        diff: round1(recent.tov - prev.tov),
         suffix: "%",
+      },
+      {
+        label: "空回合率",
+        value: round1(recent.empty),
+        diff: round1(recent.empty - prev.empty),
+        suffix: "%",
+      },
+      {
+        label: "每回合得分",
+        value: round1(recent.ppp),
+        diff: round1(recent.ppp - prev.ppp),
       },
     ];
   }, [recentThreeStats, previousThreeStats]);
@@ -520,6 +685,58 @@ export default function ViewerGamesPage() {
     };
   }, [latestGame, gamePlayers, playerGameStats, players]);
 
+  const generatedInsight = useMemo(() => {
+    if (!latestComputed) {
+      return {
+        problems: ["—", "—", "—"],
+        positives: ["—", "—", "—"],
+        focuses: ["—", "—", "—"],
+      };
+    }
+
+    const problems: string[] = [];
+    const positives: string[] = [];
+    const focuses: string[] = [];
+
+    if (latestComputed.turnoverRate >= 18) {
+      problems.push(`失誤率 ${latestComputed.turnoverRate}% 偏高`);
+      focuses.push("降低失誤回合，先穩定處理球");
+    } else {
+      positives.push(`失誤率 ${latestComputed.turnoverRate}% 控制不錯`);
+    }
+
+    if (latestComputed.emptyRate >= 55) {
+      problems.push(`空回合率 ${latestComputed.emptyRate}% 偏高`);
+      focuses.push("增加穩定得分回合，避免連續空回合");
+    } else {
+      positives.push(`空回合率 ${latestComputed.emptyRate}% 相對穩定`);
+    }
+
+    if (latestComputed.offRating >= 100) {
+      positives.push(`進攻效率 ${latestComputed.offRating} 表現不錯`);
+    } else {
+      problems.push(`進攻效率 ${latestComputed.offRating} 偏低`);
+      focuses.push("提升每波進攻品質，增加有效終結");
+    }
+
+    if (latestComputed.shotMix3 >= 45) {
+      problems.push(`三分出手占比 ${latestComputed.shotMix3}% 偏高`);
+      focuses.push("減少勉強外線，增加禁區與中近距離終結");
+    } else if (latestComputed.shotMix2 >= 60) {
+      positives.push(`二分出手占比 ${latestComputed.shotMix2}%，進攻較往籃下`);
+    }
+
+    while (problems.length < 3) problems.push("—");
+    while (positives.length < 3) positives.push("—");
+    while (focuses.length < 3) focuses.push("—");
+
+    return {
+      problems: problems.slice(0, 3),
+      positives: positives.slice(0, 3),
+      focuses: focuses.slice(0, 3),
+    };
+  }, [latestComputed]);
+
   function handleOpenMatches() {
     router.push("/games/list");
   }
@@ -544,19 +761,19 @@ export default function ViewerGamesPage() {
             <div className="hero-name">{viewerName}</div>
             <div className="hero-match">{getMatchName(latestGame)}</div>
             <div className="hero-score">
-              {latestTeamStats
-                ? `${safeNumber(latestTeamStats.pts)} - ${safeNumber(
-                    latestTeamStats.opp_pts
+              {latestGame
+                ? `${safeNumber(latestTeamStats?.pts ?? latestComputed?.points)} - ${safeNumber(
+                    latestTeamStats?.opp_pts
                   )}`
                 : "—"}
             </div>
             <div className="hero-result">
-              {latestTeamStats
-                ? safeNumber(latestTeamStats.pts) >
-                  safeNumber(latestTeamStats.opp_pts)
+              {latestGame
+                ? safeNumber(latestTeamStats?.pts ?? latestComputed?.points) >
+                  safeNumber(latestTeamStats?.opp_pts)
                   ? "勝"
-                  : safeNumber(latestTeamStats.pts) <
-                    safeNumber(latestTeamStats.opp_pts)
+                  : safeNumber(latestTeamStats?.pts ?? latestComputed?.points) <
+                    safeNumber(latestTeamStats?.opp_pts)
                   ? "敗"
                   : "平"
                 : "—"}
@@ -577,37 +794,19 @@ export default function ViewerGamesPage() {
             <div className="big-stat">
               <div className="big-stat-title">進攻效率</div>
               <div className="big-stat-value">
-                {round1(
-                  avg(
-                    recentThreeStats.map((x) =>
-                      safeNumber(x.stats.off_rating)
-                    )
-                  )
-                )}
+                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.offRating))))}
               </div>
             </div>
             <div className="big-stat">
-              <div className="big-stat-title">防守效率</div>
+              <div className="big-stat-title">失誤率</div>
               <div className="big-stat-value">
-                {round1(
-                  avg(
-                    recentThreeStats.map((x) =>
-                      safeNumber(x.stats.def_rating)
-                    )
-                  )
-                )}
+                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.turnoverRate))))}%
               </div>
             </div>
             <div className="big-stat">
-              <div className="big-stat-title">淨效率</div>
+              <div className="big-stat-title">空回合率</div>
               <div className="big-stat-value">
-                {round1(
-                  avg(
-                    recentThreeStats.map((x) =>
-                      safeNumber(x.stats.net_rating)
-                    )
-                  )
-                )}
+                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.emptyRate))))}%
               </div>
             </div>
           </div>
@@ -622,27 +821,27 @@ export default function ViewerGamesPage() {
               <div className="section-card">
                 <h2>問題</h2>
                 <div className="bullet-list">
-                  <div>{latestInsight?.key_problem_1 || "—"}</div>
-                  <div>{latestInsight?.key_problem_2 || "—"}</div>
-                  <div>{latestInsight?.key_problem_3 || "—"}</div>
+                  <div>{latestInsight?.key_problem_1 || generatedInsight.problems[0]}</div>
+                  <div>{latestInsight?.key_problem_2 || generatedInsight.problems[1]}</div>
+                  <div>{latestInsight?.key_problem_3 || generatedInsight.problems[2]}</div>
                 </div>
               </div>
 
               <div className="section-card">
                 <h2>優勢</h2>
                 <div className="bullet-list">
-                  <div>{latestInsight?.positive_1 || "—"}</div>
-                  <div>{latestInsight?.positive_2 || "—"}</div>
-                  <div>{latestInsight?.positive_3 || "—"}</div>
+                  <div>{latestInsight?.positive_1 || generatedInsight.positives[0]}</div>
+                  <div>{latestInsight?.positive_2 || generatedInsight.positives[1]}</div>
+                  <div>{latestInsight?.positive_3 || generatedInsight.positives[2]}</div>
                 </div>
               </div>
 
               <div className="section-card">
                 <h2>重點</h2>
                 <div className="bullet-list">
-                  <div>{latestInsight?.focus_1 || "—"}</div>
-                  <div>{latestInsight?.focus_2 || "—"}</div>
-                  <div>{latestInsight?.focus_3 || "—"}</div>
+                  <div>{latestInsight?.focus_1 || generatedInsight.focuses[0]}</div>
+                  <div>{latestInsight?.focus_2 || generatedInsight.focuses[1]}</div>
+                  <div>{latestInsight?.focus_3 || generatedInsight.focuses[2]}</div>
                 </div>
               </div>
             </section>
@@ -666,6 +865,36 @@ export default function ViewerGamesPage() {
                   </div>
                 </div>
               ))}
+            </section>
+
+            <section className="trend-grid">
+              <div className="trend-card">
+                <div className="trend-title">2分出手占比</div>
+                <div className="trend-value">{safeNumber(latestComputed?.shotMix2)}%</div>
+                <div className="trend-diff">
+                  {safeNumber(latestComputed?.fg2m)} / {safeNumber(latestComputed?.fg2a)}
+                </div>
+              </div>
+
+              <div className="trend-card">
+                <div className="trend-title">3分出手占比</div>
+                <div className="trend-value">{safeNumber(latestComputed?.shotMix3)}%</div>
+                <div className="trend-diff">
+                  {safeNumber(latestComputed?.fg3m)} / {safeNumber(latestComputed?.fg3a)}
+                </div>
+              </div>
+
+              <div className="trend-card">
+                <div className="trend-title">罰球</div>
+                <div className="trend-value">{safeNumber(latestComputed?.ftm)} / {safeNumber(latestComputed?.fta)}</div>
+                <div className="trend-diff">命中 / 出手</div>
+              </div>
+
+              <div className="trend-card">
+                <div className="trend-title">每回合得分</div>
+                <div className="trend-value">{safeNumber(latestComputed?.ppp)}</div>
+                <div className="trend-diff">用 events 重算</div>
+              </div>
             </section>
 
             <section className="players-grid">
