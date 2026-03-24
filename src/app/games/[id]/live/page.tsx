@@ -1218,42 +1218,61 @@ async function handleRebuildThisGame() {
   async function finalizeGameStats(currentGameId: string) {
   logFinalizeDebug("start", { gameId: currentGameId });
 
-  const { playerRows, teamRow, insightRow } = await buildFinalStatsPayload(
-    currentGameId
-  );
+  // ✅ 1. 先查這場是不是正式賽
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .select("id, is_official")
+    .eq("id", currentGameId)
+    .single();
 
+  if (gameError || !game) {
+    throw new Error("讀取比賽失敗");
+  }
+
+  // ✅ 2. 先刪掉舊的統計（超重要）
+  await supabase.from("player_game_stats").delete().eq("game_id", currentGameId);
+  await supabase.from("team_game_stats").delete().eq("game_id", currentGameId);
+
+  // ✅ 3. 如果不是正式賽 → 直接結束
+  if (!game.is_official) {
+    logFinalizeDebug("skip non-official game", { gameId: currentGameId });
+    return;
+  }
+
+  // ✅ 4. 正式賽才繼續算
+  const { playerRows, teamRow, insightRow } =
+    await buildFinalStatsPayload(currentGameId);
+
+  // ✅ 5. 寫入 player_game_stats
   const { error: playerStatError } = await supabase
     .from("player_game_stats")
-    .upsert(playerRows, { onConflict: "game_id,player_id" });
+    .insert(playerRows);
 
   if (playerStatError) {
-    logFinalizeDebug("player_game_stats upsert failed", playerStatError);
     throw new Error(`寫入 player_game_stats 失敗：${playerStatError.message}`);
   }
 
+  // ✅ 6. 寫入 team_game_stats
   const { error: teamStatError } = await supabase
     .from("team_game_stats")
-    .upsert(teamRow, { onConflict: "game_id,team_side" });
+    .insert(teamRow);
 
   if (teamStatError) {
-    logFinalizeDebug("team_game_stats upsert failed", teamStatError);
     throw new Error(`寫入 team_game_stats 失敗：${teamStatError.message}`);
   }
 
+  // ✅ 7. insight 可以選擇要不要留（不影響主邏輯）
   const { error: insightError } = await supabase
     .from("game_insights")
     .upsert(insightRow, { onConflict: "game_id" });
 
   if (insightError) {
-    logFinalizeDebug("game_insights upsert failed", insightError);
     throw new Error(`寫入 game_insights 失敗：${insightError.message}`);
   }
 
   logFinalizeDebug("success", {
     gameId: currentGameId,
     playerRowsCount: playerRows.length,
-    teamRow,
-    insightRow,
   });
 }
 
