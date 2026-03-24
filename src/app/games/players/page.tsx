@@ -17,6 +17,8 @@ type GameRow = {
   id: string;
   game_date?: string | null;
   created_at?: string | null;
+  status?: string | null;
+  quarters?: number | null;
 };
 
 type EventRow = {
@@ -94,6 +96,27 @@ function toSafeNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function normalizeStatus(status?: string | null) {
+  const s = String(status || "")
+    .trim()
+    .toLowerCase();
+
+  if (["finished", "final", "ended", "done", "completed", "closed"].includes(s)) {
+    return "已結束";
+  }
+  if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
+    return "直播中";
+  }
+  if (["scheduled", "upcoming", "pending"].includes(s)) {
+    return "未開始";
+  }
+  return status ?? "未設定";
+}
+
+function isOfficialFinishedGame(game: GameRow) {
+  return normalizeStatus(game.status) === "已結束" && (game.quarters ?? 4) >= 4;
+}
+
 function calcEfficiency(stat: {
   pts: number;
   reb: number;
@@ -150,7 +173,7 @@ export default function PlayersPage() {
         ] = await Promise.all([
           supabase
             .from("games")
-            .select("id, game_date, created_at")
+            .select("id, game_date, created_at, status, quarters")
             .order("game_date", { ascending: true, nullsFirst: false })
             .order("created_at", { ascending: true, nullsFirst: false }),
 
@@ -178,11 +201,26 @@ export default function PlayersPage() {
         if (gpError) throw gpError;
         if (pgsError) throw pgsError;
 
-        setGames((gamesData || []) as GameRow[]);
-        setPlayers((playerData || []) as PlayerRow[]);
-        setEvents((eventData || []) as EventRow[]);
-        setGamePlayers((gpData || []) as GamePlayerRow[]);
-        setPlayerGameStats((pgsData || []) as PlayerGameStatRow[]);
+        const safeGames = ((gamesData || []) as GameRow[]).filter(isOfficialFinishedGame);
+        const allowedGameIds = new Set(safeGames.map((g) => g.id));
+
+        setGames(safeGames);
+        setPlayers(((playerData || []) as PlayerRow[]).filter((p) => p.active !== false));
+        setEvents(
+          ((eventData || []) as EventRow[]).filter(
+            (row) => row.game_id && allowedGameIds.has(row.game_id)
+          )
+        );
+        setGamePlayers(
+          ((gpData || []) as GamePlayerRow[]).filter(
+            (row) => row.game_id && allowedGameIds.has(row.game_id)
+          )
+        );
+        setPlayerGameStats(
+          ((pgsData || []) as PlayerGameStatRow[]).filter(
+            (row) => row.game_id && allowedGameIds.has(row.game_id)
+          )
+        );
       } catch (err: any) {
         console.error("PlayersPage load error:", err);
         setError(err?.message || "載入球員資料失敗");
@@ -191,7 +229,7 @@ export default function PlayersPage() {
       }
     }
 
-    load();
+    void load();
   }, []);
 
   const statMap = useMemo(() => {
@@ -288,59 +326,48 @@ export default function PlayersPage() {
       const evs = eventGroupMap.get(key) || [];
       for (const ev of evs) {
         switch (ev.event_type) {
-  case "fg2_made":
-    stat.pts += 2;
-    stat.fg2m += 1;
-    stat.fg2a += 1;
-    break;
-
-  case "fg2_miss":
-    stat.fg2a += 1;
-    break;
-
-  case "fg3_made":
-    stat.pts += 3;
-    stat.fg3m += 1;
-    stat.fg3a += 1;
-    break;
-
-  case "fg3_miss":
-    stat.fg3a += 1;
-    break;
-
-  case "ft_made":
-    stat.pts += 1;
-    stat.ftm += 1;
-    stat.fta += 1;
-    break;
-
-  case "ft_miss":
-    stat.fta += 1;
-    break;
-
-  case "reb":
-    stat.reb += 1;
-    break;
-
-  case "ast":
-    stat.ast += 1;
-    break;
-
-  case "stl":
-    stat.stl += 1;
-    break;
-
-  case "blk":
-    stat.blk += 1;
-    break;
-
-  case "tov":
-    stat.tov += 1;
-    break;
-
-  default:
-    break;
-}
+          case "fg2_made":
+            stat.pts += 2;
+            stat.fg2m += 1;
+            stat.fg2a += 1;
+            break;
+          case "fg2_miss":
+            stat.fg2a += 1;
+            break;
+          case "fg3_made":
+            stat.pts += 3;
+            stat.fg3m += 1;
+            stat.fg3a += 1;
+            break;
+          case "fg3_miss":
+            stat.fg3a += 1;
+            break;
+          case "ft_made":
+            stat.pts += 1;
+            stat.ftm += 1;
+            stat.fta += 1;
+            break;
+          case "ft_miss":
+            stat.fta += 1;
+            break;
+          case "reb":
+            stat.reb += 1;
+            break;
+          case "ast":
+            stat.ast += 1;
+            break;
+          case "stl":
+            stat.stl += 1;
+            break;
+          case "blk":
+            stat.blk += 1;
+            break;
+          case "tov":
+            stat.tov += 1;
+            break;
+          default:
+            break;
+        }
       }
     }
 
@@ -351,34 +378,21 @@ export default function PlayersPage() {
     }
 
     return map;
-  }, [players, events, gamePlayers, playerGameStats, games]);
+  }, [players, events, gamePlayers, playerGameStats]);
 
   const sortedPlayers = useMemo(() => {
     return [...players].sort((a, b) => {
       const aStat = statMap.get(a.id) || emptyPreviewStat();
       const bStat = statMap.get(b.id) || emptyPreviewStat();
 
-      if (bStat.eff !== aStat.eff) {
-        return bStat.eff - aStat.eff;
-      }
-
-      if (bStat.pts !== aStat.pts) {
-        return bStat.pts - aStat.pts;
-      }
-
-      if (bStat.ast !== aStat.ast) {
-        return bStat.ast - aStat.ast;
-      }
-
-      if (bStat.reb !== aStat.reb) {
-        return bStat.reb - aStat.reb;
-      }
+      if (bStat.eff !== aStat.eff) return bStat.eff - aStat.eff;
+      if (bStat.pts !== aStat.pts) return bStat.pts - aStat.pts;
+      if (bStat.ast !== aStat.ast) return bStat.ast - aStat.ast;
+      if (bStat.reb !== aStat.reb) return bStat.reb - aStat.reb;
 
       const aNumber = a.number ?? 9999;
       const bNumber = b.number ?? 9999;
-      if (aNumber !== bNumber) {
-        return aNumber - bNumber;
-      }
+      if (aNumber !== bNumber) return aNumber - bNumber;
 
       return (a.name || "").localeCompare(b.name || "", "zh-Hant");
     });
@@ -525,6 +539,18 @@ export default function PlayersPage() {
                             }}
                           >
                             {player.position || "未設定位置"}
+                          </span>
+                          <span
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              background: "rgba(255,255,255,0.07)",
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {stat.gp} 場
                           </span>
                         </div>
                       </div>
