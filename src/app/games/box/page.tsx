@@ -15,17 +15,6 @@ type GameRow = {
   quarters?: number | null;
 };
 
-type EventRow = {
-  id: string;
-  game_id: string;
-  player_id: string | null;
-  quarter: number;
-  event_type: string;
-  created_at: string;
-  team_side?: "A" | "B" | "teamA" | "teamB" | null;
-  is_undone?: boolean | null;
-};
-
 type TeamGameStatsRow = {
   game_id: string;
   team_side: "teamA" | "teamB";
@@ -107,14 +96,6 @@ function normalizeStatus(status?: string | null) {
   return status ?? "未設定";
 }
 
-function normalizeTeamSide(side?: string | null): "teamA" | "teamB" | null {
-  if (!side) return null;
-  const s = String(side).trim().toLowerCase();
-  if (s === "a" || s === "teama") return "teamA";
-  if (s === "b" || s === "teamb") return "teamB";
-  return null;
-}
-
 function pct(made: number, att: number) {
   if (!att) return "0.0%";
   return `${((made / att) * 100).toFixed(1)}%`;
@@ -145,119 +126,6 @@ function sortGamesDesc(list: GameRow[]) {
 
 function isOfficialFinishedGame(game: GameRow) {
   return normalizeStatus(game.status) === "已結束" && (game.quarters ?? 4) >= 4;
-}
-
-function buildFallbackTeamStatsFromEvents(
-  gameId: string,
-  events: EventRow[],
-  mySide: "teamA" | "teamB" = "teamA"
-): TeamGameSummaryRow {
-  let pts = 0;
-  let oppPts = 0;
-  let fg2m = 0;
-  let fg2a = 0;
-  let fg3m = 0;
-  let fg3a = 0;
-  let ftm = 0;
-  let fta = 0;
-  let reb = 0;
-  let ast = 0;
-  let stl = 0;
-  let blk = 0;
-  let tov = 0;
-  let pf = 0;
-
-  const validEvents = events
-    .filter((e) => e.game_id === gameId && !e.is_undone)
-    .sort((a, b) => {
-      const ta = new Date(a.created_at).getTime();
-      const tb = new Date(b.created_at).getTime();
-      return ta - tb;
-    });
-
-  for (const e of validEvents) {
-    const side = normalizeTeamSide(e.team_side);
-    if (!side) continue;
-
-    const isMine = side === mySide;
-    const isOpp = side !== mySide;
-
-    switch (e.event_type) {
-      case "fg2_made":
-        if (isMine) {
-          pts += 2;
-          fg2m += 1;
-          fg2a += 1;
-        }
-        if (isOpp) oppPts += 2;
-        break;
-      case "fg2_miss":
-        if (isMine) fg2a += 1;
-        break;
-      case "fg3_made":
-        if (isMine) {
-          pts += 3;
-          fg3m += 1;
-          fg3a += 1;
-        }
-        if (isOpp) oppPts += 3;
-        break;
-      case "fg3_miss":
-        if (isMine) fg3a += 1;
-        break;
-      case "ft_made":
-        if (isMine) {
-          pts += 1;
-          ftm += 1;
-          fta += 1;
-        }
-        if (isOpp) oppPts += 1;
-        break;
-      case "ft_miss":
-        if (isMine) fta += 1;
-        break;
-      case "reb":
-        if (isMine) reb += 1;
-        break;
-      case "ast":
-        if (isMine) ast += 1;
-        break;
-      case "stl":
-        if (isMine) stl += 1;
-        break;
-      case "blk":
-        if (isMine) blk += 1;
-        break;
-      case "tov":
-        if (isMine) tov += 1;
-        break;
-      case "pf":
-        if (isMine) pf += 1;
-        break;
-      default:
-        break;
-    }
-  }
-
-  return {
-    game_id: gameId,
-    team_side: mySide,
-    pts,
-    opp_pts: oppPts,
-    fg2m,
-    fg2a,
-    fg3m,
-    fg3a,
-    ftm,
-    fta,
-    reb,
-    ast,
-    stl,
-    blk,
-    tov,
-    pf,
-    result: pts > oppPts ? "W" : pts < oppPts ? "L" : "D",
-  };
 }
 
 function buildTeamSummaryFromGameStats(
@@ -379,7 +247,9 @@ export default function TeamStatsPage() {
       return;
     }
 
-    const safeGames = sortGamesDesc(((gamesData ?? []) as GameRow[]).filter(isOfficialFinishedGame));
+    const safeGames = sortGamesDesc(
+      ((gamesData ?? []) as GameRow[]).filter(isOfficialFinishedGame)
+    );
     const gameIds = safeGames.map((g) => g.id);
 
     if (gameIds.length === 0) {
@@ -423,7 +293,13 @@ export default function TeamStatsPage() {
         tov: row.tov ?? 0,
         pf: row.pf ?? 0,
         result:
-          row.result === "W" ? "W" : row.result === "L" ? "L" : row.pts === row.opp_pts ? "D" : "L",
+          row.result === "W"
+            ? "W"
+            : row.result === "L"
+            ? "L"
+            : row.pts === row.opp_pts
+            ? "D"
+            : "L",
         updated_at: row.updated_at ?? null,
       })
     );
@@ -455,41 +331,14 @@ export default function TeamStatsPage() {
       }
     }
 
-    const missingOrInvalidGameIds = gameIds.filter((id) => {
-      const row = statsMap.get(id);
-      return !row || !isValidTeamStatsRow(row);
-    });
+    const mergedStats = gameIds
+      .map((id) => statsMap.get(id))
+      .filter((row): row is TeamGameSummaryRow => !!row);
 
-    let fallbackStats: TeamGameSummaryRow[] = [];
+    const validGameIdSet = new Set(mergedStats.map((row) => row.game_id));
+    const filteredGames = safeGames.filter((game) => validGameIdSet.has(game.id));
 
-    if (missingOrInvalidGameIds.length > 0) {
-      const { data: fallbackEventsData, error: fallbackEventsError } = await supabase
-        .from("events")
-        .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone")
-        .in("game_id", missingOrInvalidGameIds)
-        .order("created_at", { ascending: true });
-
-      if (fallbackEventsError) {
-        console.error("load fallback events error:", fallbackEventsError);
-        setError("載入舊比賽事件資料失敗");
-        setLoading(false);
-        return;
-      }
-
-      const safeEvents = (fallbackEventsData ?? []) as EventRow[];
-
-      fallbackStats = missingOrInvalidGameIds.map((gameId) =>
-        buildFallbackTeamStatsFromEvents(gameId, safeEvents, "teamA")
-      );
-    }
-
-    for (const row of fallbackStats) {
-      statsMap.set(row.game_id, row);
-    }
-
-    const mergedStats = Array.from(statsMap.values());
-
-    setGames(safeGames);
+    setGames(filteredGames);
     setTeamGameStats(mergedStats);
     setLoading(false);
   }
