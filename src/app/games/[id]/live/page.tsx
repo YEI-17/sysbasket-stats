@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { recalculateLineupStats } from "@/lib/recalculateLineupStats";
 import { supabase } from "@/lib/supabaseClient";
 import LogoutButton from "@/components/LogoutButton";
 
@@ -1343,6 +1344,8 @@ async function handleRebuildThisGame() {
   if (insightError) {
     throw new Error(`寫入 game_insights 失敗：${insightError.message}`);
   }
+
+  await recalculateLineupStats(currentGameId);
 
   logFinalizeDebug("success", {
     gameId: currentGameId,
