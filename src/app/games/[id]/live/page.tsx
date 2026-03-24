@@ -667,6 +667,78 @@ async function handleRebuildThisGame() {
     setClock(currentClock);
   }
 
+  async function backfillGamePlayersFromEvents(currentGameId: string) {
+  const { data: latestEvents, error: eventsError } = await supabase
+    .from("events")
+    .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+    .eq("game_id", currentGameId)
+    .order("created_at", { ascending: true });
+
+  if (eventsError) {
+    throw new Error(`讀取 events 失敗：${eventsError.message}`);
+  }
+
+  const validEvents = sortEventsStable(
+    ((latestEvents ?? []) as EventRow[]).filter((e) => !e.is_undone)
+  );
+
+  const teamASeenIds: string[] = [];
+  for (const e of validEvents) {
+    const side = normalizeTeamSide(e.team_side);
+    if (side !== "teamA") continue;
+    if (!e.player_id) continue;
+    if (!teamASeenIds.includes(e.player_id)) {
+      teamASeenIds.push(e.player_id);
+    }
+  }
+
+  if (teamASeenIds.length === 0) return;
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from("game_players")
+    .select("player_id, team_side, is_starter")
+    .eq("game_id", currentGameId);
+
+  if (existingError) {
+    throw new Error(`讀取 game_players 失敗：${existingError.message}`);
+  }
+
+  const existing = (existingRows ?? []) as GamePlayerRow[];
+  const existingTeamAIds = new Set(
+    existing
+      .filter((row) => normalizeTeamSide(row.team_side) === "teamA")
+      .map((row) => row.player_id)
+  );
+
+  const starterIds = getStarterIdsFallback({
+    gamePlayers: existing.map((gp) => ({
+      ...gp,
+      team_side: normalizeTeamSide(gp.team_side) ?? "teamA",
+    })) as GamePlayerRow[],
+    validEvents,
+  });
+
+  const insertRows = teamASeenIds
+    .filter((playerId) => !existingTeamAIds.has(playerId))
+    .map((playerId) => ({
+      game_id: currentGameId,
+      player_id: playerId,
+      team_side: "teamA" as const,
+      is_starter: starterIds.includes(playerId),
+      is_active: true,
+    }));
+
+  if (insertRows.length === 0) return;
+
+  const { error: insertError } = await supabase
+    .from("game_players")
+    .insert(insertRows);
+
+  if (insertError) {
+    throw new Error(`回填 game_players 失敗：${insertError.message}`);
+  }
+}
+
   async function ensureStarterShiftsForCurrentQuarter(
     targetGameId: string,
     targetQuarter: number,
@@ -1228,6 +1300,8 @@ async function handleRebuildThisGame() {
   if (gameError || !game) {
     throw new Error("讀取比賽失敗");
   }
+
+  await backfillGamePlayersFromEvents(currentGameId);
 
   // ✅ 2. 先刪掉舊的統計（超重要）
   await supabase.from("player_game_stats").delete().eq("game_id", currentGameId);
