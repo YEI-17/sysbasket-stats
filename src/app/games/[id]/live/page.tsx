@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { recalculateLineupStats } from "@/lib/recalculateLineupStats";
 import { supabase } from "@/lib/supabaseClient";
+
 import LogoutButton from "@/components/LogoutButton";
 
 type TeamSideValue = "teamA" | "teamB" | "A" | "B" | null;

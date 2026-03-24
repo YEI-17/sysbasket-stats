@@ -1,17 +1,20 @@
-import { supabase } from "./supabaseClient";
+import { supabase } from "@/lib/supabaseClient";
+
+type GameRow = {
+  id: string;
+  is_official?: boolean | null;
+  quarters?: number | null;
+};
 
 type PlayerRow = {
   id: string;
   name: string;
-  number?: number | null;
-  active?: boolean | null;
 };
 
 type GamePlayerRow = {
   player_id: string;
   team_side?: string | null;
   is_starter?: boolean | null;
-  is_active?: boolean | null;
 };
 
 type EventRow = {
@@ -21,496 +24,534 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
-  is_undone?: boolean | null;
-  undone_at?: string | null;
   team_side?: string | null;
   clock_seconds_left?: number | null;
   points_delta?: number | null;
+  is_undone?: boolean | null;
 };
 
-type AggregateRow = {
-  player_ids: string[];
-  player_names: string[];
-  appearances: number;
-  seconds_played: number;
-  plus_minus: number;
-  possessions: number;
-  points_for: number;
-  points_against: number;
-  off_rating: number;
-};
-
-type SegmentTotals = {
-  pointsFor: number;
-  pointsAgainst: number;
-  fga: number;
-  fta: number;
-  tov: number;
-};
-
-type UpsertLineupRow = {
-  game_id: string;
+type RawLineupStat = {
   lineup_key: string;
   player_ids: string[];
   player_names: string[];
-  appearances: number;
   seconds_played: number;
-  plus_minus: number;
-  possessions: number;
   points_for: number;
   points_against: number;
-  off_rating: number;
+  est_possessions: number;
+  fga: number;
+  fta: number;
+  oreb: number;
+  tov: number;
 };
 
-type UpsertPairRow = {
-  game_id: string;
-  pair_key: string;
+type RawComboStat = {
+  combo_size: 2 | 3;
+  combo_key: string;
   player_ids: string[];
   player_names: string[];
-  appearances: number;
   seconds_played: number;
-  plus_minus: number;
-  possessions: number;
   points_for: number;
   points_against: number;
-  off_rating: number;
+  est_possessions: number;
 };
 
-type UpsertTrioRow = {
-  game_id: string;
-  trio_key: string;
-  player_ids: string[];
-  player_names: string[];
-  appearances: number;
-  seconds_played: number;
-  plus_minus: number;
-  possessions: number;
-  points_for: number;
-  points_against: number;
-  off_rating: number;
-};
+function normalizeTeamSide(v?: string | null): "teamA" | "teamB" | null {
+  const s = (v ?? "").trim().toLowerCase();
+  if (!s) return null;
 
-function normalizeEventType(type?: string | null) {
-  return (type ?? "").trim().toLowerCase();
+  if (["a", "teama", "team_a", "home", "ours", "our"].includes(s)) return "teamA";
+  if (["b", "teamb", "team_b", "away", "opp", "opponent"].includes(s)) return "teamB";
+
+  return null;
 }
 
-function normalizeTeamSide(side?: string | null) {
-  const s = (side ?? "").trim().toLowerCase();
-  if (s === "a" || s === "teama" || s === "team_a" || s === "home") return "teamA";
-  if (s === "b" || s === "teamb" || s === "team_b" || s === "away") return "teamB";
-  return "";
+function normalizeEventType(v?: string | null): string {
+  return (v ?? "").trim().toLowerCase();
 }
 
-function getQuarterStartSeconds(quarter: number) {
-  return quarter >= 1 && quarter <= 4 ? 600 : 300;
+function quarterLength(q: number) {
+  return q <= 4 ? 600 : 300;
 }
 
-function clampClock(clock: number | null | undefined, quarter: number) {
-  const max = getQuarterStartSeconds(quarter);
-  const value = Number(clock ?? max);
-  if (!Number.isFinite(value)) return max;
-  if (value < 0) return 0;
-  if (value > max) return max;
-  return Math.floor(value);
-}
-
-function getPointsFromEvent(event: EventRow) {
-  const explicit = Number(event.points_delta ?? 0);
-  if (Number.isFinite(explicit) && explicit !== 0) {
-    return explicit;
-  }
+function calcScoreDelta(event: EventRow): number {
+  if (typeof event.points_delta === "number") return event.points_delta;
 
   const t = normalizeEventType(event.event_type);
-  if (t === "fg2_make" || t === "fg2_made") return 2;
-  if (t === "fg3_make" || t === "fg3_made") return 3;
-  if (t === "ft_make" || t === "ft_made") return 1;
+
+  if (["fg2_make", "fg2_made", "2pt_make", "2pt_made"].includes(t)) return 2;
+  if (["fg3_make", "fg3_made", "3pt_make", "3pt_made"].includes(t)) return 3;
+  if (["ft_make", "ft_made"].includes(t)) return 1;
+
   return 0;
 }
 
-function isFieldGoalAttempt(type: string) {
-  return (
-    type === "fg2_make" ||
-    type === "fg2_made" ||
-    type === "fg2_miss" ||
-    type === "fg3_make" ||
-    type === "fg3_made" ||
-    type === "fg3_miss"
-  );
+function isMadeShot(eventType: string) {
+  return [
+    "fg2_make",
+    "fg2_made",
+    "2pt_make",
+    "2pt_made",
+    "fg3_make",
+    "fg3_made",
+    "3pt_make",
+    "3pt_made",
+  ].includes(eventType);
 }
 
-function isFreeThrowAttempt(type: string) {
-  return (
-    type === "ft_make" ||
-    type === "ft_made" ||
-    type === "ft_miss"
-  );
+function isMissShot(eventType: string) {
+  return [
+    "fg2_miss",
+    "2pt_miss",
+    "fg3_miss",
+    "3pt_miss",
+  ].includes(eventType);
 }
 
-function isTurnover(type: string) {
-  return type === "tov" || type === "turnover";
+function isFreeThrow(eventType: string) {
+  return ["ft_make", "ft_made", "ft_miss"].includes(eventType);
 }
 
-function isSubOut(type: string) {
-  return type === "sub_out" || type === "subout";
+function isOffensiveRebound(eventType: string) {
+  return ["oreb", "off_reb", "offensive_rebound"].includes(eventType);
 }
 
-function isSubIn(type: string) {
-  return type === "sub_in" || type === "subin";
+function isTurnover(eventType: string) {
+  return ["tov", "turnover"].includes(eventType);
 }
 
-function uniqueIds(ids: string[]) {
-  return Array.from(new Set(ids.filter(Boolean)));
+function isSubIn(eventType: string) {
+  return ["sub_in", "subin"].includes(eventType);
 }
 
-function sortedIds(ids: string[]) {
-  return [...uniqueIds(ids)].sort((a, b) => a.localeCompare(b));
+function isSubOut(eventType: string) {
+  return ["sub_out", "subout"].includes(eventType);
+}
+
+function uniqSorted(ids: string[]) {
+  return [...new Set(ids.filter(Boolean))].sort();
 }
 
 function makeKey(ids: string[]) {
-  return sortedIds(ids).join("|");
+  return uniqSorted(ids).join("|");
 }
 
-function combinations(ids: string[], pick: number): string[][] {
-  const source = sortedIds(ids);
-  const result: string[][] = [];
+function formatNames(ids: string[], playerMap: Map<string, string>) {
+  return uniqSorted(ids).map((id) => playerMap.get(id) ?? "未知球員");
+}
 
-  function walk(start: number, path: string[]) {
-    if (path.length === pick) {
+function nCrCombinations<T>(arr: T[], choose: number): T[][] {
+  const result: T[][] = [];
+  const n = arr.length;
+  if (choose > n) return result;
+
+  const dfs = (start: number, path: T[]) => {
+    if (path.length === choose) {
       result.push([...path]);
       return;
     }
-    for (let i = start; i < source.length; i += 1) {
-      path.push(source[i]);
-      walk(i + 1, path);
+
+    for (let i = start; i < n; i++) {
+      path.push(arr[i]);
+      dfs(i + 1, path);
       path.pop();
     }
-  }
+  };
 
-  walk(0, []);
+  dfs(0, []);
   return result;
 }
 
-function emptySegmentTotals(): SegmentTotals {
-  return {
-    pointsFor: 0,
-    pointsAgainst: 0,
-    fga: 0,
-    fta: 0,
-    tov: 0,
-  };
-}
-
-function resetSegmentTotals(target: SegmentTotals) {
-  target.pointsFor = 0;
-  target.pointsAgainst = 0;
-  target.fga = 0;
-  target.fta = 0;
-  target.tov = 0;
-}
-
-function getPlayerNames(ids: string[], playerMap: Map<string, PlayerRow>) {
-  return sortedIds(ids).map((id) => playerMap.get(id)?.name || "未知球員");
-}
-
-function ensureAgg(
-  map: Map<string, AggregateRow>,
-  ids: string[],
-  playerMap: Map<string, PlayerRow>
+function ensureLineupStat(
+  map: Map<string, RawLineupStat>,
+  lineupIds: string[],
+  playerMap: Map<string, string>
 ) {
+  const ids = uniqSorted(lineupIds);
   const key = makeKey(ids);
-  let current = map.get(key);
 
-  if (!current) {
-    current = {
-      player_ids: sortedIds(ids),
-      player_names: getPlayerNames(ids, playerMap),
-      appearances: 0,
+  if (!map.has(key)) {
+    map.set(key, {
+      lineup_key: key,
+      player_ids: ids,
+      player_names: formatNames(ids, playerMap),
       seconds_played: 0,
-      plus_minus: 0,
-      possessions: 0,
       points_for: 0,
       points_against: 0,
-      off_rating: 0,
-    };
-    map.set(key, current);
+      est_possessions: 0,
+      fga: 0,
+      fta: 0,
+      oreb: 0,
+      tov: 0,
+    });
   }
 
-  return current;
+  return map.get(key)!;
 }
 
-function addSegmentToAggregate(
-  map: Map<string, AggregateRow>,
-  ids: string[],
-  playerMap: Map<string, PlayerRow>,
-  secondsPlayed: number,
-  totals: SegmentTotals
+function addSegmentTime(
+  map: Map<string, RawLineupStat>,
+  lineupIds: string[],
+  seconds: number,
+  playerMap: Map<string, string>
 ) {
-  if (secondsPlayed <= 0) return;
-  const normalizedIds = sortedIds(ids);
-  if (normalizedIds.length === 0) return;
+  if (seconds <= 0) return;
+  if (lineupIds.length === 0) return;
 
-  const agg = ensureAgg(map, normalizedIds, playerMap);
-  agg.appearances += 1;
-  agg.seconds_played += secondsPlayed;
-  agg.points_for += totals.pointsFor;
-  agg.points_against += totals.pointsAgainst;
-  agg.plus_minus += totals.pointsFor - totals.pointsAgainst;
-  agg.possessions += totals.fga + totals.tov + 0.44 * totals.fta;
+  const row = ensureLineupStat(map, lineupIds, playerMap);
+  row.seconds_played += seconds;
 }
 
-function finalizeRatings<T extends AggregateRow>(rows: T[]) {
-  return rows.map((row) => ({
-    ...row,
-    off_rating: row.possessions > 0 ? Number(((row.points_for / row.possessions) * 100).toFixed(2)) : 0,
-    possessions: Number(row.possessions.toFixed(2)),
-  }));
+function addForTeamEvent(
+  map: Map<string, RawLineupStat>,
+  lineupIds: string[],
+  event: EventRow,
+  playerMap: Map<string, string>
+) {
+  if (lineupIds.length === 0) return;
+
+  const row = ensureLineupStat(map, lineupIds, playerMap);
+  const t = normalizeEventType(event.event_type);
+  const scoreDelta = calcScoreDelta(event);
+
+  if (scoreDelta > 0) row.points_for += scoreDelta;
+
+  if (isMadeShot(t) || isMissShot(t)) row.fga += 1;
+  if (isFreeThrow(t)) row.fta += 1;
+  if (isOffensiveRebound(t)) row.oreb += 1;
+  if (isTurnover(t)) row.tov += 1;
 }
 
-function sortEvents(events: EventRow[]) {
-  return [...events].sort((a, b) => {
-    const q = (a.quarter ?? 0) - (b.quarter ?? 0);
-    if (q !== 0) return q;
+function addAgainstTeamEvent(
+  map: Map<string, RawLineupStat>,
+  lineupIds: string[],
+  event: EventRow,
+  playerMap: Map<string, string>
+) {
+  if (lineupIds.length === 0) return;
 
-    const ca = new Date(a.created_at).getTime();
-    const cb = new Date(b.created_at).getTime();
-    if (ca !== cb) return ca - cb;
+  const row = ensureLineupStat(map, lineupIds, playerMap);
+  const scoreDelta = calcScoreDelta(event);
 
-    return a.id.localeCompare(b.id);
-  });
+  if (scoreDelta > 0) row.points_against += scoreDelta;
 }
 
-function applySubstitution(currentLineup: string[], event: EventRow) {
-  const playerId = event.player_id;
-  if (!playerId) return currentLineup;
-
-  const type = normalizeEventType(event.event_type);
-  const next = [...currentLineup];
-
-  if (isSubOut(type)) {
-    return next.filter((id) => id !== playerId);
-  }
-
-  if (isSubIn(type)) {
-    if (!next.includes(playerId)) {
-      next.push(playerId);
-    }
-    return uniqueIds(next);
-  }
-
-  return currentLineup;
-}
-
-async function deleteOldRows(gameId: string) {
-  const [a, b, c] = await Promise.all([
-    supabase.from("lineup_stats").delete().eq("game_id", gameId),
-    supabase.from("lineup_pair_stats").delete().eq("game_id", gameId),
-    supabase.from("lineup_trio_stats").delete().eq("game_id", gameId),
-  ]);
-
-  if (a.error) throw a.error;
-  if (b.error) throw b.error;
-  if (c.error) throw c.error;
-}
-
-async function insertInChunks<T>(table: string, rows: T[], chunkSize = 500) {
-  if (!rows.length) return;
-
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize);
-    const { error } = await supabase.from(table).insert(chunk);
-    if (error) throw error;
-  }
+function finalizePossessions(row: RawLineupStat) {
+  const est = row.fga - row.oreb + row.tov + 0.44 * row.fta;
+  row.est_possessions = Number(Math.max(est, 0).toFixed(2));
 }
 
 export async function recalculateLineupStats(gameId: string) {
-  if (!gameId) {
-    throw new Error("recalculateLineupStats: 缺少 gameId");
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .select("id,is_official,quarters")
+    .eq("id", gameId)
+    .single<GameRow>();
+
+  if (gameError || !game) {
+    throw new Error(gameError?.message || "找不到比賽資料");
   }
 
-  const [
-    gamePlayersRes,
-    playersRes,
-    eventsRes,
-  ] = await Promise.all([
-    supabase
-      .from("game_players")
-      .select("player_id, team_side, is_starter, is_active")
-      .eq("game_id", gameId),
-    supabase
-      .from("players")
-      .select("id, name, number, active"),
-    supabase
-      .from("events")
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, is_undone, undone_at, team_side, clock_seconds_left, points_delta"
+  const isOfficial = Boolean(game.is_official ?? true);
+
+  const { data: players, error: playersError } = await supabase
+    .from("players")
+    .select("id,name")
+    .returns<PlayerRow[]>();
+
+  if (playersError) {
+    throw new Error(playersError.message);
+  }
+
+  const playerMap = new Map<string, string>(
+    (players ?? []).map((p) => [p.id, p.name])
+  );
+
+  const { data: gamePlayers, error: gpError } = await supabase
+    .from("game_players")
+    .select("player_id,team_side,is_starter")
+    .eq("game_id", gameId)
+    .returns<GamePlayerRow[]>();
+
+  if (gpError) {
+    throw new Error(gpError.message);
+  }
+
+  const { data: events, error: eventsError } = await supabase
+    .from("events")
+    .select(
+      "id,game_id,player_id,quarter,event_type,created_at,team_side,clock_seconds_left,points_delta,is_undone"
+    )
+    .eq("game_id", gameId)
+    .or("is_undone.is.null,is_undone.eq.false")
+    .order("quarter", { ascending: true })
+    .order("clock_seconds_left", { ascending: false })
+    .order("created_at", { ascending: true })
+    .returns<EventRow[]>();
+
+  if (eventsError) {
+    throw new Error(eventsError.message);
+  }
+
+  const maxEventQuarter =
+    (events ?? []).reduce((m, e) => Math.max(m, e.quarter || 1), 1) || 1;
+
+  const totalQuarters = Math.max(game.quarters ?? 4, maxEventQuarter, 4);
+
+  let currentLineup = uniqSorted(
+    (gamePlayers ?? [])
+      .filter(
+        (gp) =>
+          normalizeTeamSide(gp.team_side) === "teamA" &&
+          Boolean(gp.is_starter) &&
+          gp.player_id
       )
-      .eq("game_id", gameId)
-      .eq("is_undone", false),
-  ]);
-
-  if (gamePlayersRes.error) throw gamePlayersRes.error;
-  if (playersRes.error) throw playersRes.error;
-  if (eventsRes.error) throw eventsRes.error;
-
-  const gamePlayers = (gamePlayersRes.data ?? []) as GamePlayerRow[];
-  const players = (playersRes.data ?? []) as PlayerRow[];
-  const events = sortEvents((eventsRes.data ?? []) as EventRow[]);
-
-  const playerMap = new Map<string, PlayerRow>();
-  for (const p of players) {
-    playerMap.set(p.id, p);
-  }
-
-  const teamAGamePlayers = gamePlayers.filter(
-    (row) => normalizeTeamSide(row.team_side) === "teamA"
+      .map((gp) => gp.player_id)
   );
 
-  const starterIds = teamAGamePlayers
-    .filter((row) => row.is_starter)
-    .map((row) => row.player_id)
-    .filter(Boolean);
-
-  const fallbackIds = teamAGamePlayers
-    .filter((row) => row.is_active !== false)
-    .map((row) => row.player_id)
-    .filter(Boolean);
-
-  let currentLineup = uniqueIds(
-    starterIds.length >= 5 ? starterIds.slice(0, 5) : fallbackIds.slice(0, 5)
-  );
-
-  if (currentLineup.length < 5) {
-    throw new Error("無法重算 lineup：teamA 的先發 / 啟用球員不足 5 人");
-  }
-
-  const lineupAgg = new Map<string, AggregateRow>();
-  const pairAgg = new Map<string, AggregateRow>();
-  const trioAgg = new Map<string, AggregateRow>();
+  const lineupMap = new Map<string, RawLineupStat>();
 
   let currentQuarter = 1;
-  let quarterInitialized = false;
-  let segmentStartClock = getQuarterStartSeconds(1);
-  let segmentTotals = emptySegmentTotals();
+  let prevClock = quarterLength(currentQuarter);
 
-  function closeCurrentSegment(endClockRaw: number | null | undefined) {
-    const endClock = clampClock(endClockRaw, currentQuarter);
-    const secondsPlayed = Math.max(0, segmentStartClock - endClock);
+  const safeEvents = (events ?? []).filter((e) => e.quarter >= 1);
 
-    const validLineup = sortedIds(currentLineup);
-    if (validLineup.length === 5 && secondsPlayed > 0) {
-      addSegmentToAggregate(lineupAgg, validLineup, playerMap, secondsPlayed, segmentTotals);
-
-      for (const pair of combinations(validLineup, 2)) {
-        addSegmentToAggregate(pairAgg, pair, playerMap, secondsPlayed, segmentTotals);
-      }
-
-      for (const trio of combinations(validLineup, 3)) {
-        addSegmentToAggregate(trioAgg, trio, playerMap, secondsPlayed, segmentTotals);
-      }
+  for (const event of safeEvents) {
+    while (currentQuarter < event.quarter) {
+      addSegmentTime(lineupMap, currentLineup, prevClock, playerMap);
+      currentQuarter += 1;
+      prevClock = quarterLength(currentQuarter);
     }
 
-    segmentStartClock = endClock;
-    resetSegmentTotals(segmentTotals);
-  }
+    const qLen = quarterLength(currentQuarter);
+    const eventClockRaw =
+      typeof event.clock_seconds_left === "number" ? event.clock_seconds_left : prevClock;
 
-  for (const event of events) {
-    const quarter = Number(event.quarter ?? 1) || 1;
+    const eventClock = Math.max(0, Math.min(qLen, eventClockRaw));
+    const segmentSeconds = prevClock - eventClock;
 
-    if (!quarterInitialized) {
-      currentQuarter = quarter;
-      segmentStartClock = getQuarterStartSeconds(currentQuarter);
-      quarterInitialized = true;
-    }
+    addSegmentTime(lineupMap, currentLineup, segmentSeconds, playerMap);
 
-    if (quarter !== currentQuarter) {
-      closeCurrentSegment(0);
-
-      currentQuarter = quarter;
-      segmentStartClock = getQuarterStartSeconds(currentQuarter);
-      resetSegmentTotals(segmentTotals);
-    }
-
-    const type = normalizeEventType(event.event_type);
     const side = normalizeTeamSide(event.team_side);
-    const clock = clampClock(event.clock_seconds_left, currentQuarter);
-
-    const points = getPointsFromEvent(event);
-    if (points > 0) {
-      if (side === "teamA") segmentTotals.pointsFor += points;
-      if (side === "teamB") segmentTotals.pointsAgainst += points;
-    }
+    const type = normalizeEventType(event.event_type);
 
     if (side === "teamA") {
-      if (isFieldGoalAttempt(type)) segmentTotals.fga += 1;
-      if (isFreeThrowAttempt(type)) segmentTotals.fta += 1;
-      if (isTurnover(type)) segmentTotals.tov += 1;
+      addForTeamEvent(lineupMap, currentLineup, event, playerMap);
+
+      if (event.player_id) {
+        if (isSubOut(type)) {
+          currentLineup = currentLineup.filter((id) => id !== event.player_id);
+        } else if (isSubIn(type)) {
+          currentLineup = uniqSorted([...currentLineup, event.player_id]);
+        }
+      }
+    } else if (side === "teamB") {
+      addAgainstTeamEvent(lineupMap, currentLineup, event, playerMap);
     }
 
-    if (isSubOut(type) || isSubIn(type)) {
-      closeCurrentSegment(clock);
-      currentLineup = applySubstitution(currentLineup, event);
-      segmentStartClock = clock;
+    prevClock = eventClock;
+  }
+
+  while (currentQuarter <= totalQuarters) {
+    addSegmentTime(lineupMap, currentLineup, prevClock, playerMap);
+    currentQuarter += 1;
+    if (currentQuarter <= totalQuarters) {
+      prevClock = quarterLength(currentQuarter);
     }
   }
 
-  if (quarterInitialized) {
-    closeCurrentSegment(0);
+  const lineupRows = [...lineupMap.values()]
+    .map((row) => {
+      finalizePossessions(row);
+      const plusMinus = row.points_for - row.points_against;
+      const offRating =
+        row.est_possessions > 0
+          ? Number(((row.points_for / row.est_possessions) * 100).toFixed(2))
+          : 0;
+
+      return {
+        game_id: gameId,
+        lineup_key: row.lineup_key,
+        player_ids: row.player_ids,
+        player_names: row.player_names,
+        seconds_played: row.seconds_played,
+        est_possessions: row.est_possessions,
+        points_for: row.points_for,
+        points_against: row.points_against,
+        plus_minus: plusMinus,
+        off_rating: offRating,
+        is_official: isOfficial,
+      };
+    })
+    .filter((row) => row.seconds_played > 0 && row.player_ids.length > 0);
+
+  const comboMap = new Map<string, RawComboStat>();
+
+  function addComboStat(
+    comboSize: 2 | 3,
+    comboIds: string[],
+    source: (typeof lineupRows)[number]
+  ) {
+    const ids = uniqSorted(comboIds);
+    const key = `${comboSize}:${makeKey(ids)}`;
+
+    if (!comboMap.has(key)) {
+      comboMap.set(key, {
+        combo_size: comboSize,
+        combo_key: makeKey(ids),
+        player_ids: ids,
+        player_names: formatNames(ids, playerMap),
+        seconds_played: 0,
+        points_for: 0,
+        points_against: 0,
+        est_possessions: 0,
+      });
+    }
+
+    const row = comboMap.get(key)!;
+    row.seconds_played += source.seconds_played;
+    row.points_for += source.points_for;
+    row.points_against += source.points_against;
+    row.est_possessions = Number((row.est_possessions + source.est_possessions).toFixed(2));
   }
 
-  const lineupRows = finalizeRatings(Array.from(lineupAgg.values())).map<UpsertLineupRow>((row) => ({
-    game_id: gameId,
-    lineup_key: makeKey(row.player_ids),
-    player_ids: row.player_ids,
-    player_names: row.player_names,
-    appearances: row.appearances,
-    seconds_played: row.seconds_played,
-    plus_minus: row.plus_minus,
-    possessions: row.possessions,
-    points_for: row.points_for,
-    points_against: row.points_against,
-    off_rating: row.off_rating,
-  }));
+  for (const row of lineupRows) {
+    const ids = row.player_ids;
 
-  const pairRows = finalizeRatings(Array.from(pairAgg.values())).map<UpsertPairRow>((row) => ({
-    game_id: gameId,
-    pair_key: makeKey(row.player_ids),
-    player_ids: row.player_ids,
-    player_names: row.player_names,
-    appearances: row.appearances,
-    seconds_played: row.seconds_played,
-    plus_minus: row.plus_minus,
-    possessions: row.possessions,
-    points_for: row.points_for,
-    points_against: row.points_against,
-    off_rating: row.off_rating,
-  }));
+    if (ids.length >= 2) {
+      for (const combo of nCrCombinations(ids, 2)) {
+        addComboStat(2, combo, row);
+      }
+    }
 
-  const trioRows = finalizeRatings(Array.from(trioAgg.values())).map<UpsertTrioRow>((row) => ({
-    game_id: gameId,
-    trio_key: makeKey(row.player_ids),
-    player_ids: row.player_ids,
-    player_names: row.player_names,
-    appearances: row.appearances,
-    seconds_played: row.seconds_played,
-    plus_minus: row.plus_minus,
-    possessions: row.possessions,
-    points_for: row.points_for,
-    points_against: row.points_against,
-    off_rating: row.off_rating,
-  }));
+    if (ids.length >= 3) {
+      for (const combo of nCrCombinations(ids, 3)) {
+        addComboStat(3, combo, row);
+      }
+    }
+  }
 
-  await deleteOldRows(gameId);
-  await insertInChunks("lineup_stats", lineupRows);
-  await insertInChunks("lineup_pair_stats", pairRows);
-  await insertInChunks("lineup_trio_stats", trioRows);
+  const comboRows = [...comboMap.values()]
+    .map((row) => {
+      const plusMinus = row.points_for - row.points_against;
+      const offRating =
+        row.est_possessions > 0
+          ? Number(((row.points_for / row.est_possessions) * 100).toFixed(2))
+          : 0;
+
+      return {
+        game_id: gameId,
+        combo_size: row.combo_size,
+        combo_key: row.combo_key,
+        player_ids: row.player_ids,
+        player_names: row.player_names,
+        seconds_played: row.seconds_played,
+        est_possessions: row.est_possessions,
+        points_for: row.points_for,
+        points_against: row.points_against,
+        plus_minus: plusMinus,
+        off_rating: offRating,
+        is_official: isOfficial,
+      };
+    })
+    .filter((row) => row.seconds_played > 0 && row.player_ids.length > 0);
+
+  const pairRows = comboRows.filter((row) => row.combo_size === 2);
+  const trioRows = comboRows.filter((row) => row.combo_size === 3);
+
+  const { error: deleteLineupError } = await supabase
+    .from("lineup_stats")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteLineupError) {
+    throw new Error(deleteLineupError.message);
+  }
+
+  const { error: deleteComboError } = await supabase
+    .from("lineup_combo_stats")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteComboError) {
+    throw new Error(deleteComboError.message);
+  }
+
+  // 若你 DB 已經有這兩張表，這段會一起重建
+  await supabase.from("lineup_pair_stats").delete().eq("game_id", gameId);
+  await supabase.from("lineup_trio_stats").delete().eq("game_id", gameId);
+
+  if (lineupRows.length > 0) {
+    const { error: insertLineupError } = await supabase
+      .from("lineup_stats")
+      .insert(lineupRows);
+
+    if (insertLineupError) {
+      throw new Error(insertLineupError.message);
+    }
+  }
+
+  if (comboRows.length > 0) {
+    const { error: insertComboError } = await supabase
+      .from("lineup_combo_stats")
+      .insert(comboRows);
+
+    if (insertComboError) {
+      throw new Error(insertComboError.message);
+    }
+  }
+
+  if (pairRows.length > 0) {
+    const { error: insertPairError } = await supabase
+      .from("lineup_pair_stats")
+      .insert(
+        pairRows.map((row) => ({
+          game_id: row.game_id,
+          combo_key: row.combo_key,
+          player_ids: row.player_ids,
+          player_names: row.player_names,
+          seconds_played: row.seconds_played,
+          est_possessions: row.est_possessions,
+          points_for: row.points_for,
+          points_against: row.points_against,
+          plus_minus: row.plus_minus,
+          off_rating: row.off_rating,
+          is_official: row.is_official,
+        }))
+      );
+
+    if (insertPairError) {
+      throw new Error(insertPairError.message);
+    }
+  }
+
+  if (trioRows.length > 0) {
+    const { error: insertTrioError } = await supabase
+      .from("lineup_trio_stats")
+      .insert(
+        trioRows.map((row) => ({
+          game_id: row.game_id,
+          combo_key: row.combo_key,
+          player_ids: row.player_ids,
+          player_names: row.player_names,
+          seconds_played: row.seconds_played,
+          est_possessions: row.est_possessions,
+          points_for: row.points_for,
+          points_against: row.points_against,
+          plus_minus: row.plus_minus,
+          off_rating: row.off_rating,
+          is_official: row.is_official,
+        }))
+      );
+
+    if (insertTrioError) {
+      throw new Error(insertTrioError.message);
+    }
+  }
 
   return {
-    ok: true,
-    gameId,
     lineupCount: lineupRows.length,
+    comboCount: comboRows.length,
     pairCount: pairRows.length,
     trioCount: trioRows.length,
   };
 }
-
-export default recalculateLineupStats;
