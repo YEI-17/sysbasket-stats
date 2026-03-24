@@ -5,6 +5,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import LogoutButton from "@/components/LogoutButton";
 
+const [quarters, setQuarters] = useState(4);
+
 type PlayerPosition = "PG" | "SG" | "SF" | "PF" | "C";
 
 type Player = {
@@ -451,17 +453,22 @@ export default function NewGamePage() {
     const { data: game, error: gameError } = await supabase
       .from("games")
       .insert({
-        teamA: "我們",
-        teamB: opponent.trim() || "對手",
-        game_date: gameDate,
-        start_time: startTimeISO,
-        location: location.trim() || null,
-        status: "live",
-        is_live: true,
-        home_score: 0,
-        away_score: 0,
-        current_quarter: 1,
-      })
+  teamA: "我們",
+  teamB: opponent.trim() || "對手",
+  game_date: gameDate,
+  start_time: startTimeISO,
+  location: location.trim() || null,
+
+  status: "live",
+  is_live: true,
+
+  home_score: 0,
+  away_score: 0,
+  current_quarter: 1,
+
+  // 🔥 核心新增
+  quarters: quarters,
+})
       .select()
       .single();
 
@@ -722,6 +729,38 @@ export default function NewGamePage() {
               className="w-full rounded-xl border border-white/10 bg-neutral-900 px-4 py-3 outline-none"
             />
           </div>
+
+          <div style={{ marginBottom: 16 }}>
+  <div style={{ fontWeight: 800, marginBottom: 6 }}>比賽類型</div>
+
+  <div style={{ display: "flex", gap: 10 }}>
+    <button
+      onClick={() => setQuarters(4)}
+      style={{
+        padding: "8px 14px",
+        borderRadius: 12,
+        background: quarters === 4 ? "#f97316" : "#eee",
+        color: quarters === 4 ? "#fff" : "#333",
+        fontWeight: 800,
+      }}
+    >
+      正式賽（4節）
+    </button>
+
+    <button
+      onClick={() => setQuarters(1)}
+      style={{
+        padding: "8px 14px",
+        borderRadius: 12,
+        background: quarters !== 4 ? "#f97316" : "#eee",
+        color: quarters !== 4 ? "#fff" : "#333",
+        fontWeight: 800,
+      }}
+    >
+      非正式（不計入數據）
+    </button>
+  </div>
+</div>
 
           <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
