@@ -503,9 +503,6 @@ export default function NewGamePage() {
 
     const { error: clockError } = await supabase.from("game_clock").insert([
   { game_id: gameId, quarter: 1, seconds_left: 600, is_running: false },
-  { game_id: gameId, quarter: 2, seconds_left: 600, is_running: false },
-  { game_id: gameId, quarter: 3, seconds_left: 600, is_running: false },
-  { game_id: gameId, quarter: 4, seconds_left: 600, is_running: false },
 ]);
 
     if (clockError) {
