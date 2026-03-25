@@ -800,7 +800,7 @@ export default function ViewerGamesPage() {
 
   function handleOpenPostgameAnalysis() {
     if (latestGame) {
-      router.push(`/games/${latestGame.id}/box`);
+      router.push(`/games/postgame`);
       return;
     }
     router.push("/games/list");
@@ -813,7 +813,6 @@ export default function ViewerGamesPage() {
           <div className="title-wrap">
             <div className="eyebrow">TEAM DASHBOARD</div>
             <h1>{viewerName}</h1>
-            <p>首頁只保留對下一場與賽後判斷有價值的資訊</p>
           </div>
         </section>
 
