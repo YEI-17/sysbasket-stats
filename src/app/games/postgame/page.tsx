@@ -69,16 +69,6 @@ type GamePlayerRow = {
   team_side?: string | null;
 };
 
-type CollapseWindow = {
-  quarter: number;
-  startIndex: number;
-  endIndex: number;
-  ourPoints: number;
-  oppPoints: number;
-  diff: number;
-  summary: string;
-};
-
 type ComputedTeamMetrics = {
   points: number;
   possessions: number;
@@ -94,6 +84,28 @@ type ComputedTeamMetrics = {
   fta: number;
   shotMix2: number;
   shotMix3: number;
+};
+
+type RotationSegment = {
+  quarter: number;
+  startSec: number;
+  endSec: number;
+  playerIds: string[];
+};
+
+type CollapseWindow = {
+  quarter: number;
+  startSec: number;
+  endSec: number;
+  ourPoints: number;
+  oppPoints: number;
+  diff: number;
+  ourTurnovers: number;
+  ourMisses: number;
+  eventCount: number;
+  lineupNames: string[];
+  summary: string;
+  severity: "high" | "medium" | "low";
 };
 
 function safeNumber(value?: number | null) {
@@ -178,6 +190,12 @@ function normalizeEventType(type?: string | null) {
   if (["reb", "rebound"].includes(t)) {
     return "reb";
   }
+  if (["sub_in", "subin", "sub-in"].includes(t)) {
+    return "sub_in";
+  }
+  if (["sub_out", "subout", "sub-out"].includes(t)) {
+    return "sub_out";
+  }
 
   return t;
 }
@@ -196,6 +214,17 @@ function pointsFromType(eventType: string) {
   if (t === "fg3_make") return 3;
   if (t === "ft_make") return 1;
   return 0;
+}
+
+function quarterDuration(quarter: number) {
+  return quarter <= 4 ? 600 : 300;
+}
+
+function formatClock(secondsLeft: number) {
+  const sec = Math.max(0, Math.floor(secondsLeft));
+  const mm = Math.floor(sec / 60);
+  const ss = sec % 60;
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
 function calcMetricsFromEvents(events: EventRow[]): ComputedTeamMetrics {
@@ -273,61 +302,275 @@ function calcMetricsFromEvents(events: EventRow[]): ComputedTeamMetrics {
   };
 }
 
-function buildCollapseWindows(events: EventRow[]): CollapseWindow[] {
-  const gameEvents = [...events]
-    .filter((e) => !e.is_undone)
-    .sort((a, b) => {
-      const ta = new Date(a.created_at || 0).getTime();
-      const tb = new Date(b.created_at || 0).getTime();
-      return ta - tb;
+function getPlayerMap(players: PlayerRow[]) {
+  const map = new Map<string, PlayerRow>();
+  for (const p of players) map.set(p.id, p);
+  return map;
+}
+
+function playerLabel(player?: PlayerRow | null) {
+  if (!player) return "未知球員";
+  return `${player.number ? `#${player.number} ` : ""}${player.name}`;
+}
+
+function getStarterIdsForGame(gameId: string, gamePlayers: GamePlayerRow[]) {
+  return gamePlayers
+    .filter(
+      (gp) =>
+        gp.game_id === gameId &&
+        gp.is_starter === true &&
+        ["teama", "a", ""].includes((gp.team_side ?? "teamA").toLowerCase())
+    )
+    .map((gp) => gp.player_id);
+}
+
+function sortEventsForGameFlow(events: EventRow[]) {
+  return [...events].sort((a, b) => {
+    const qa = typeof a.quarter === "number" ? a.quarter : 1;
+    const qb = typeof b.quarter === "number" ? b.quarter : 1;
+    if (qa !== qb) return qa - qb;
+
+    const sa =
+      typeof a.clock_seconds_left === "number"
+        ? a.clock_seconds_left
+        : quarterDuration(qa);
+    const sb =
+      typeof b.clock_seconds_left === "number"
+        ? b.clock_seconds_left
+        : quarterDuration(qb);
+
+    if (sa !== sb) return sb - sa;
+
+    const ta = new Date(a.created_at || 0).getTime();
+    const tb = new Date(b.created_at || 0).getTime();
+    return ta - tb;
+  });
+}
+
+function buildRotationSegments(
+  gameId: string,
+  events: EventRow[],
+  gamePlayers: GamePlayerRow[]
+): RotationSegment[] {
+  const starterIds = getStarterIdsForGame(gameId, gamePlayers);
+  const subEvents = sortEventsForGameFlow(
+    events.filter((e) => {
+      const t = normalizeEventType(e.event_type);
+      return !e.is_undone && isOurTeamEvent(e.team_side) && (t === "sub_in" || t === "sub_out");
+    })
+  );
+
+  const maxQuarterFromEvents =
+    Math.max(
+      1,
+      ...events.map((e) => (typeof e.quarter === "number" ? e.quarter : 1))
+    ) || 4;
+
+  let currentQuarter = 1;
+  let currentSec = quarterDuration(1);
+  const lineup = new Set<string>(starterIds);
+  const segments: RotationSegment[] = [];
+
+  const pushSegment = (quarter: number, startSec: number, endSec: number) => {
+    if (startSec <= endSec) return;
+    segments.push({
+      quarter,
+      startSec,
+      endSec,
+      playerIds: Array.from(lineup),
     });
+  };
 
-  const byQuarter = new Map<number, EventRow[]>();
+  for (const ev of subEvents) {
+    const q = typeof ev.quarter === "number" ? ev.quarter : currentQuarter;
+    const sec =
+      typeof ev.clock_seconds_left === "number"
+        ? ev.clock_seconds_left
+        : currentSec;
 
-  for (const e of gameEvents) {
-    const quarter = typeof e.quarter === "number" ? e.quarter : 1;
-    if (!byQuarter.has(quarter)) byQuarter.set(quarter, []);
-    byQuarter.get(quarter)!.push(e);
+    while (currentQuarter < q) {
+      pushSegment(currentQuarter, currentSec, 0);
+      currentQuarter += 1;
+      currentSec = quarterDuration(currentQuarter);
+    }
+
+    pushSegment(currentQuarter, currentSec, sec);
+
+    const t = normalizeEventType(ev.event_type);
+    if (ev.player_id) {
+      if (t === "sub_in") lineup.add(ev.player_id);
+      if (t === "sub_out") lineup.delete(ev.player_id);
+    }
+
+    currentSec = sec;
   }
 
+  while (currentQuarter <= maxQuarterFromEvents) {
+    pushSegment(currentQuarter, currentSec, 0);
+    currentQuarter += 1;
+    currentSec = quarterDuration(currentQuarter);
+  }
+
+  return segments;
+}
+
+function overlapLength(aStart: number, aEnd: number, bStart: number, bEnd: number) {
+  const start = Math.min(aStart, bStart);
+  const end = Math.max(aEnd, bEnd);
+  const top = Math.max(aEnd, bEnd);
+  const bottom = Math.min(aStart, bStart);
+  return Math.max(0, bottom - top + (start === bottom && end === top ? 0 : 0));
+}
+
+function getDominantLineupForWindow(
+  quarter: number,
+  startSec: number,
+  endSec: number,
+  segments: RotationSegment[],
+  playerMap: Map<string, PlayerRow>
+) {
+  const quarterSegments = segments.filter((s) => s.quarter === quarter);
+  if (!quarterSegments.length) return [];
+
+  let best: RotationSegment | null = null;
+  let bestOverlap = -1;
+
+  for (const seg of quarterSegments) {
+    const overlap =
+      Math.max(
+        0,
+        Math.min(seg.startSec, startSec) - Math.max(seg.endSec, endSec)
+      );
+
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      best = seg;
+    }
+  }
+
+  if (!best) return [];
+
+  return best.playerIds
+    .map((id) => playerLabel(playerMap.get(id)))
+    .slice(0, 5);
+}
+
+function eventsInWindow(
+  events: EventRow[],
+  quarter: number,
+  startSec: number,
+  endSec: number
+) {
+  return events.filter((e) => {
+    if (e.is_undone) return false;
+    const q = typeof e.quarter === "number" ? e.quarter : 1;
+    if (q !== quarter) return false;
+
+    const sec =
+      typeof e.clock_seconds_left === "number"
+        ? e.clock_seconds_left
+        : null;
+
+    if (sec == null) return false;
+
+    return sec <= startSec && sec > endSec;
+  });
+}
+
+function buildCollapseWindows(
+  events: EventRow[],
+  gameId: string,
+  gamePlayers: GamePlayerRow[],
+  players: PlayerRow[]
+): CollapseWindow[] {
+  const cleanEvents = events.filter((e) => !e.is_undone);
+  const playerMap = getPlayerMap(players);
+  const segments = buildRotationSegments(gameId, cleanEvents, gamePlayers);
+  const maxQuarter =
+    Math.max(
+      1,
+      ...cleanEvents.map((e) => (typeof e.quarter === "number" ? e.quarter : 1))
+    ) || 4;
+
   const windows: CollapseWindow[] = [];
+  const windowSize = 90;
+  const step = 30;
 
-  byQuarter.forEach((quarterEvents, quarter) => {
-    if (!quarterEvents.length) return;
+  for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
+    const qLen = quarterDuration(quarter);
 
-    const size = Math.min(8, quarterEvents.length);
-    if (size < 3) return;
+    for (let startSec = qLen; startSec - windowSize >= 0; startSec -= step) {
+      const endSec = startSec - windowSize;
+      const winEvents = eventsInWindow(cleanEvents, quarter, startSec, endSec);
 
-    for (let i = 0; i <= quarterEvents.length - size; i += 1) {
-      let our = 0;
-      let opp = 0;
+      if (!winEvents.length) continue;
 
-      for (let j = i; j < i + size; j += 1) {
-        const p = pointsFromType(quarterEvents[j].event_type);
-        if (!p) continue;
+      let ourPoints = 0;
+      let oppPoints = 0;
+      let ourTurnovers = 0;
+      let ourMisses = 0;
 
-        if (isOurTeamEvent(quarterEvents[j].team_side)) our += p;
-        else opp += p;
+      for (const ev of winEvents) {
+        const t = normalizeEventType(ev.event_type);
+        const pts = pointsFromType(t);
+
+        if (isOurTeamEvent(ev.team_side)) {
+          if (pts > 0) ourPoints += pts;
+          if (t === "tov") ourTurnovers += 1;
+          if (["fg2_miss", "fg3_miss", "ft_miss"].includes(t)) ourMisses += 1;
+        } else {
+          if (pts > 0) oppPoints += pts;
+        }
       }
 
-      const diff = our - opp;
+      const diff = ourPoints - oppPoints;
+
+      if (diff >= 0) continue;
+
+      const lineupNames = getDominantLineupForWindow(
+        quarter,
+        startSec,
+        endSec,
+        segments,
+        playerMap
+      );
+
+      let severity: "high" | "medium" | "low" = "low";
+      if (diff <= -8) severity = "high";
+      else if (diff <= -4) severity = "medium";
+
+      const reasonBits: string[] = [];
+      if (ourTurnovers > 0) reasonBits.push(`失誤 ${ourTurnovers} 次`);
+      if (ourMisses > 0) reasonBits.push(`打鐵 ${ourMisses} 次`);
+
+      const summary =
+        reasonBits.length > 0
+          ? `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}，主因包含 ${reasonBits.join("、")}`
+          : `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}`;
 
       windows.push({
         quarter,
-        startIndex: i + 1,
-        endIndex: i + size,
-        ourPoints: our,
-        oppPoints: opp,
+        startSec,
+        endSec,
+        ourPoints,
+        oppPoints,
         diff,
-        summary:
-          diff < 0
-            ? `第${quarter}節這段時間對手打出 ${opp} 比 ${our}`
-            : `第${quarter}節這段時間我方打出 ${our} 比 ${opp}`,
+        ourTurnovers,
+        ourMisses,
+        eventCount: winEvents.length,
+        lineupNames,
+        summary,
+        severity,
       });
     }
-  });
+  }
 
-  return windows.sort((a, b) => a.diff - b.diff).slice(0, 3);
+  return windows
+    .sort((a, b) => {
+      if (a.diff !== b.diff) return a.diff - b.diff;
+      return b.eventCount - a.eventCount;
+    })
+    .slice(0, 3);
 }
 
 function starterNamesForGame(
@@ -335,22 +578,9 @@ function starterNamesForGame(
   gamePlayers: GamePlayerRow[],
   players: PlayerRow[]
 ) {
-  const starterIds = gamePlayers
-    .filter(
-      (gp) =>
-        gp.game_id === gameId &&
-        gp.is_starter === true &&
-        ((gp.team_side ?? "teamA").toLowerCase() === "teama" ||
-          (gp.team_side ?? "teamA").toLowerCase() === "a")
-    )
-    .map((gp) => gp.player_id);
-
-  if (!starterIds.length) return [];
-
-  return starterIds
-    .map((id) => players.find((p) => p.id === id))
-    .filter(Boolean)
-    .map((p) => `${p!.number ? `#${p!.number} ` : ""}${p!.name}`);
+  const playerMap = getPlayerMap(players);
+  const starterIds = getStarterIdsForGame(gameId, gamePlayers);
+  return starterIds.map((id) => playerLabel(playerMap.get(id)));
 }
 
 export default function PostgameOverviewPage() {
@@ -479,8 +709,14 @@ export default function PostgameOverviewPage() {
   }, [selectedEvents]);
 
   const collapseWindows = useMemo(() => {
-    return buildCollapseWindows(selectedEvents);
-  }, [selectedEvents]);
+    if (!selectedGame) return [];
+    return buildCollapseWindows(
+      selectedEvents,
+      selectedGame.id,
+      gamePlayers,
+      players
+    );
+  }, [selectedEvents, selectedGame, gamePlayers, players]);
 
   const starters = useMemo(() => {
     if (!selectedGame) return [];
@@ -618,6 +854,22 @@ export default function PostgameOverviewPage() {
     return fallback.slice(0, 3);
   }, [selectedInsight, computed]);
 
+  const offRatingValue = round1(
+    safeNumber(selectedTeamStats?.off_rating ?? computed.offRating)
+  );
+
+  const pppValue = round1(computed.ppp);
+
+  const turnoverRateValue = round1(
+    safeNumber(selectedTeamStats?.tov_rate ?? computed.turnoverRate)
+  );
+
+  const netRatingValue = round1(
+    selectedTeamStats?.net_rating != null
+      ? safeNumber(selectedTeamStats.net_rating)
+      : safeNumber(selectedTeamStats?.off_rating) - safeNumber(selectedTeamStats?.def_rating)
+  );
+
   const statCards = useMemo(() => {
     return [
       {
@@ -629,21 +881,29 @@ export default function PostgameOverviewPage() {
       },
       {
         label: "進攻效率",
-        value: `${round1(selectedTeamStats?.off_rating ?? computed.offRating?? 0)}`,
-        sub: `PPP ${computed.ppp}`,
+        value: `${offRatingValue}`,
+        sub: `PPP ${pppValue}`,
       },
       {
         label: "失誤率",
-        value: `${round1(selectedTeamStats?.tov_rate ?? computed.turnoverRate?? 0)}%`,
-        sub: "回合控制",
+        value: `${turnoverRateValue}%`,
+        sub: "每 100 回合失誤占比",
       },
       {
         label: "淨效率",
-        value: `${round1(selectedTeamStats?.net_rating?? 0)}`,
-        sub: "攻守整體差值",
+        value: `${netRatingValue}`,
+        sub: "進攻效率 - 防守效率",
       },
     ];
-  }, [selectedTeamStats, computed, selectedGame]);
+  }, [
+    selectedTeamStats,
+    computed,
+    selectedGame,
+    offRatingValue,
+    pppValue,
+    turnoverRateValue,
+    netRatingValue,
+  ]);
 
   return (
     <main className="page">
@@ -664,139 +924,143 @@ export default function PostgameOverviewPage() {
         {!loading && msg && <div className="panel center">{msg}</div>}
 
         {!loading && !msg && (
-          <>
-            <section className="layout">
-              <aside className="left-panel">
-                <div className="section-kicker">GAMES</div>
-                <div className="left-title">已結束比賽</div>
+          <section className="layout">
+            <aside className="left-panel">
+              <div className="section-kicker">GAMES</div>
+              <div className="left-title">已結束比賽</div>
 
-                <div className="game-list">
-                  {finishedGames.length ? (
-                    finishedGames.map((game) => {
-                      const stats =
-                        teamGameStats.find((row) => row.game_id === game.id) || null;
-                      const isActive = selectedGameId === game.id;
+              <div className="game-list">
+                {finishedGames.length ? (
+                  finishedGames.map((game) => {
+                    const stats =
+                      teamGameStats.find((row) => row.game_id === game.id) || null;
+                    const isActive = selectedGameId === game.id;
 
-                      return (
-                        <button
-                          key={game.id}
-                          className={`game-item ${isActive ? "active" : ""}`}
-                          onClick={() => setSelectedGameId(game.id)}
-                        >
-                          <div className="game-item-top">
-                            <span>{getMatchName(game)}</span>
-                            <span>{getShortDate(game.game_date || game.created_at)}</span>
-                          </div>
-                          <div className="game-item-score">
-                            {safeNumber(stats?.pts)} - {safeNumber(stats?.opp_pts)}
-                          </div>
-                          <div className="game-item-sub">
-                            {getGameTypeLabel(game)}｜{normalizeStatus(game.status)}
-                          </div>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="empty-box">尚無已結束比賽</div>
-                  )}
-                </div>
-              </aside>
-
-              <section className="right-panel">
-                {selectedGame ? (
-                  <>
-                    <div className="hero-card">
-                      <div className="hero-top">
-                        <div>
-                          <div className="section-kicker">SELECTED GAME</div>
-                          <h2>{getMatchName(selectedGame)}</h2>
-                          <div className="hero-sub">
-                            {getShortDate(selectedGame.game_date || selectedGame.created_at)}｜
-                            {getGameTypeLabel(selectedGame)}
-                          </div>
+                    return (
+                      <button
+                        key={game.id}
+                        className={`game-item ${isActive ? "active" : ""}`}
+                        onClick={() => setSelectedGameId(game.id)}
+                      >
+                        <div className="game-item-top">
+                          <span>{getMatchName(game)}</span>
+                          <span>{getShortDate(game.game_date || game.created_at)}</span>
                         </div>
+                        <div className="game-item-score">
+                          {safeNumber(stats?.pts)} - {safeNumber(stats?.opp_pts)}
+                        </div>
+                        <div className="game-item-sub">
+                          {getGameTypeLabel(game)}｜{normalizeStatus(game.status)}
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="empty-box">尚無已結束比賽</div>
+                )}
+              </div>
+            </aside>
 
-                        <div className="hero-score">
-                          {safeNumber(selectedTeamStats?.pts ?? computed.points)} -{" "}
-                          {safeNumber(selectedTeamStats?.opp_pts)}
+            <section className="right-panel">
+              {selectedGame ? (
+                <>
+                  <div className="hero-card">
+                    <div className="hero-top">
+                      <div>
+                        <div className="section-kicker">SELECTED GAME</div>
+                        <h2>{getMatchName(selectedGame)}</h2>
+                        <div className="hero-sub">
+                          {getShortDate(selectedGame.game_date || selectedGame.created_at)}｜
+                          {getGameTypeLabel(selectedGame)}
                         </div>
                       </div>
 
-                      <div className="stat-grid">
-                        {statCards.map((card) => (
-                          <div className="stat-card" key={card.label}>
-                            <div className="stat-label">{card.label}</div>
-                            <div className="stat-value">{card.value}</div>
-                            <div className="stat-sub">{card.sub}</div>
-                          </div>
-                        ))}
+                      <div className="hero-score">
+                        {safeNumber(selectedTeamStats?.pts ?? computed.points)} -{" "}
+                        {safeNumber(selectedTeamStats?.opp_pts)}
                       </div>
                     </div>
 
-                    <div className="content-grid">
-                      <div className="panel">
-                        <div className="section-kicker">REPORT</div>
-                        <h3>單場賽後報告</h3>
+                    <div className="stat-grid">
+                      {statCards.map((card) => (
+                        <div className="stat-card" key={card.label}>
+                          <div className="stat-label">{card.label}</div>
+                          <div className="stat-value">{card.value}</div>
+                          <div className="stat-sub">{card.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
 
-                        <div className="report-block">
-                          <div className="report-subtitle">比賽總結</div>
-                          <div className="bullet-list">
-                            {summaryLines.map((line, idx) => (
-                              <div className="bullet-item" key={`${line}-${idx}`}>
-                                {line}
+                  <div className="content-grid">
+                    <div className="panel">
+                      <div className="section-kicker">REPORT</div>
+                      <h3>單場賽後報告</h3>
+
+                      <div className="report-block">
+                        <div className="report-subtitle">比賽總結</div>
+                        <div className="bullet-list">
+                          {summaryLines.map((line, idx) => (
+                            <div className="bullet-item" key={`${line}-${idx}`}>
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="triple-grid">
+                        <div className="mini-panel">
+                          <div className="mini-title">做得好的地方</div>
+                          <div className="bullet-list small">
+                            {positives.map((item, idx) => (
+                              <div className="bullet-item" key={`${item}-${idx}`}>
+                                {item}
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="triple-grid">
-                          <div className="mini-panel">
-                            <div className="mini-title">做得好的地方</div>
-                            <div className="bullet-list small">
-                              {positives.map((item, idx) => (
-                                <div className="bullet-item" key={`${item}-${idx}`}>
-                                  {item}
-                                </div>
-                              ))}
-                            </div>
+                        <div className="mini-panel">
+                          <div className="mini-title">主要問題</div>
+                          <div className="bullet-list small">
+                            {problems.map((item, idx) => (
+                              <div className="bullet-item" key={`${item}-${idx}`}>
+                                {item}
+                              </div>
+                            ))}
                           </div>
+                        </div>
 
-                          <div className="mini-panel">
-                            <div className="mini-title">主要問題</div>
-                            <div className="bullet-list small">
-                              {problems.map((item, idx) => (
-                                <div className="bullet-item" key={`${item}-${idx}`}>
-                                  {item}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="mini-panel">
-                            <div className="mini-title">下一場重點</div>
-                            <div className="bullet-list small">
-                              {nextFocus.map((item, idx) => (
-                                <div className="bullet-item" key={`${item}-${idx}`}>
-                                  {item}
-                                </div>
-                              ))}
-                            </div>
+                        <div className="mini-panel">
+                          <div className="mini-title">下一場重點</div>
+                          <div className="bullet-list small">
+                            {nextFocus.map((item, idx) => (
+                              <div className="bullet-item" key={`${item}-${idx}`}>
+                                {item}
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
+                    </div>
 
-                      <div className="panel">
-                        <div className="section-kicker">COLLAPSE WINDOW</div>
-                        <h3>崩盤時段分析</h3>
+                    <div className="panel">
+                      <div className="section-kicker">COLLAPSE WINDOW</div>
+                      <h3>崩盤時段分析</h3>
 
-                        {collapseWindows.length ? (
-                          <div className="collapse-list">
-                            {collapseWindows.map((item, idx) => (
+                      {collapseWindows.length ? (
+                        <div className="collapse-list">
+                          {collapseWindows.map((item, idx) => {
+                            const total = Math.max(1, item.ourPoints + item.oppPoints);
+                            const ourPct = (item.ourPoints / total) * 100;
+                            const oppPct = (item.oppPoints / total) * 100;
+
+                            return (
                               <div className="collapse-card" key={`${item.quarter}-${idx}`}>
                                 <div className="collapse-head">
                                   <span>第 {item.quarter} 節</span>
                                   <span>
-                                    事件 {item.startIndex} - {item.endIndex}
+                                    {formatClock(item.startSec)} → {formatClock(item.endSec)}
                                   </span>
                                 </div>
 
@@ -804,34 +1068,81 @@ export default function PostgameOverviewPage() {
                                   我方 {item.ourPoints} ： 對手 {item.oppPoints}
                                 </div>
 
-                                <div className="collapse-diff">
+                                <div
+                                  className={`collapse-diff ${
+                                    item.severity === "high"
+                                      ? "high"
+                                      : item.severity === "medium"
+                                      ? "medium"
+                                      : "low"
+                                  }`}
+                                >
                                   淨分 {item.diff}
+                                </div>
+
+                                <div className="bar-wrap">
+                                  <div className="bar-label-row">
+                                    <span>我方得分</span>
+                                    <span>{item.ourPoints}</span>
+                                  </div>
+                                  <div className="bar-track">
+                                    <div className="bar-fill our" style={{ width: `${ourPct}%` }} />
+                                  </div>
+
+                                  <div className="bar-label-row">
+                                    <span>對手得分</span>
+                                    <span>{item.oppPoints}</span>
+                                  </div>
+                                  <div className="bar-track">
+                                    <div className="bar-fill opp" style={{ width: `${oppPct}%` }} />
+                                  </div>
+                                </div>
+
+                                <div className="collapse-meta-grid">
+                                  <div className="meta-pill">失誤 {item.ourTurnovers}</div>
+                                  <div className="meta-pill">打鐵 {item.ourMisses}</div>
+                                  <div className="meta-pill">事件 {item.eventCount}</div>
                                 </div>
 
                                 <div className="collapse-summary">{item.summary}</div>
 
+                                <div className="lineup-block">
+                                  <div className="lineup-title">當時主要場上 5 人</div>
+                                  {item.lineupNames.length ? (
+                                    <div className="lineup-list">
+                                      {item.lineupNames.map((name) => (
+                                        <span key={name} className="lineup-chip">
+                                          {name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="lineup-empty">目前無法完整還原當時 5 人</div>
+                                  )}
+                                </div>
+
                                 <div className="collapse-tip">
-                                  {item.diff <= -8
-                                    ? "這段是明顯崩盤區間，建議回頭檢查失誤、出手選擇與輪替。"
-                                    : item.diff <= -4
-                                    ? "這段節奏有失控跡象，下一場要更早暫停或調整。"
+                                  {item.severity === "high"
+                                    ? "這段屬於明顯崩盤，建議先回看這段的持球決策、第一拍出手與是否該更早暫停。"
+                                    : item.severity === "medium"
+                                    ? "這段已有明顯失控跡象，建議對照輪替與失誤來源。"
                                     : "這段有被壓制，但還不到完全崩盤。"}
                                 </div>
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="empty-box">尚無足夠事件資料可分析崩盤時段</div>
-                        )}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="empty-box">尚無足夠事件資料可分析崩盤時段</div>
+                      )}
                     </div>
-                  </>
-                ) : (
-                  <div className="panel center">尚無可查看的已結束比賽</div>
-                )}
-              </section>
+                  </div>
+                </>
+              ) : (
+                <div className="panel center">尚無可查看的已結束比賽</div>
+              )}
             </section>
-          </>
+          </section>
         )}
       </div>
 
@@ -1045,7 +1356,8 @@ export default function PostgameOverviewPage() {
         }
 
         .report-subtitle,
-        .mini-title {
+        .mini-title,
+        .lineup-title {
           font-size: 19px;
           font-weight: 900;
         }
@@ -1093,7 +1405,7 @@ export default function PostgameOverviewPage() {
           border: 1px solid rgba(255, 255, 255, 0.06);
           padding: 16px;
           display: grid;
-          gap: 10px;
+          gap: 12px;
         }
 
         .collapse-head {
@@ -1113,13 +1425,100 @@ export default function PostgameOverviewPage() {
         .collapse-diff {
           font-size: 22px;
           font-weight: 900;
-          color: #ff8f8f;
+        }
+
+        .collapse-diff.high {
+          color: #ff7b7b;
+        }
+
+        .collapse-diff.medium {
+          color: #ffad66;
+        }
+
+        .collapse-diff.low {
+          color: #ffd37b;
+        }
+
+        .bar-wrap {
+          display: grid;
+          gap: 8px;
+        }
+
+        .bar-label-row {
+          display: flex;
+          justify-content: space-between;
+          font-size: 14px;
+          font-weight: 800;
+          color: rgba(255, 255, 255, 0.76);
+        }
+
+        .bar-track {
+          height: 10px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.08);
+          overflow: hidden;
+        }
+
+        .bar-fill {
+          height: 100%;
+          border-radius: 999px;
+        }
+
+        .bar-fill.our {
+          background: linear-gradient(90deg, #7cc7ff, #5fa9ff);
+        }
+
+        .bar-fill.opp {
+          background: linear-gradient(90deg, #ff9d6c, #ff6d6d);
+        }
+
+        .collapse-meta-grid {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .meta-pill {
+          padding: 8px 12px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          font-size: 14px;
+          font-weight: 800;
+          color: rgba(255, 255, 255, 0.86);
         }
 
         .collapse-summary {
-          font-size: 19px;
+          font-size: 18px;
           font-weight: 800;
-          line-height: 1.45;
+          line-height: 1.5;
+        }
+
+        .lineup-block {
+          display: grid;
+          gap: 10px;
+        }
+
+        .lineup-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .lineup-chip {
+          padding: 8px 12px;
+          border-radius: 999px;
+          background: rgba(255, 166, 77, 0.12);
+          border: 1px solid rgba(255, 166, 77, 0.24);
+          font-size: 14px;
+          font-weight: 900;
+          color: #ffd29d;
+        }
+
+        .lineup-empty {
+          font-size: 15px;
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.62);
         }
 
         .collapse-tip {
