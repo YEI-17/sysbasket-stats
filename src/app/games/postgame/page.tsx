@@ -195,14 +195,13 @@ function normalizeEventType(type?: string | null) {
 function isOurTeamEvent(teamSide?: string | null) {
   const side = (teamSide ?? "").trim().toLowerCase();
   if (!side) return true;
-  if (["teama", "a", "our", "self", "home"].includes(side)) return true;
-  if (["teamb", "b", "opponent", "away"].includes(side)) return false;
-  return true;
+
+  return ["teama", "teama", "team_a", "a", "our", "self", "home"].includes(side);
 }
 
 function isOurTeamSide(teamSide?: string | null) {
   const side = (teamSide ?? "").trim().toLowerCase();
-  return ["teama", "a", "our", "self", "home"].includes(side);
+  return ["teama", "teama", "team_a", "a", "our", "self", "home"].includes(side);
 }
 
 function pointsFromType(eventType: string) {
@@ -408,6 +407,88 @@ type CollapseWindow = {
   severity: "high" | "medium" | "low";
 };
 
+function getActiveLineupAtSecond(
+  gameId: string,
+  quarter: number,
+  sec: number,
+  playerShifts: PlayerShiftRow[],
+  playerMap: Map<string, PlayerRow>
+) {
+  const activeIds = playerShifts
+    .filter((shift) => {
+      if (shift.game_id !== gameId) return false;
+      if (!isOurTeamSide(shift.team_side)) return false;
+      if (shift.quarter !== quarter) return false;
+
+      const shiftStart = shift.in_seconds_left;
+      const shiftEnd =
+        typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
+
+      return sec <= shiftStart && sec > shiftEnd;
+    })
+    .map((shift) => shift.player_id);
+
+  const deduped = Array.from(new Set(activeIds));
+
+  return deduped
+    .slice(0, 5)
+    .map((playerId) => playerLabel(playerMap.get(playerId)));
+}
+
+function getRepresentativeSecondsInWindow(
+  events: EventRow[],
+  quarter: number,
+  startSec: number,
+  endSec: number
+) {
+  return events
+    .filter((e) => {
+      if (e.is_undone) return false;
+      if ((e.quarter ?? 1) !== quarter) return false;
+      if (typeof e.clock_seconds_left !== "number") return false;
+
+      const sec = e.clock_seconds_left;
+      return sec <= startSec && sec > endSec;
+    })
+    .map((e) => e.clock_seconds_left as number)
+    .sort((a, b) => b - a);
+}
+
+function getBestLineupFromEventMoments(
+  gameId: string,
+  quarter: number,
+  sampleSeconds: number[],
+  playerShifts: PlayerShiftRow[],
+  playerMap: Map<string, PlayerRow>
+) {
+  const lineupCount = new Map<string, { names: string[]; count: number }>();
+
+  for (const sec of sampleSeconds) {
+    const names = getActiveLineupAtSecond(
+      gameId,
+      quarter,
+      sec,
+      playerShifts,
+      playerMap
+    );
+
+    if (names.length < 5) continue;
+
+    const key = [...names].sort().join("|");
+    const prev = lineupCount.get(key);
+
+    if (prev) {
+      prev.count += 1;
+    } else {
+      lineupCount.set(key, { names, count: 1 });
+    }
+  }
+
+  return Array.from(lineupCount.values())
+    .sort((a, b) => b.count - a.count)
+    .at(0)?.names ?? [];
+}
+
 function getEventsInWindow(
   events: EventRow[],
   quarter: number,
@@ -429,10 +510,47 @@ function getLineupNamesForWindow(
   quarter: number,
   startSec: number,
   endSec: number,
+  windowEvents: EventRow[],
   playerShifts: PlayerShiftRow[],
   players: PlayerRow[]
 ) {
   const playerMap = new Map(players.map((p) => [p.id, p]));
+
+  // 1. 先用這段 window 內真正發生事件的秒數，抓當下場上五人
+  const sampleSeconds = getRepresentativeSecondsInWindow(
+    windowEvents,
+    quarter,
+    startSec,
+    endSec
+  );
+
+  const eventBasedLineup = getBestLineupFromEventMoments(
+    gameId,
+    quarter,
+    sampleSeconds,
+    playerShifts,
+    playerMap
+  );
+
+  if (eventBasedLineup.length === 5) {
+    return eventBasedLineup;
+  }
+
+  // 2. 如果 event 太少或那幾秒抓不到，再用區間中點補抓一次
+  const midSec = Math.floor((startSec + endSec) / 2);
+  const midLineup = getActiveLineupAtSecond(
+    gameId,
+    quarter,
+    midSec,
+    playerShifts,
+    playerMap
+  );
+
+  if (midLineup.length === 5) {
+    return midLineup;
+  }
+
+  // 3. 最後才 fallback 回原本 overlap 最多的前 5 人
   const overlapMap = new Map<string, number>();
 
   const relevant = playerShifts.filter((s) => {
@@ -441,20 +559,26 @@ function getLineupNamesForWindow(
     if (s.quarter !== quarter) return false;
 
     const shiftStart = s.in_seconds_left;
-    const shiftEnd = typeof s.out_seconds_left === "number" ? s.out_seconds_left : 0;
+    const shiftEnd =
+      typeof s.out_seconds_left === "number" ? s.out_seconds_left : 0;
 
-    const overlap =
-      Math.max(0, Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec));
+    const overlap = Math.max(
+      0,
+      Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec)
+    );
 
     return overlap > 0;
   });
 
   for (const shift of relevant) {
     const shiftStart = shift.in_seconds_left;
-    const shiftEnd = typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
+    const shiftEnd =
+      typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
 
-    const overlap =
-      Math.max(0, Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec));
+    const overlap = Math.max(
+      0,
+      Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec)
+    );
 
     if (overlap <= 0) continue;
 
@@ -467,11 +591,7 @@ function getLineupNamesForWindow(
   return Array.from(overlapMap.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([playerId]) => {
-      const p = playerMap.get(playerId);
-      if (!p) return "未知球員";
-      return p.number != null ? `#${p.number} ${p.name}` : p.name;
-    });
+    .map(([playerId]) => playerLabel(playerMap.get(playerId)));
 }
 
 function dedupeCollapseWindows(windows: CollapseWindow[]) {
@@ -540,7 +660,7 @@ function buildCollapseWindows(
     return 0;
   };
 
-  const isOurTeam = (side?: string | null) => side === "teamA";
+  const isOurTeam = (side?: string | null) => isOurTeamEvent(side);
 
   const formatClock = (sec: number) => {
     const mm = Math.floor(sec / 60);
@@ -595,13 +715,14 @@ function buildCollapseWindows(
         else if (diff <= -5) severity = "medium";
 
         const lineupNames = getLineupNamesForWindow(
-          gameId,
-          quarter,
-          startSec,
-          endSec,
-          playerShifts,
-          players
-        );
+  gameId,
+  quarter,
+  startSec,
+  endSec,
+  quarterEvents,
+  playerShifts,
+  players
+);
 
         const reasons: string[] = [];
         if (ourTurnovers > 0) reasons.push(`失誤 ${ourTurnovers} 次`);
