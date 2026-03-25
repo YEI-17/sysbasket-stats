@@ -399,7 +399,7 @@ export default function ViewerGamesPage() {
 
       supabase
         .from("events")
-        .select("id, game_id, player_id, event_type, team_side, is_undone, created_at, quarter")
+        .select("id, game_id, player_id, event_type, team_side, is_undone, created_at"),
 
       supabase.from("game_players").select("game_id, player_id, is_starter"),
 
