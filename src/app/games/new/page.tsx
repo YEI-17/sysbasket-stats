@@ -5,8 +5,6 @@ import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import LogoutButton from "@/components/LogoutButton";
 
-
-
 type PlayerPosition = "PG" | "SG" | "SF" | "PF" | "C";
 
 type Player = {
@@ -74,7 +72,6 @@ function buildStartTimeISO(gameDate: string, gameTime: string) {
   const safeTime = gameTime.trim();
 
   if (!safeDate || !safeTime) return null;
-
   return `${safeDate}T${safeTime}:00+08:00`;
 }
 
@@ -84,6 +81,7 @@ function uniqueIds(ids: string[]) {
 
 export default function NewGamePage() {
   const router = useRouter();
+
   const [quarters, setQuarters] = useState(4);
   const [opponent, setOpponent] = useState("");
   const [gameDate, setGameDate] = useState(getTodayDateInputValue());
@@ -99,6 +97,7 @@ export default function NewGamePage() {
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
 
   function sortPlayers(list: Player[]) {
@@ -392,113 +391,135 @@ export default function NewGamePage() {
     selectedStarterIds.length === 5 &&
     selectedStarterIds.every((id) => selectedRosterIds.includes(id));
 
-  async function createGame() {
-  setLoading(true);
-  setError("");
+  function getSafeSelectionsForCreate(isTestGame: boolean) {
+    const sortedPlayers = sortPlayers(players);
 
-  try {
-    if (!gameDate) {
-      setError("請選擇比賽日期");
-      setLoading(false);
-      return;
+    if (sortedPlayers.length < 5) {
+      throw new Error("players table 至少要有 5 位 active 球員");
     }
 
-    if (!gameTime) {
-      setError("請選擇比賽時間");
-      setLoading(false);
-      return;
-    }
+    const fallback = getFallbackSelections(sortedPlayers);
 
-    if (selectedRosterIds.length < 5) {
-      setError("登入名單至少要 5 人");
-      setLoading(false);
-      return;
-    }
+    let rosterIds = isTestGame
+      ? selectedRosterIds.length >= 5
+        ? selectedRosterIds
+        : lastGameRosterIds.length >= 5
+        ? lastGameRosterIds
+        : fallback.rosterIds
+      : selectedRosterIds;
 
-    if (selectedStarterIds.length !== 5) {
-      setError("請選滿先發五人");
-      setLoading(false);
-      return;
-    }
-
-    const allStartersInRoster = selectedStarterIds.every((id) =>
-      selectedRosterIds.includes(id)
+    rosterIds = uniqueIds(
+      rosterIds.filter((id) => sortedPlayers.some((p) => p.id === id))
     );
 
-    if (!allStartersInRoster) {
-      setError("先發五人必須都在登入名單內");
-      setLoading(false);
-      return;
+    if (rosterIds.length < 5) {
+      rosterIds = fallback.rosterIds;
     }
 
-    const startTimeISO = buildStartTimeISO(gameDate, gameTime);
+    let starterIds = isTestGame
+      ? selectedStarterIds.length === 5
+        ? selectedStarterIds
+        : lastGameStarterIds.length === 5
+        ? lastGameStarterIds
+        : fallback.starterIds
+      : selectedStarterIds;
 
-    if (!startTimeISO) {
-      setError("比賽時間格式錯誤");
-      setLoading(false);
-      return;
+    starterIds = uniqueIds(starterIds.filter((id) => rosterIds.includes(id)));
+
+    if (starterIds.length > 5) {
+      starterIds = starterIds.slice(0, 5);
     }
 
-    const { error: closeError } = await supabase
+    if (starterIds.length < 5) {
+      const fill = rosterIds.filter((id) => !starterIds.includes(id));
+      starterIds = [...starterIds, ...fill.slice(0, 5 - starterIds.length)];
+    }
+
+    if (starterIds.length !== 5) {
+      throw new Error("無法自動組出 5 位先發，請檢查 players / game_players");
+    }
+
+    return { rosterIds, starterIds };
+  }
+
+  async function closeOtherLiveGames() {
+    const { error } = await supabase
       .from("games")
       .update({ status: "finished", is_live: false })
       .eq("status", "live");
 
-    if (closeError) {
-      setError("關閉舊比賽失敗：" + closeError.message);
-      setLoading(false);
-      return;
+    if (error) {
+      throw new Error("關閉舊比賽失敗：" + error.message);
+    }
+  }
+
+  async function createBaseGameRecord(params: {
+    opponentName: string;
+    gameDateValue: string;
+    gameTimeValue: string;
+    locationValue: string | null;
+    quartersValue: number;
+  }) {
+    const startTimeISO = buildStartTimeISO(
+      params.gameDateValue,
+      params.gameTimeValue
+    );
+
+    if (!startTimeISO) {
+      throw new Error("比賽時間格式錯誤");
     }
 
     const { data: game, error: gameError } = await supabase
       .from("games")
       .insert({
-  teamA: "我們",
-  teamB: opponent.trim() || "對手",
-  game_date: gameDate,
-  start_time: startTimeISO,
-  location: location.trim() || null,
-
-  status: "live",
-  is_live: true,
-
-  home_score: 0,
-  away_score: 0,
-  current_quarter: 1,
-
-  // 🔥 核心新增
-  quarters: quarters,
-})
+        teamA: "我們",
+        teamB: params.opponentName,
+        game_date: params.gameDateValue,
+        start_time: startTimeISO,
+        location: params.locationValue,
+        status: "live",
+        is_live: true,
+        home_score: 0,
+        away_score: 0,
+        current_quarter: 1,
+        quarters: params.quartersValue,
+      })
       .select()
       .single();
 
     if (gameError || !game) {
-      setError("建立比賽失敗：" + (gameError?.message || "無法取得比賽資料"));
-      setLoading(false);
-      return;
+      throw new Error("建立比賽失敗：" + (gameError?.message || "無法取得比賽資料"));
     }
 
-    const { error: clockError } = await supabase.from("game_clock").insert({
-      game_id: game.id,
-      quarter: 1,
-      seconds_left: 600,
-      is_running: false,
-    });
+    return game;
+  }
+
+  async function insertBaseRows(params: {
+    gameId: string;
+    rosterIds: string[];
+    starterIds: string[];
+  }) {
+    const { gameId, rosterIds, starterIds } = params;
+
+    const { error: clockError } = await supabase.from("game_clock").insert([
+  { game_id: gameId, quarter: 1, seconds_left: 600, is_running: false },
+  { game_id: gameId, quarter: 2, seconds_left: 600, is_running: false },
+  { game_id: gameId, quarter: 3, seconds_left: 600, is_running: false },
+  { game_id: gameId, quarter: 4, seconds_left: 600, is_running: false },
+]);
 
     if (clockError) {
-      setError("建立時間失敗：" + clockError.message);
-      setLoading(false);
-      return;
+      throw new Error("建立時間失敗：" + clockError.message);
     }
 
-    const gamePlayersPayload = selectedRosterIds.map((playerId) => {
+    const gamePlayersPayload = rosterIds.map((playerId) => {
       const player = players.find((p) => p.id === playerId);
 
       return {
-        game_id: game.id,
+        game_id: gameId,
         player_id: playerId,
         team_side: "teamA",
-        is_starter: selectedStarterIds.includes(playerId),
+        is_starter: starterIds.includes(playerId),
         position: player?.position ?? null,
       };
     });
@@ -508,13 +529,11 @@ export default function NewGamePage() {
       .insert(gamePlayersPayload);
 
     if (gamePlayersError) {
-      setError("寫入登入名單失敗：" + gamePlayersError.message);
-      setLoading(false);
-      return;
+      throw new Error("寫入登入名單失敗：" + gamePlayersError.message);
     }
 
-    const starterEventsPayload = selectedStarterIds.map((playerId) => ({
-      game_id: game.id,
+    const starterEventsPayload = starterIds.map((playerId) => ({
+      game_id: gameId,
       player_id: playerId,
       quarter: 1,
       event_type: "sub_in",
@@ -530,13 +549,11 @@ export default function NewGamePage() {
       .insert(starterEventsPayload);
 
     if (starterEventsError) {
-      setError("寫入先發事件失敗：" + starterEventsError.message);
-      setLoading(false);
-      return;
+      throw new Error("寫入先發事件失敗：" + starterEventsError.message);
     }
 
-    const starterShiftsPayload = selectedStarterIds.map((playerId) => ({
-      game_id: game.id,
+    const starterShiftsPayload = starterIds.map((playerId) => ({
+      game_id: gameId,
       player_id: playerId,
       team_side: "teamA",
       quarter: 1,
@@ -549,16 +566,14 @@ export default function NewGamePage() {
       .insert(starterShiftsPayload);
 
     if (starterShiftsError) {
-      setError("寫入先發上場時間失敗：" + starterShiftsError.message);
-      setLoading(false);
-      return;
+      throw new Error("寫入先發上場時間失敗：" + starterShiftsError.message);
     }
 
-    const initPlayerStatsPayload = selectedRosterIds.map((playerId) => ({
-      game_id: game.id,
+    const initPlayerStatsPayload = rosterIds.map((playerId) => ({
+      game_id: gameId,
       player_id: playerId,
       team_side: "teamA",
-      gp: selectedStarterIds.includes(playerId) ? 1 : 0,
+      gp: starterIds.includes(playerId) ? 1 : 0,
       pts: 0,
       fg2m: 0,
       fg2a: 0,
@@ -590,13 +605,13 @@ export default function NewGamePage() {
       .upsert(initPlayerStatsPayload, { onConflict: "game_id,player_id" });
 
     if (initPlayerStatsError) {
-      setError("建立球員統計初始資料失敗：" + initPlayerStatsError.message);
-      setLoading(false);
-      return;
+      throw new Error(
+        "建立球員統計初始資料失敗：" + initPlayerStatsError.message
+      );
     }
 
     const initTeamStatsPayload = {
-      game_id: game.id,
+      game_id: gameId,
       team_side: "teamA",
       pts: 0,
       fg2m: 0,
@@ -636,16 +651,14 @@ export default function NewGamePage() {
       .upsert(initTeamStatsPayload, { onConflict: "game_id,team_side" });
 
     if (initTeamStatsError) {
-      setError("建立團隊統計初始資料失敗：" + initTeamStatsError.message);
-      setLoading(false);
-      return;
+      throw new Error("建立團隊統計初始資料失敗：" + initTeamStatsError.message);
     }
 
     const { error: initInsightError } = await supabase
       .from("game_insights")
       .upsert(
         {
-          game_id: game.id,
+          game_id: gameId,
           summary: null,
           key_problem_1: null,
           key_problem_2: null,
@@ -661,18 +674,596 @@ export default function NewGamePage() {
       );
 
     if (initInsightError) {
-      setError("建立首頁洞察初始資料失敗：" + initInsightError.message);
-      setLoading(false);
-      return;
+      throw new Error("建立首頁洞察初始資料失敗：" + initInsightError.message);
     }
-
-    router.push(`/games/${game.id}/live`);
-  } catch (err: any) {
-    setError(err?.message || "發生未知錯誤");
   }
 
-  setLoading(false);
+  async function injectQuickTestScenario(params: {
+  gameId: string;
+  rosterIds: string[];
+  starterIds: string[];
+}) {
+  const { gameId, rosterIds, starterIds } = params;
+
+  const benchIds = rosterIds.filter((id) => !starterIds.includes(id));
+  const bench1 = benchIds[0] || null;
+  const bench2 = benchIds[1] || null;
+
+  const s1 = starterIds[0] ?? null;
+  const s2 = starterIds[1] ?? null;
+  const s3 = starterIds[2] ?? null;
+  const s4 = starterIds[3] ?? null;
+  const s5 = starterIds[4] ?? null;
+
+  const testEvents = [
+    // Q1
+    {
+      game_id: gameId,
+      player_id: s1,
+      quarter: 1,
+      event_type: "fg2_made",
+      team_side: "teamA",
+      clock_seconds_left: 570,
+      points_delta: 2,
+      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s2,
+      quarter: 1,
+      event_type: "ast",
+      team_side: "teamA",
+      clock_seconds_left: 570,
+      points_delta: 0,
+      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 1,
+      event_type: "fg2_made",
+      team_side: "teamB",
+      clock_seconds_left: 540,
+      points_delta: 2,
+      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s3,
+      quarter: 1,
+      event_type: "reb",
+      team_side: "teamA",
+      clock_seconds_left: 520,
+      points_delta: 0,
+      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s4,
+      quarter: 1,
+      event_type: "fg3_made",
+      team_side: "teamA",
+      clock_seconds_left: 470,
+      points_delta: 3,
+      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s5,
+      quarter: 1,
+      event_type: "tov",
+      team_side: "teamA",
+      clock_seconds_left: 430,
+      points_delta: 0,
+      note: "test-q1",
+      is_undone: false,
+    },
+
+    // Q2
+    ...(bench1 && s5
+      ? [
+          {
+            game_id: gameId,
+            player_id: s5,
+            quarter: 2,
+            event_type: "sub_out",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q2",
+            is_undone: false,
+          },
+          {
+            game_id: gameId,
+            player_id: bench1,
+            quarter: 2,
+            event_type: "sub_in",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q2",
+            is_undone: false,
+          },
+        ]
+      : []),
+    {
+      game_id: gameId,
+      player_id: bench1 || s1,
+      quarter: 2,
+      event_type: "fg2_made",
+      team_side: "teamA",
+      clock_seconds_left: 500,
+      points_delta: 2,
+      note: "test-q2",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 2,
+      event_type: "fg3_made",
+      team_side: "teamB",
+      clock_seconds_left: 470,
+      points_delta: 3,
+      note: "test-q2",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s2,
+      quarter: 2,
+      event_type: "ft_made",
+      team_side: "teamA",
+      clock_seconds_left: 390,
+      points_delta: 1,
+      note: "test-q2",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s3,
+      quarter: 2,
+      event_type: "pf",
+      team_side: "teamA",
+      clock_seconds_left: 330,
+      points_delta: 0,
+      note: "test-q2",
+      is_undone: false,
+    },
+
+    // Q3
+    ...(bench2 && s4
+      ? [
+          {
+            game_id: gameId,
+            player_id: s4,
+            quarter: 3,
+            event_type: "sub_out",
+            team_side: "teamA",
+            clock_seconds_left: 560,
+            points_delta: 0,
+            note: "test-q3",
+            is_undone: false,
+          },
+          {
+            game_id: gameId,
+            player_id: bench2,
+            quarter: 3,
+            event_type: "sub_in",
+            team_side: "teamA",
+            clock_seconds_left: 560,
+            points_delta: 0,
+            note: "test-q3",
+            is_undone: false,
+          },
+        ]
+      : []),
+    {
+      game_id: gameId,
+      player_id: s1,
+      quarter: 3,
+      event_type: "fg2_made",
+      team_side: "teamA",
+      clock_seconds_left: 520,
+      points_delta: 2,
+      note: "test-q3",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s2,
+      quarter: 3,
+      event_type: "ast",
+      team_side: "teamA",
+      clock_seconds_left: 520,
+      points_delta: 0,
+      note: "test-q3",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 3,
+      event_type: "fg2_made",
+      team_side: "teamB",
+      clock_seconds_left: 480,
+      points_delta: 2,
+      note: "test-q3",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: bench2 || s4,
+      quarter: 3,
+      event_type: "reb",
+      team_side: "teamA",
+      clock_seconds_left: 430,
+      points_delta: 0,
+      note: "test-q3",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s3,
+      quarter: 3,
+      event_type: "stl",
+      team_side: "teamA",
+      clock_seconds_left: 350,
+      points_delta: 0,
+      note: "test-q3",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s3,
+      quarter: 3,
+      event_type: "fg2_made",
+      team_side: "teamA",
+      clock_seconds_left: 340,
+      points_delta: 2,
+      note: "test-q3",
+      is_undone: false,
+    },
+
+    // Q4
+    ...(bench1 && s5
+      ? [
+          {
+            game_id: gameId,
+            player_id: bench1,
+            quarter: 4,
+            event_type: "sub_out",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q4",
+            is_undone: false,
+          },
+          {
+            game_id: gameId,
+            player_id: s5,
+            quarter: 4,
+            event_type: "sub_in",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q4",
+            is_undone: false,
+          },
+        ]
+      : []),
+    ...(bench2 && s4
+      ? [
+          {
+            game_id: gameId,
+            player_id: bench2,
+            quarter: 4,
+            event_type: "sub_out",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q4",
+            is_undone: false,
+          },
+          {
+            game_id: gameId,
+            player_id: s4,
+            quarter: 4,
+            event_type: "sub_in",
+            team_side: "teamA",
+            clock_seconds_left: 540,
+            points_delta: 0,
+            note: "test-q4",
+            is_undone: false,
+          },
+        ]
+      : []),
+    {
+      game_id: gameId,
+      player_id: s2,
+      quarter: 4,
+      event_type: "fg3_made",
+      team_side: "teamA",
+      clock_seconds_left: 400,
+      points_delta: 3,
+      note: "test-q4",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 4,
+      event_type: "fg2_made",
+      team_side: "teamB",
+      clock_seconds_left: 360,
+      points_delta: 2,
+      note: "test-q4",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s1,
+      quarter: 4,
+      event_type: "ft_made",
+      team_side: "teamA",
+      clock_seconds_left: 220,
+      points_delta: 1,
+      note: "test-q4",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s5,
+      quarter: 4,
+      event_type: "reb",
+      team_side: "teamA",
+      clock_seconds_left: 150,
+      points_delta: 0,
+      note: "test-q4",
+      is_undone: false,
+    },
+  ];
+
+  const { error: eventInsertError } = await supabase
+    .from("events")
+    .insert(testEvents);
+
+  if (eventInsertError) {
+    throw new Error("建立測試事件失敗：" + eventInsertError.message);
+  }
+
+  // player_shifts 同步更新
+  if (bench1 && s5) {
+    const { error: closeQ2ShiftError } = await supabase
+      .from("player_shifts")
+      .update({ out_seconds_left: 540 })
+      .eq("game_id", gameId)
+      .eq("player_id", s5)
+      .eq("quarter", 1)
+      .is("out_seconds_left", null);
+
+    if (closeQ2ShiftError) {
+      throw new Error("Q2 換人下場時間更新失敗：" + closeQ2ShiftError.message);
+    }
+
+    const { error: insertBench1ShiftError } = await supabase
+      .from("player_shifts")
+      .insert({
+        game_id: gameId,
+        player_id: bench1,
+        team_side: "teamA",
+        quarter: 2,
+        in_seconds_left: 540,
+        out_seconds_left: null,
+      });
+
+    if (insertBench1ShiftError) {
+      throw new Error("Q2 替補上場時間建立失敗：" + insertBench1ShiftError.message);
+    }
+  }
+
+  if (bench2 && s4) {
+    const { error: closeQ3ShiftError } = await supabase
+      .from("player_shifts")
+      .update({ out_seconds_left: 560 })
+      .eq("game_id", gameId)
+      .eq("player_id", s4)
+      .eq("quarter", 1)
+      .is("out_seconds_left", null);
+
+    if (closeQ3ShiftError) {
+      throw new Error("Q3 換人下場時間更新失敗：" + closeQ3ShiftError.message);
+    }
+
+    const { error: insertBench2ShiftError } = await supabase
+      .from("player_shifts")
+      .insert({
+        game_id: gameId,
+        player_id: bench2,
+        team_side: "teamA",
+        quarter: 3,
+        in_seconds_left: 560,
+        out_seconds_left: null,
+      });
+
+    if (insertBench2ShiftError) {
+      throw new Error("Q3 替補上場時間建立失敗：" + insertBench2ShiftError.message);
+    }
+  }
+
+  if (bench1 && s5) {
+    const { error: closeBench1ShiftError } = await supabase
+      .from("player_shifts")
+      .update({ out_seconds_left: 540 })
+      .eq("game_id", gameId)
+      .eq("player_id", bench1)
+      .eq("quarter", 2)
+      .is("out_seconds_left", null);
+
+    if (closeBench1ShiftError) {
+      throw new Error("Q4 bench1 下場時間更新失敗：" + closeBench1ShiftError.message);
+    }
+
+    const { error: reopenS5ShiftError } = await supabase
+      .from("player_shifts")
+      .insert({
+        game_id: gameId,
+        player_id: s5,
+        team_side: "teamA",
+        quarter: 4,
+        in_seconds_left: 540,
+        out_seconds_left: null,
+      });
+
+    if (reopenS5ShiftError) {
+      throw new Error("Q4 s5 回到場上失敗：" + reopenS5ShiftError.message);
+    }
+  }
+
+  if (bench2 && s4) {
+    const { error: closeBench2ShiftError } = await supabase
+      .from("player_shifts")
+      .update({ out_seconds_left: 540 })
+      .eq("game_id", gameId)
+      .eq("player_id", bench2)
+      .eq("quarter", 3)
+      .is("out_seconds_left", null);
+
+    if (closeBench2ShiftError) {
+      throw new Error("Q4 bench2 下場時間更新失敗：" + closeBench2ShiftError.message);
+    }
+
+    const { error: reopenS4ShiftError } = await supabase
+      .from("player_shifts")
+      .insert({
+        game_id: gameId,
+        player_id: s4,
+        team_side: "teamA",
+        quarter: 4,
+        in_seconds_left: 540,
+        out_seconds_left: null,
+      });
+
+    if (reopenS4ShiftError) {
+      throw new Error("Q4 s4 回到場上失敗：" + reopenS4ShiftError.message);
+    }
+  }
+
+  const homeScore = 16;
+  const awayScore = 11;
+
+  const { error: scoreUpdateError } = await supabase
+    .from("games")
+    .update({
+      home_score: homeScore,
+      away_score: awayScore,
+      current_quarter: 4,
+    })
+    .eq("id", gameId);
+
+  if (scoreUpdateError) {
+    throw new Error("更新測試比分失敗：" + scoreUpdateError.message);
+  }
+
+  // 幫四節都建立 game_clock
+  const clockRows = [
+    { game_id: gameId, quarter: 1, seconds_left: 120, is_running: false },
+    { game_id: gameId, quarter: 2, seconds_left: 180, is_running: false },
+    { game_id: gameId, quarter: 3, seconds_left: 240, is_running: false },
+    { game_id: gameId, quarter: 4, seconds_left: 90, is_running: false },
+  ];
+
+  const { error: clockUpsertError } = await supabase
+    .from("game_clock")
+    .upsert(clockRows, { onConflict: "game_id,quarter" });
+
+  if (clockUpsertError) {
+    throw new Error("更新四節時鐘失敗：" + clockUpsertError.message);
+  }
 }
+
+  async function createGameInternal(isTestGame: boolean) {
+    if (isTestGame) {
+      setTestLoading(true);
+    } else {
+      setLoading(true);
+    }
+
+    setError("");
+
+    try {
+      const { rosterIds, starterIds } = getSafeSelectionsForCreate(isTestGame);
+
+      if (!isTestGame) {
+        if (!gameDate) throw new Error("請選擇比賽日期");
+        if (!gameTime) throw new Error("請選擇比賽時間");
+        if (rosterIds.length < 5) throw new Error("登入名單至少要 5 人");
+        if (starterIds.length !== 5) throw new Error("請選滿先發五人");
+
+        const allStartersInRoster = starterIds.every((id) =>
+          rosterIds.includes(id)
+        );
+
+        if (!allStartersInRoster) {
+          throw new Error("先發五人必須都在登入名單內");
+        }
+      }
+
+      await closeOtherLiveGames();
+
+      const effectiveGameDate = isTestGame ? getTodayDateInputValue() : gameDate;
+      const effectiveGameTime = isTestGame ? getCurrentTimeInputValue() : gameTime;
+      const effectiveOpponent = isTestGame
+        ? "測試對手"
+        : opponent.trim() || "對手";
+      const effectiveLocation = isTestGame
+        ? "系統測試"
+        : location.trim() || null;
+      const effectiveQuarters = isTestGame ? 4 : quarters;
+
+      const game = await createBaseGameRecord({
+        opponentName: effectiveOpponent,
+        gameDateValue: effectiveGameDate,
+        gameTimeValue: effectiveGameTime,
+        locationValue: effectiveLocation,
+        quartersValue: effectiveQuarters,
+      });
+
+      await insertBaseRows({
+        gameId: game.id,
+        rosterIds,
+        starterIds,
+      });
+
+      if (isTestGame) {
+        await injectQuickTestScenario({
+          gameId: game.id,
+          rosterIds,
+          starterIds,
+        });
+      }
+
+      router.push(`/games/${game.id}/live`);
+    } catch (err: any) {
+      setError(err?.message || "發生未知錯誤");
+    } finally {
+      setLoading(false);
+      setTestLoading(false);
+    }
+  }
+
+  async function createGame() {
+    await createGameInternal(false);
+  }
+
+  async function createQuickTestGame() {
+    await createGameInternal(true);
+  }
 
   return (
     <div className="min-h-screen bg-neutral-950 p-6 text-white">
@@ -731,36 +1322,36 @@ export default function NewGamePage() {
           </div>
 
           <div style={{ marginBottom: 16 }}>
-  <div style={{ fontWeight: 800, marginBottom: 6 }}>比賽類型</div>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>比賽類型</div>
 
-  <div style={{ display: "flex", gap: 10 }}>
-    <button
-      onClick={() => setQuarters(4)}
-      style={{
-        padding: "8px 14px",
-        borderRadius: 12,
-        background: quarters === 4 ? "#f97316" : "#eee",
-        color: quarters === 4 ? "#fff" : "#333",
-        fontWeight: 800,
-      }}
-    >
-      正式賽（4節）
-    </button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setQuarters(4)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 12,
+                  background: quarters === 4 ? "#f97316" : "#eee",
+                  color: quarters === 4 ? "#fff" : "#333",
+                  fontWeight: 800,
+                }}
+              >
+                正式賽（4節）
+              </button>
 
-    <button
-      onClick={() => setQuarters(1)}
-      style={{
-        padding: "8px 14px",
-        borderRadius: 12,
-        background: quarters !== 4 ? "#f97316" : "#eee",
-        color: quarters !== 4 ? "#fff" : "#333",
-        fontWeight: 800,
-      }}
-    >
-      非正式（不計入數據）
-    </button>
-  </div>
-</div>
+              <button
+                onClick={() => setQuarters(1)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 12,
+                  background: quarters !== 4 ? "#f97316" : "#eee",
+                  color: quarters !== 4 ? "#fff" : "#333",
+                  fontWeight: 800,
+                }}
+              >
+                非正式（不計入數據）
+              </button>
+            </div>
+          </div>
 
           <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -804,6 +1395,13 @@ export default function NewGamePage() {
                   對手 {opponent.trim() ? "已填寫" : "未填"}
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-4">
+            <div className="text-sm font-semibold text-sky-300">建立測試比賽會做什麼</div>
+            <div className="mt-2 text-sm text-white/70 leading-7">
+              會自動建立一場非正式測試比賽       
             </div>
           </div>
         </div>
@@ -1111,13 +1709,23 @@ export default function NewGamePage() {
           )}
         </div>
 
-        <button
-          onClick={createGame}
-          disabled={loading || pageLoading || !readyToStart}
-          className="w-full rounded-2xl bg-green-600 px-6 py-4 text-lg font-bold disabled:opacity-60"
-        >
-          {loading ? "建立中..." : "建立比賽並進入主紀錄頁"}
-        </button>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <button
+            onClick={createGame}
+            disabled={loading || testLoading || pageLoading || !readyToStart}
+            className="w-full rounded-2xl bg-green-600 px-6 py-4 text-lg font-bold disabled:opacity-60"
+          >
+            {loading ? "建立中..." : "建立比賽並進入主紀錄頁"}
+          </button>
+
+          <button
+            onClick={createQuickTestGame}
+            disabled={loading || testLoading || pageLoading || players.length < 5}
+            className="w-full rounded-2xl bg-sky-600 px-6 py-4 text-lg font-bold disabled:opacity-60"
+          >
+            {testLoading ? "建立測試比賽中..." : "建立測試比賽"}
+          </button>
+        </div>
 
         {error && (
           <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-300">
