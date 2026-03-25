@@ -1597,7 +1597,10 @@ async function syncDerivedStatsSilently(currentGameId: string) {
       await loadEvents(game.id);
       await loadGamePlayers(game.id);
 
-      await finalizeGameStats(game.id);
+      await finalizeGameStats(game.id, {
+        recalcLineups: true,
+        silent: false,
+      });
 
       setGame((prev) =>
         prev

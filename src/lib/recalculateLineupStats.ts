@@ -460,37 +460,9 @@ export async function recalculateLineupStats(gameId: string) {
     })
     .filter((row) => row.seconds_played > 0 && row.player_ids.length > 0);
 
-  const pairRows = comboRows
-    .filter((row) => row.combo_size === 2)
-    .map((row) => ({
-      game_id: row.game_id,
-      combo_key: row.combo_key,
-      player_ids: row.player_ids,
-      player_names: row.player_names,
-      seconds_played: row.seconds_played,
-      est_possessions: row.est_possessions,
-      points_for: row.points_for,
-      points_against: row.points_against,
-      plus_minus: row.plus_minus,
-      off_rating: row.off_rating,
-      is_official: row.is_official,
-    }));
+  
 
-  const trioRows = comboRows
-    .filter((row) => row.combo_size === 3)
-    .map((row) => ({
-      game_id: row.game_id,
-      combo_key: row.combo_key,
-      player_ids: row.player_ids,
-      player_names: row.player_names,
-      seconds_played: row.seconds_played,
-      est_possessions: row.est_possessions,
-      points_for: row.points_for,
-      points_against: row.points_against,
-      plus_minus: row.plus_minus,
-      off_rating: row.off_rating,
-      is_official: row.is_official,
-    }));
+  
 
   const { error: deleteLineupError } = await supabase
     .from("lineup_stats")
@@ -510,23 +482,6 @@ export async function recalculateLineupStats(gameId: string) {
     throw new Error(deleteComboError.message);
   }
 
-  const { error: deletePairError } = await supabase
-    .from("lineup_pair_stats")
-    .delete()
-    .eq("game_id", gameId);
-
-  if (deletePairError) {
-    throw new Error(deletePairError.message);
-  }
-
-  const { error: deleteTrioError } = await supabase
-    .from("lineup_trio_stats")
-    .delete()
-    .eq("game_id", gameId);
-
-  if (deleteTrioError) {
-    throw new Error(deleteTrioError.message);
-  }
 
   if (lineupRows.length > 0) {
     const { error: insertLineupError } = await supabase
@@ -548,30 +503,12 @@ export async function recalculateLineupStats(gameId: string) {
     }
   }
 
-  if (pairRows.length > 0) {
-    const { error: insertPairError } = await supabase
-      .from("lineup_pair_stats")
-      .insert(pairRows);
+  
 
-    if (insertPairError) {
-      throw new Error(insertPairError.message);
-    }
-  }
-
-  if (trioRows.length > 0) {
-    const { error: insertTrioError } = await supabase
-      .from("lineup_trio_stats")
-      .insert(trioRows);
-
-    if (insertTrioError) {
-      throw new Error(insertTrioError.message);
-    }
-  }
+  
 
   return {
     lineupCount: lineupRows.length,
     comboCount: comboRows.length,
-    pairCount: pairRows.length,
-    trioCount: trioRows.length,
   };
 }
