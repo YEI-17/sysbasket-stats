@@ -103,6 +103,7 @@ type CollapseWindow = {
   quarter: number;
   startSec: number;
   endSec: number;
+  durationSec: number;
   startTime: string | null;
   endTime: string | null;
   ourPoints: number;
@@ -543,60 +544,6 @@ function getEventsInTimeRange(
   });
 }
 
-function mergeCollapseWindows(windows: CollapseWindow[]) {
-  if (!windows.length) return [];
-
-  const sorted = [...windows].sort((a, b) => {
-    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
-    const aStart = toMs(a.startTime) ?? 0;
-    const bStart = toMs(b.startTime) ?? 0;
-    return aStart - bStart;
-  });
-
-  const merged: CollapseWindow[] = [];
-
-  for (const current of sorted) {
-    const last = merged[merged.length - 1];
-    if (!last) {
-      merged.push(current);
-      continue;
-    }
-
-    const sameQuarter = last.quarter === current.quarter;
-    const sameLineup =
-      last.lineupNames.join("|") === current.lineupNames.join("|");
-    const touch =
-      (toMs(last.endTime) ?? 0) === (toMs(current.startTime) ?? -1);
-
-    if (sameQuarter && sameLineup && touch) {
-      last.endTime = current.endTime;
-      last.endSec = Math.min(last.endSec, current.endSec);
-      last.ourPoints += current.ourPoints;
-      last.oppPoints += current.oppPoints;
-      last.diff += current.diff;
-      last.ourTurnovers += current.ourTurnovers;
-      last.ourMisses += current.ourMisses;
-      last.eventCount += current.eventCount;
-
-      const reasonBits: string[] = [];
-      if (last.ourTurnovers > 0) reasonBits.push(`失誤 ${last.ourTurnovers} 次`);
-      if (last.ourMisses > 0) reasonBits.push(`打鐵 ${last.ourMisses} 次`);
-
-      last.summary =
-        reasonBits.length > 0
-          ? `${formatClock(last.startSec)} - ${formatClock(last.endSec)} 被打出 ${last.oppPoints} 比 ${last.ourPoints}，主因包含 ${reasonBits.join("、")}`
-          : `${formatClock(last.startSec)} - ${formatClock(last.endSec)} 被打出 ${last.oppPoints} 比 ${last.ourPoints}`;
-
-      if (last.diff <= -8) last.severity = "high";
-      else if (last.diff <= -4) last.severity = "medium";
-      else last.severity = "low";
-    } else {
-      merged.push(current);
-    }
-  }
-
-  return merged;
-}
 
 
 function buildCollapseWindows(
@@ -618,79 +565,153 @@ function buildCollapseWindows(
 
   const rawWindows: CollapseWindow[] = [];
 
+  // 可自行調整：想切更細可加 45、30
+  const windowSizes = [120, 90, 75, 60];
+  const stepSec = 15;
+
   for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
-    const stintWindows = getQuarterStintWindows(gameId, quarter, playerShifts, players);
+    const qDuration = quarterDuration(quarter);
 
-    for (const stint of stintWindows) {
-      const winEvents = getEventsInTimeRange(
-        cleanEvents,
-        quarter,
-        stint.startMs,
-        stint.endMs
-      );
+    for (const windowSize of windowSizes) {
+      for (
+        let startSec = qDuration;
+        startSec - windowSize >= 0;
+        startSec -= stepSec
+      ) {
+        const endSec = startSec - windowSize;
 
-      if (!winEvents.length) continue;
+        const winEvents = cleanEvents.filter((e) => {
+          if (e.is_undone) return false;
+          const q = typeof e.quarter === "number" ? e.quarter : 1;
+          if (q !== quarter) return false;
 
-      let ourPoints = 0;
-      let oppPoints = 0;
-      let ourTurnovers = 0;
-      let ourMisses = 0;
+          const sec =
+            typeof e.clock_seconds_left === "number"
+              ? e.clock_seconds_left
+              : null;
 
-      for (const ev of winEvents) {
-        const t = normalizeEventType(ev.event_type);
-        const pts = pointsFromType(t);
+          if (sec == null) return false;
 
-        if (isOurTeamEvent(ev.team_side)) {
-          if (pts > 0) ourPoints += pts;
-          if (t === "tov") ourTurnovers += 1;
-          if (["fg2_miss", "fg3_miss", "ft_miss"].includes(t)) ourMisses += 1;
-        } else {
-          if (pts > 0) oppPoints += pts;
+          // 例如 08:45 → 07:15，會抓 startSec >= sec > endSec
+          return sec <= startSec && sec > endSec;
+        });
+
+        if (!winEvents.length) continue;
+
+        let ourPoints = 0;
+        let oppPoints = 0;
+        let ourTurnovers = 0;
+        let ourMisses = 0;
+
+        for (const ev of winEvents) {
+          const t = normalizeEventType(ev.event_type);
+          const pts = pointsFromType(t);
+
+          if (isOurTeamEvent(ev.team_side)) {
+            if (pts > 0) ourPoints += pts;
+            if (t === "tov") ourTurnovers += 1;
+            if (["fg2_miss", "fg3_miss", "ft_miss"].includes(t)) ourMisses += 1;
+          } else {
+            if (pts > 0) oppPoints += pts;
+          }
         }
+
+        const diff = ourPoints - oppPoints;
+
+        // 崩盤條件：你可以再調
+        const isCollapse =
+          diff <= -4 &&
+          (
+            oppPoints >= 6 ||
+            ourTurnovers >= 1 ||
+            (ourPoints === 0 && oppPoints >= 4)
+          );
+
+        if (!isCollapse) continue;
+
+        let severity: "high" | "medium" | "low" = "low";
+        if (diff <= -8) severity = "high";
+        else if (diff <= -6) severity = "medium";
+        else severity = "low";
+
+        const lineupNames = getLineupNamesFromShiftsForWindow(
+          gameId,
+          quarter,
+          startSec,
+          endSec,
+          playerShifts,
+          getPlayerMap(players)
+        );
+
+        const reasonBits: string[] = [];
+        if (ourTurnovers > 0) reasonBits.push(`失誤 ${ourTurnovers} 次`);
+        if (ourMisses > 0) reasonBits.push(`打鐵 ${ourMisses} 次`);
+        if (ourPoints === 0 && oppPoints >= 4) reasonBits.push("這段沒有得分");
+
+        const summary =
+          reasonBits.length > 0
+            ? `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}，主因包含 ${reasonBits.join("、")}`
+            : `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}`;
+
+        rawWindows.push({
+          quarter,
+          startSec,
+          endSec,
+          durationSec: startSec - endSec,
+          startTime: null,
+          endTime: null,
+          ourPoints,
+          oppPoints,
+          diff,
+          ourTurnovers,
+          ourMisses,
+          eventCount: winEvents.length,
+          lineupNames,
+          summary,
+          severity,
+        });
       }
-
-      const diff = ourPoints - oppPoints;
-      if (diff >= 0) continue;
-
-      let severity: "high" | "medium" | "low" = "low";
-      if (diff <= -8) severity = "high";
-      else if (diff <= -4) severity = "medium";
-
-      const reasonBits: string[] = [];
-      if (ourTurnovers > 0) reasonBits.push(`失誤 ${ourTurnovers} 次`);
-      if (ourMisses > 0) reasonBits.push(`打鐵 ${ourMisses} 次`);
-
-      const summary =
-        reasonBits.length > 0
-          ? `${formatClock(stint.startSec)} - ${formatClock(stint.endSec)} 被打出 ${oppPoints} 比 ${ourPoints}，主因包含 ${reasonBits.join("、")}`
-          : `${formatClock(stint.startSec)} - ${formatClock(stint.endSec)} 被打出 ${oppPoints} 比 ${ourPoints}`;
-
-      rawWindows.push({
-        quarter,
-        startSec: stint.startSec,
-        endSec: stint.endSec,
-        startTime: new Date(stint.startMs).toISOString(),
-        endTime: new Date(stint.endMs).toISOString(),
-        ourPoints,
-        oppPoints,
-        diff,
-        ourTurnovers,
-        ourMisses,
-        eventCount: winEvents.length,
-        lineupNames: stint.lineupNames,
-        summary,
-        severity,
-      });
     }
   }
 
-  return mergeCollapseWindows(rawWindows)
+  // 去重：避免很多高度重疊視窗都被留下
+  const deduped: CollapseWindow[] = [];
+
+  const sorted = rawWindows.sort((a, b) => {
+    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
+    if (a.diff !== b.diff) return a.diff - b.diff; // 更負的優先
+    if (a.oppPoints !== b.oppPoints) return b.oppPoints - a.oppPoints;
+    return a.startSec - b.startSec;
+  });
+
+  for (const curr of sorted) {
+    const hasHeavyOverlap = deduped.some((prev) => {
+      if (prev.quarter !== curr.quarter) return false;
+
+      const overlap =
+        Math.max(0, Math.min(prev.startSec, curr.startSec) - Math.max(prev.endSec, curr.endSec));
+
+      const smaller = Math.min(
+        prev.startSec - prev.endSec,
+        curr.startSec - curr.endSec
+      );
+
+      return smaller > 0 && overlap / smaller >= 0.7;
+    });
+
+    if (!hasHeavyOverlap) {
+      deduped.push(curr);
+    }
+  }
+
+  return deduped
     .sort((a, b) => {
       if (a.diff !== b.diff) return a.diff - b.diff;
-      if (a.eventCount !== b.eventCount) return b.eventCount - a.eventCount;
-      return (toMs(a.startTime) ?? 0) - (toMs(b.startTime) ?? 0);
+      if (a.oppPoints !== b.oppPoints) return b.oppPoints - a.oppPoints;
+      if (a.quarter !== b.quarter) return a.quarter - b.quarter;
+      return b.startSec - a.startSec;
     })
-    .slice(0, 3);
+    .slice(0, 10); // 這裡改成你想顯示的數量，例如 6 / 8 / 10
 }
 
 function starterNamesForGame(
@@ -1234,7 +1255,7 @@ export default function PostgameOverviewPage() {
                                   <div className="meta-pill">打鐵 {item.ourMisses}</div>
                                   <div className="meta-pill">事件 {item.eventCount}</div>
                                 </div>
-
+                                    <div className="meta-pill">區間 {Math.floor(item.durationSec / 60)}分{String(item.durationSec % 60).padStart(2, "0")}秒</div>
                                 <div className="collapse-summary">{item.summary}</div>
 
                                 <div className="lineup-block">
