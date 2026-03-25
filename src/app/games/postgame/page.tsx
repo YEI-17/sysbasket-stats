@@ -69,6 +69,18 @@ type GamePlayerRow = {
   team_side?: string | null;
 };
 
+type PlayerShiftRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  team_side: string;
+  quarter: number;
+  in_seconds_left: number;
+  out_seconds_left?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 type ComputedTeamMetrics = {
   points: number;
   possessions: number;
@@ -86,12 +98,6 @@ type ComputedTeamMetrics = {
   shotMix3: number;
 };
 
-type RotationSegment = {
-  quarter: number;
-  startSec: number;
-  endSec: number;
-  playerIds: string[];
-};
 
 type CollapseWindow = {
   quarter: number;
@@ -206,6 +212,11 @@ function isOurTeamEvent(teamSide?: string | null) {
   if (["teama", "a", "our", "self", "home"].includes(side)) return true;
   if (["teamb", "b", "opponent", "away"].includes(side)) return false;
   return true;
+}
+
+function isOurTeamSide(teamSide?: string | null) {
+  const side = (teamSide ?? "").trim().toLowerCase();
+  return ["teama", "a", "our", "self", "home"].includes(side);
 }
 
 function pointsFromType(eventType: string) {
@@ -347,113 +358,53 @@ function sortEventsForGameFlow(events: EventRow[]) {
   });
 }
 
-function buildRotationSegments(
+function getLineupNamesFromShiftsForWindow(
   gameId: string,
-  events: EventRow[],
-  gamePlayers: GamePlayerRow[]
-): RotationSegment[] {
-  const starterIds = getStarterIdsForGame(gameId, gamePlayers);
-  const subEvents = sortEventsForGameFlow(
-    events.filter((e) => {
-      const t = normalizeEventType(e.event_type);
-      return !e.is_undone && isOurTeamEvent(e.team_side) && (t === "sub_in" || t === "sub_out");
-    })
-  );
-
-  const maxQuarterFromEvents =
-    Math.max(
-      1,
-      ...events.map((e) => (typeof e.quarter === "number" ? e.quarter : 1))
-    ) || 4;
-
-  let currentQuarter = 1;
-  let currentSec = quarterDuration(1);
-  const lineup = new Set<string>(starterIds);
-  const segments: RotationSegment[] = [];
-
-  const pushSegment = (quarter: number, startSec: number, endSec: number) => {
-    if (startSec <= endSec) return;
-    segments.push({
-      quarter,
-      startSec,
-      endSec,
-      playerIds: Array.from(lineup),
-    });
-  };
-
-  for (const ev of subEvents) {
-    const q = typeof ev.quarter === "number" ? ev.quarter : currentQuarter;
-    const sec =
-      typeof ev.clock_seconds_left === "number"
-        ? ev.clock_seconds_left
-        : currentSec;
-
-    while (currentQuarter < q) {
-      pushSegment(currentQuarter, currentSec, 0);
-      currentQuarter += 1;
-      currentSec = quarterDuration(currentQuarter);
-    }
-
-    pushSegment(currentQuarter, currentSec, sec);
-
-    const t = normalizeEventType(ev.event_type);
-    if (ev.player_id) {
-      if (t === "sub_in") lineup.add(ev.player_id);
-      if (t === "sub_out") lineup.delete(ev.player_id);
-    }
-
-    currentSec = sec;
-  }
-
-  while (currentQuarter <= maxQuarterFromEvents) {
-    pushSegment(currentQuarter, currentSec, 0);
-    currentQuarter += 1;
-    currentSec = quarterDuration(currentQuarter);
-  }
-
-  return segments;
-}
-
-function overlapLength(aStart: number, aEnd: number, bStart: number, bEnd: number) {
-  const start = Math.min(aStart, bStart);
-  const end = Math.max(aEnd, bEnd);
-  const top = Math.max(aEnd, bEnd);
-  const bottom = Math.min(aStart, bStart);
-  return Math.max(0, bottom - top + (start === bottom && end === top ? 0 : 0));
-}
-
-function getDominantLineupForWindow(
   quarter: number,
   startSec: number,
   endSec: number,
-  segments: RotationSegment[],
+  playerShifts: PlayerShiftRow[],
   playerMap: Map<string, PlayerRow>
 ) {
-  const quarterSegments = segments.filter((s) => s.quarter === quarter);
-  if (!quarterSegments.length) return [];
+  const relevant = playerShifts.filter((shift) => {
+    if (shift.game_id !== gameId) return false;
+    if (!isOurTeamSide(shift.team_side)) return false;
+    if (shift.quarter !== quarter) return false;
 
-  let best: RotationSegment | null = null;
-  let bestOverlap = -1;
+    const shiftStart = shift.in_seconds_left;
+    const shiftEnd =
+      typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
 
-  for (const seg of quarterSegments) {
-    const overlap =
-      Math.max(
-        0,
-        Math.min(seg.startSec, startSec) - Math.max(seg.endSec, endSec)
-      );
+    // 有重疊就算
+    return Math.min(shiftStart, startSec) > Math.max(shiftEnd, endSec);
+  });
 
-    if (overlap > bestOverlap) {
-      bestOverlap = overlap;
-      best = seg;
-    }
+  const playerOverlapMap = new Map<string, number>();
+
+  for (const shift of relevant) {
+    const shiftStart = shift.in_seconds_left;
+    const shiftEnd =
+      typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
+
+    const overlap = Math.max(
+      0,
+      Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec)
+    );
+
+    if (overlap <= 0) continue;
+
+    playerOverlapMap.set(
+      shift.player_id,
+      (playerOverlapMap.get(shift.player_id) ?? 0) + overlap
+    );
   }
 
-  if (!best) return [];
-
-  return best.playerIds
-    .map((id) => playerLabel(playerMap.get(id)))
-    .slice(0, 5);
+  return Array.from(playerOverlapMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([playerId]) => playerLabel(playerMap.get(playerId)));
 }
+
 
 function eventsInWindow(
   events: EventRow[],
@@ -480,12 +431,12 @@ function eventsInWindow(
 function buildCollapseWindows(
   events: EventRow[],
   gameId: string,
-  gamePlayers: GamePlayerRow[],
+  playerShifts: PlayerShiftRow[],
   players: PlayerRow[]
 ): CollapseWindow[] {
   const cleanEvents = events.filter((e) => !e.is_undone);
   const playerMap = getPlayerMap(players);
-  const segments = buildRotationSegments(gameId, cleanEvents, gamePlayers);
+
   const maxQuarter =
     Math.max(
       1,
@@ -524,14 +475,14 @@ function buildCollapseWindows(
       }
 
       const diff = ourPoints - oppPoints;
-
       if (diff >= 0) continue;
 
-      const lineupNames = getDominantLineupForWindow(
+      const lineupNames = getLineupNamesFromShiftsForWindow(
+        gameId,
         quarter,
         startSec,
         endSec,
-        segments,
+        playerShifts,
         playerMap
       );
 
@@ -592,6 +543,7 @@ export default function PostgameOverviewPage() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<GamePlayerRow[]>([]);
+  const [playerShifts, setPlayerShifts] = useState<PlayerShiftRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
   const [selectedGameId, setSelectedGameId] = useState<string>("");
@@ -607,6 +559,7 @@ export default function PostgameOverviewPage() {
       eventsRes,
       playersRes,
       gamePlayersRes,
+      playerShiftsRes,
     ] = await Promise.all([
       supabase
         .from("games")
@@ -638,6 +591,12 @@ export default function PostgameOverviewPage() {
       supabase
         .from("game_players")
         .select("game_id, player_id, is_starter, team_side"),
+
+        supabase
+            .from("player_shifts")
+            .select(
+                 "id, game_id, player_id, team_side, quarter, in_seconds_left, out_seconds_left, created_at, updated_at"
+                 ),
     ]);
 
     if (gamesRes.error) {
@@ -647,18 +606,21 @@ export default function PostgameOverviewPage() {
       return;
     }
 
+    if (playerShiftsRes.error) console.error(playerShiftsRes.error);
     if (teamStatsRes.error) console.error(teamStatsRes.error);
     if (insightsRes.error) console.error(insightsRes.error);
     if (eventsRes.error) console.error(eventsRes.error);
     if (playersRes.error) console.error(playersRes.error);
     if (gamePlayersRes.error) console.error(gamePlayersRes.error);
 
+    
     setGames((gamesRes.data as GameRow[]) || []);
     setTeamGameStats((teamStatsRes.data as TeamGameStatsRow[]) || []);
     setInsights((insightsRes.data as InsightRow[]) || []);
     setEvents((eventsRes.data as EventRow[]) || []);
     setPlayers((playersRes.data as PlayerRow[]) || []);
     setGamePlayers((gamePlayersRes.data as GamePlayerRow[]) || []);
+    setPlayerShifts((playerShiftsRes.data as PlayerShiftRow[]) || []);
     setLoading(false);
   }, []);
 
@@ -709,14 +671,14 @@ export default function PostgameOverviewPage() {
   }, [selectedEvents]);
 
   const collapseWindows = useMemo(() => {
-    if (!selectedGame) return [];
-    return buildCollapseWindows(
-      selectedEvents,
-      selectedGame.id,
-      gamePlayers,
-      players
-    );
-  }, [selectedEvents, selectedGame, gamePlayers, players]);
+  if (!selectedGame) return [];
+  return buildCollapseWindows(
+    selectedEvents,
+    selectedGame.id,
+    playerShifts,
+    players
+  );
+}, [selectedEvents, selectedGame, playerShifts, players]);
 
   const starters = useMemo(() => {
     if (!selectedGame) return [];
