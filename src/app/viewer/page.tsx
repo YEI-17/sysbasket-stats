@@ -81,6 +81,22 @@ type EventRow = {
   created_at?: string | null;
 };
 
+type LineupStatsRow = {
+  id?: string;
+  game_id: string;
+  lineup_key?: string | null;
+  player_ids?: string[] | null;
+  player_names?: string[] | null;
+  appearances?: number | null;
+  seconds_played?: number | null;
+  plus_minus?: number | null;
+  possessions?: number | null;
+  points_for?: number | null;
+  points_against?: number | null;
+  off_rating?: number | null;
+  is_official?: boolean | null;
+};
+
 type PlayerCard = {
   id: string;
   name: string;
@@ -110,6 +126,16 @@ type ComputedTeamMetrics = {
   fta: number;
   shotMix2: number;
   shotMix3: number;
+};
+
+type SwingWindow = {
+  quarter: number;
+  startIndex: number;
+  endIndex: number;
+  ourPoints: number;
+  oppPoints: number;
+  diff: number;
+  summary: string;
 };
 
 function normalizeStatus(status?: string | null) {
@@ -159,12 +185,6 @@ function getGameTypeLabel(game?: GameRow | null) {
   if (game.game_category === "friendly") return "友誼賽";
   if (game.game_category === "scrimmage") return "對抗賽";
   return "正式賽";
-}
-
-function getArrow(diff: number) {
-  if (diff > 0.01) return "↑";
-  if (diff < -0.01) return "↓";
-  return "—";
 }
 
 function avg(values: number[]) {
@@ -292,6 +312,27 @@ function calcMetricsFromEvents(events: EventRow[]): ComputedTeamMetrics {
   };
 }
 
+function formatMinutes(seconds?: number | null) {
+  const sec = Math.max(0, Math.floor(safeNumber(seconds)));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function shortNames(names?: string[] | null) {
+  if (!names || !names.length) return "尚無陣容資料";
+  return names.map((n) => `#${n}`).join(" / ");
+}
+
+function getGoalTone(current: number, target: number, higherIsBetter = true) {
+  if (higherIsBetter) {
+    if (current >= target) return "延續";
+    return "提升";
+  }
+  if (current <= target) return "維持";
+  return "壓低";
+}
+
 export default function ViewerGamesPage() {
   const router = useRouter();
 
@@ -303,6 +344,7 @@ export default function ViewerGamesPage() {
   const [teamGameStats, setTeamGameStats] = useState<TeamGameStatsRow[]>([]);
   const [insights, setInsights] = useState<InsightRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [lineupStats, setLineupStats] = useState<LineupStatsRow[]>([]);
   const [gamePlayers, setGamePlayers] = useState<
     { game_id: string; player_id: string; is_starter?: boolean | null }[]
   >([]);
@@ -321,6 +363,7 @@ export default function ViewerGamesPage() {
       insightsRes,
       eventsRes,
       gamePlayersRes,
+      lineupStatsRes,
     ] = await Promise.all([
       supabase
         .from("games")
@@ -356,9 +399,15 @@ export default function ViewerGamesPage() {
 
       supabase
         .from("events")
-        .select("id, game_id, player_id, event_type, team_side, is_undone, created_at"),
+        .select("id, game_id, player_id, event_type, team_side, is_undone, created_at, quarter")
 
       supabase.from("game_players").select("game_id, player_id, is_starter"),
+
+      supabase
+        .from("lineup_stats")
+        .select(
+          "id, game_id, lineup_key, player_ids, player_names, appearances, seconds_played, plus_minus, possessions, points_for, points_against, off_rating, is_official"
+        ),
     ]);
 
     if (gamesRes.error) {
@@ -374,6 +423,7 @@ export default function ViewerGamesPage() {
     if (insightsRes.error) console.error(insightsRes.error);
     if (eventsRes.error) console.error(eventsRes.error);
     if (gamePlayersRes.error) console.error(gamePlayersRes.error);
+    if (lineupStatsRes.error) console.error(lineupStatsRes.error);
 
     setGames((gamesRes.data as GameRow[]) || []);
     setPlayers((playersRes.data as PlayerRow[]) || []);
@@ -388,6 +438,7 @@ export default function ViewerGamesPage() {
         is_starter?: boolean | null;
       }[]) || []
     );
+    setLineupStats((lineupStatsRes.data as LineupStatsRow[]) || []);
     setLoading(false);
   }, []);
 
@@ -496,27 +547,15 @@ export default function ViewerGamesPage() {
     return map;
   }, [finishedGames, events]);
 
-  const recentFiveStats = useMemo(() => {
-    return finishedGames
-      .slice(0, 5)
-      .map((game) => ({
-        game,
-        stats: teamGameStats.find((row) => row.game_id === game.id) || null,
-        computed: computedByGame.get(game.id) || null,
-      }))
-      .filter(
-        (
-          item
-        ): item is {
-          game: GameRow;
-          stats: TeamGameStatsRow | null;
-          computed: ComputedTeamMetrics | null;
-        } => true
-      );
-  }, [finishedGames, teamGameStats, computedByGame]);
+  const recentGames = useMemo(() => finishedGames.slice(0, 5), [finishedGames]);
 
-  const recentThreeStats = recentFiveStats.slice(0, 3);
-  const previousThreeStats = recentFiveStats.slice(3, 6);
+  const recentThreeStats = useMemo(() => {
+    return recentGames.slice(0, 3).map((game) => ({
+      game,
+      stats: teamGameStats.find((row) => row.game_id === game.id) || null,
+      computed: computedByGame.get(game.id) || null,
+    }));
+  }, [recentGames, teamGameStats, computedByGame]);
 
   const latestComputed = useMemo(() => {
     if (!latestGame) return null;
@@ -538,51 +577,6 @@ export default function ViewerGamesPage() {
 
     return `${win}勝${lose}敗`;
   }, [recentThreeStats]);
-
-  const trendCards = useMemo(() => {
-    function calcPack(
-      items: {
-        game: GameRow;
-        stats: TeamGameStatsRow | null;
-        computed: ComputedTeamMetrics | null;
-      }[]
-    ) {
-      const off = avg(items.map((x) => safeNumber(x.computed?.offRating)));
-      const tov = avg(items.map((x) => safeNumber(x.computed?.turnoverRate)));
-      const empty = avg(items.map((x) => safeNumber(x.computed?.emptyRate)));
-      const ppp = avg(items.map((x) => safeNumber(x.computed?.ppp)));
-
-      return { off, tov, empty, ppp };
-    }
-
-    const recent = calcPack(recentThreeStats);
-    const prev = calcPack(previousThreeStats);
-
-    return [
-      {
-        label: "進攻效率",
-        value: round1(recent.off),
-        diff: round1(recent.off - prev.off),
-      },
-      {
-        label: "失誤率",
-        value: round1(recent.tov),
-        diff: round1(recent.tov - prev.tov),
-        suffix: "%",
-      },
-      {
-        label: "空回合率",
-        value: round1(recent.empty),
-        diff: round1(recent.empty - prev.empty),
-        suffix: "%",
-      },
-      {
-        label: "每回合得分",
-        value: round1(recent.ppp),
-        diff: round1(recent.ppp - prev.ppp),
-      },
-    ];
-  }, [recentThreeStats, previousThreeStats]);
 
   const latestPlayers = useMemo<PlayerCard[]>(() => {
     if (!latestGame) return [];
@@ -628,114 +622,243 @@ export default function ViewerGamesPage() {
           ),
         };
       })
-      .sort((a, b) => b.plusMinus - a.plusMinus)
-      .slice(0, 3);
+      .sort((a, b) => b.plusMinus - a.plusMinus);
   }, [latestGame, playerGameStats, players]);
 
-  const rotationSummary = useMemo(() => {
-    if (!latestGame) {
-      return {
-        starters: 0,
-        bench: 0,
-        topName: "—",
-        topValue: 0,
-      };
-    }
+  const bestPlayer = useMemo(() => latestPlayers[0] || null, [latestPlayers]);
 
-    const starterIds = new Set(
-      gamePlayers
-        .filter((gp) => gp.game_id === latestGame.id && gp.is_starter)
-        .map((gp) => gp.player_id)
-    );
+  const bestLineup = useMemo(() => {
+    if (!latestGame) return null;
 
-    const currentStats = playerGameStats.filter(
-      (row) => row.game_id === latestGame.id
-    );
+    const rows = lineupStats
+      .filter((row) => row.game_id === latestGame.id)
+      .sort((a, b) => {
+        const pmDiff = safeNumber(b.plus_minus) - safeNumber(a.plus_minus);
+        if (pmDiff !== 0) return pmDiff;
+        return safeNumber(b.seconds_played) - safeNumber(a.seconds_played);
+      });
 
-    const starterRows = currentStats.filter((row) =>
-      starterIds.has(row.player_id)
-    );
-    const benchRows = currentStats.filter(
-      (row) => !starterIds.has(row.player_id)
-    );
+    const picked =
+      rows.find((row) => safeNumber(row.seconds_played) >= 120) || rows[0] || null;
 
-    const starterAvg = starterRows.length
-      ? avg(starterRows.map((row) => safeNumber(row.plus_minus)))
-      : 0;
+    if (!picked) return null;
 
-    const benchAvg = benchRows.length
-      ? avg(benchRows.map((row) => safeNumber(row.plus_minus)))
-      : 0;
+    const plus = safeNumber(picked.plus_minus);
+    const pf = safeNumber(picked.points_for);
+    const pa = safeNumber(picked.points_against);
+    const secs = safeNumber(picked.seconds_played);
+    const poss = safeNumber(picked.possessions);
+    const off = safeNumber(picked.off_rating);
 
-    const best = currentStats
-      .map((row) => {
-        const player = players.find((p) => p.id === row.player_id);
-        return {
-          name: player?.name || "—",
-          value: safeNumber(row.plus_minus),
-        };
-      })
-      .sort((a, b) => b.value - a.value)[0];
+    let summary = "整體表現穩定";
+    if (plus >= 10) summary = "這組陣容明顯拉開比賽";
+    else if (plus >= 5) summary = "這組陣容攻守效率最好";
+    else if (off >= 100) summary = "這組陣容進攻品質不錯";
+    else if (pf > pa) summary = "這組陣容整體略佔優勢";
 
     return {
-      starters: round1(starterAvg),
-      bench: round1(benchAvg),
-      topName: best?.name || "—",
-      topValue: best?.value || 0,
+      names: picked.player_names || [],
+      plusMinus: plus,
+      secondsPlayed: secs,
+      pointsFor: pf,
+      pointsAgainst: pa,
+      possessions: poss,
+      offRating: off,
+      summary,
     };
-  }, [latestGame, gamePlayers, playerGameStats, players]);
+  }, [latestGame, lineupStats]);
 
-  const generatedInsight = useMemo(() => {
-    if (!latestComputed) {
-      return {
-        problems: ["—", "—", "—"],
-        positives: ["—", "—", "—"],
-        focuses: ["—", "—", "—"],
-      };
+  const nextGameGoals = useMemo(() => {
+    const current3ptPct =
+      latestComputed && latestComputed.fg3a > 0
+        ? round1((latestComputed.fg3m / latestComputed.fg3a) * 100)
+        : 0;
+
+    const currentTov =
+      latestComputed && latestComputed.possessions > 0
+        ? round1((latestComputed.turnoverRate / 100) * latestComputed.possessions)
+        : 0;
+
+    const currentFta = safeNumber(latestComputed?.fta);
+    const currentOff = safeNumber(latestComputed?.offRating);
+
+    const target3ptPct = current3ptPct >= 32 ? current3ptPct : 32;
+    const targetTov = currentTov <= 10 && currentTov > 0 ? Math.floor(currentTov) : 10;
+    const targetFta = currentFta >= 8 ? currentFta : 8;
+    const targetOff = currentOff >= 95 ? round1(currentOff) : 95;
+
+    return [
+      {
+        title: "三分球命中率",
+        current: `${current3ptPct}%`,
+        target: `${target3ptPct}%`,
+        tone: getGoalTone(current3ptPct, target3ptPct, true),
+      },
+      {
+        title: "失誤次數",
+        current: `${round1(currentTov)}次`,
+        target: `${targetTov}次以下`,
+        tone: getGoalTone(currentTov, targetTov, false),
+      },
+      {
+        title: "罰球出手",
+        current: `${currentFta}次`,
+        target: `${targetFta}次以上`,
+        tone: getGoalTone(currentFta, targetFta, true),
+      },
+      {
+        title: "進攻效率",
+        current: `${round1(currentOff)}`,
+        target: `${targetOff}`,
+        tone: getGoalTone(currentOff, targetOff, true),
+      },
+    ];
+  }, [latestComputed]);
+
+  const postgameReport = useMemo(() => {
+    if (!latestGame || !latestComputed) {
+      return [
+        "目前尚無可生成的賽後報告。",
+        "完成一場正式比賽後，系統會自動整理重點。",
+        "首頁會優先顯示對下一場有幫助的資訊。",
+      ];
     }
 
-    const problems: string[] = [];
-    const positives: string[] = [];
-    const focuses: string[] = [];
+    const ourPts = safeNumber(latestTeamStats?.pts ?? latestComputed.points);
+    const oppPts = safeNumber(latestTeamStats?.opp_pts);
+    const result =
+      ourPts > oppPts ? "拿下勝利" : ourPts < oppPts ? "以些微差距落敗" : "與對手戰平";
+
+    const line1 = `${getMatchName(latestGame)} 本場 ${ourPts} 比 ${oppPts}，${result}。`;
+
+    let line2 = "整體表現平衡。";
+    if (latestComputed.turnoverRate >= 18) {
+      line2 = `失誤率 ${latestComputed.turnoverRate}% 偏高，影響進攻穩定度。`;
+    } else if (latestComputed.offRating >= 100) {
+      line2 = `進攻效率 ${latestComputed.offRating} 表現不錯，整體進攻品質穩定。`;
+    } else if (latestComputed.shotMix2 >= 60) {
+      line2 = `二分出手占比 ${latestComputed.shotMix2}% ，進攻重心有往籃下集中。`;
+    } else {
+      line2 = `本場進攻效率 ${latestComputed.offRating}，還有提升空間。`;
+    }
+
+    let line3 = "下一場建議延續穩定回合，持續提升終結品質。";
+    if (bestLineup) {
+      line3 = `最佳陣容為 ${shortNames(bestLineup.names)}，可作為下一場優先延續的主軸。`;
+    } else if (latestComputed.fg3a > 0) {
+      line3 = "下一場可聚焦外線選擇與失誤控制，提升整體節奏。";
+    }
+
+    if (latestInsight?.summary?.trim()) {
+      return [latestInsight.summary.trim(), line2, line3];
+    }
+
+    return [line1, line2, line3];
+  }, [latestGame, latestTeamStats, latestComputed, bestLineup, latestInsight]);
+
+  const gameAnalysis = useMemo(() => {
+    if (!latestGame || !latestComputed) {
+      return [
+        "尚無單場分析資料。",
+        "完成比賽後會顯示本場的節奏與表現重點。",
+        "這裡會優先放與下一場調整有關的資訊。",
+      ];
+    }
+
+    const items: string[] = [];
+
+    if (bestLineup) {
+      items.push(
+        `最佳陣容 ${shortNames(bestLineup.names)}，正負值 ${
+          bestLineup.plusMinus >= 0 ? "+" : ""
+        }${bestLineup.plusMinus}。`
+      );
+    }
 
     if (latestComputed.turnoverRate >= 18) {
-      problems.push(`失誤率 ${latestComputed.turnoverRate}% 偏高`);
-      focuses.push("降低失誤回合，先穩定處理球");
+      items.push(`本場失誤率 ${latestComputed.turnoverRate}% ，需優先壓低。`);
     } else {
-      positives.push(`失誤率 ${latestComputed.turnoverRate}% 控制不錯`);
+      items.push(`本場失誤率 ${latestComputed.turnoverRate}% ，控球穩定度尚可。`);
     }
 
-    if (latestComputed.emptyRate >= 55) {
-      problems.push(`空回合率 ${latestComputed.emptyRate}% 偏高`);
-      focuses.push("增加穩定得分回合，避免連續空回合");
+    if (latestComputed.shotMix2 >= 60) {
+      items.push(`二分出手占比 ${latestComputed.shotMix2}% ，進攻有往高命中區域集中。`);
+    } else if (latestComputed.shotMix3 >= 38) {
+      items.push(`三分出手占比 ${latestComputed.shotMix3}% ，需留意外線選擇品質。`);
     } else {
-      positives.push(`空回合率 ${latestComputed.emptyRate}% 相對穩定`);
+      items.push(`外線出手比例適中，整體結構相對平均。`);
     }
 
-    if (latestComputed.offRating >= 100) {
-      positives.push(`進攻效率 ${latestComputed.offRating} 表現不錯`);
-    } else {
-      problems.push(`進攻效率 ${latestComputed.offRating} 偏低`);
-      focuses.push("提升每波進攻品質，增加有效終結");
+    return items.slice(0, 3);
+  }, [latestGame, latestComputed, bestLineup]);
+
+  const swingMoments = useMemo(() => {
+    if (!latestGame) return [];
+
+    const gameEvents = events
+      .filter((e) => e.game_id === latestGame.id && !e.is_undone)
+      .sort((a, b) => {
+        const ta = new Date(a.created_at || 0).getTime();
+        const tb = new Date(b.created_at || 0).getTime();
+        return ta - tb;
+      });
+
+    const byQuarter = new Map<number, EventRow[]>();
+    for (const e of gameEvents) {
+      const quarter = (() => {
+        const raw = (e as EventRow & { quarter?: number }).quarter;
+        return typeof raw === "number" ? raw : 1;
+      })();
+      if (!byQuarter.has(quarter)) byQuarter.set(quarter, []);
+      byQuarter.get(quarter)!.push(e);
     }
 
-    if (latestComputed.shotMix3 >= 45) {
-      problems.push(`三分出手占比 ${latestComputed.shotMix3}% 偏高`);
-      focuses.push("減少勉強外線，增加禁區與中近距離終結");
-    } else if (latestComputed.shotMix2 >= 60) {
-      positives.push(`二分出手占比 ${latestComputed.shotMix2}%，進攻較往籃下`);
+    const windows: SwingWindow[] = [];
+
+    function pointsFromType(eventType: string) {
+      const t = normalizeEventType(eventType);
+      if (t === "fg2_make") return 2;
+      if (t === "fg3_make") return 3;
+      if (t === "ft_make") return 1;
+      return 0;
     }
 
-    while (problems.length < 3) problems.push("—");
-    while (positives.length < 3) positives.push("—");
-    while (focuses.length < 3) focuses.push("—");
+    byQuarter.forEach((quarterEvents, quarter) => {
+      if (!quarterEvents.length) return;
 
-    return {
-      problems: problems.slice(0, 3),
-      positives: positives.slice(0, 3),
-      focuses: focuses.slice(0, 3),
-    };
-  }, [latestComputed]);
+      const size = Math.min(8, quarterEvents.length);
+
+      for (let i = 0; i <= quarterEvents.length - size; i += 1) {
+        let our = 0;
+        let opp = 0;
+
+        for (let j = i; j < i + size; j += 1) {
+          const p = pointsFromType(quarterEvents[j].event_type);
+          if (!p) continue;
+          if (isOurTeamEvent(quarterEvents[j].team_side)) our += p;
+          else opp += p;
+        }
+
+        const diff = our - opp;
+        windows.push({
+          quarter,
+          startIndex: i + 1,
+          endIndex: i + size,
+          ourPoints: our,
+          oppPoints: opp,
+          diff,
+          summary:
+            diff >= 0
+              ? `第${quarter}節這段時間我方打出 ${our} 比 ${opp}`
+              : `第${quarter}節這段時間對手打出 ${opp} 比 ${our}`,
+        });
+      }
+    });
+
+    return windows
+      .sort((a, b) => a.diff - b.diff)
+      .slice(0, 2);
+  }, [latestGame, events]);
 
   function handleOpenMatches() {
     router.push("/games/list");
@@ -753,9 +876,9 @@ export default function ViewerGamesPage() {
     router.push("/games/rank");
   }
 
-function handleOpenLineups() {
-  router.push("/games/lineups");
-}
+  function handleOpenLineups() {
+    router.push("/games/lineups");
+  }
 
   return (
     <main className="page">
@@ -808,9 +931,9 @@ function handleOpenLineups() {
               </div>
             </div>
             <div className="big-stat">
-              <div className="big-stat-title">空回合率</div>
-              <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.emptyRate))))}%
+              <div className="big-stat-title">最佳球員</div>
+              <div className="big-stat-value small">
+                {bestPlayer ? `#${bestPlayer.number ?? "-"} ${bestPlayer.name}` : "—"}
               </div>
             </div>
           </div>
@@ -821,132 +944,111 @@ function handleOpenLineups() {
 
         {!loading && !msg && (
           <>
-            <section className="triple-grid">
-              <div className="section-card">
-                <h2>問題</h2>
-                <div className="bullet-list">
-                  <div>{latestInsight?.key_problem_1 || generatedInsight.problems[0]}</div>
-                  <div>{latestInsight?.key_problem_2 || generatedInsight.problems[1]}</div>
-                  <div>{latestInsight?.key_problem_3 || generatedInsight.problems[2]}</div>
+            <section className="main-grid">
+              <div className="feature-card">
+                <div className="card-kicker">NEXT GAME</div>
+                <h2>下一場目標</h2>
+                <div className="goal-list">
+                  {nextGameGoals.map((goal) => (
+                    <div className="goal-item" key={goal.title}>
+                      <div className="goal-top">
+                        <span className="goal-name">{goal.title}</span>
+                        <span className="goal-badge">{goal.tone}</span>
+                      </div>
+                      <div className="goal-values">
+                        <span>目前 {goal.current}</span>
+                        <span>→</span>
+                        <span>目標 {goal.target}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              <div className="section-card">
-                <h2>優勢</h2>
-                <div className="bullet-list">
-                  <div>{latestInsight?.positive_1 || generatedInsight.positives[0]}</div>
-                  <div>{latestInsight?.positive_2 || generatedInsight.positives[1]}</div>
-                  <div>{latestInsight?.positive_3 || generatedInsight.positives[2]}</div>
-                </div>
-              </div>
-
-              <div className="section-card">
-                <h2>重點</h2>
-                <div className="bullet-list">
-                  <div>{latestInsight?.focus_1 || generatedInsight.focuses[0]}</div>
-                  <div>{latestInsight?.focus_2 || generatedInsight.focuses[1]}</div>
-                  <div>{latestInsight?.focus_3 || generatedInsight.focuses[2]}</div>
-                </div>
-              </div>
-            </section>
-
-            <section className="trend-grid">
-              {trendCards.map((item) => (
-                <div className="trend-card" key={item.label}>
-                  <div className="trend-title">{item.label}</div>
-                  <div className="trend-value">
-                    {item.value}
-                    {item.suffix || ""}
+              <div className="feature-card">
+                <div className="card-kicker">BEST LINEUP</div>
+                <h2>最佳陣容</h2>
+                {bestLineup ? (
+                  <div className="stack">
+                    <div className="lineup-names">{shortNames(bestLineup.names)}</div>
+                    <div className="lineup-main-row">
+                      <div className="metric-box">
+                        <div className="metric-label">正負值</div>
+                        <div className="metric-value plus">
+                          {bestLineup.plusMinus >= 0 ? "+" : ""}
+                          {bestLineup.plusMinus}
+                        </div>
+                      </div>
+                      <div className="metric-box">
+                        <div className="metric-label">上場時間</div>
+                        <div className="metric-value">
+                          {formatMinutes(bestLineup.secondsPlayed)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mini-grid">
+                      <div className="mini-card">
+                        <div className="mini-label">得分 / 失分</div>
+                        <div className="mini-value">
+                          {bestLineup.pointsFor} / {bestLineup.pointsAgainst}
+                        </div>
+                      </div>
+                      <div className="mini-card">
+                        <div className="mini-label">進攻效率</div>
+                        <div className="mini-value">{bestLineup.offRating}</div>
+                      </div>
+                    </div>
+                    <div className="card-note">{bestLineup.summary}</div>
                   </div>
-                  <div
-                    className={`trend-diff ${
-                      item.diff > 0 ? "up" : item.diff < 0 ? "down" : ""
-                    }`}
-                  >
-                    {getArrow(item.diff)} {item.diff > 0 ? "+" : ""}
-                    {item.diff}
-                    {item.suffix || ""}
+                ) : (
+                  <div className="empty-text">尚無陣容資料</div>
+                )}
+              </div>
+
+              <div className="feature-card">
+                <div className="card-kicker">POSTGAME</div>
+                <h2>賽後報告</h2>
+                <div className="paragraph-list">
+                  {postgameReport.map((line, idx) => (
+                    <div className="paragraph-item" key={`${line}-${idx}`}>
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="feature-card">
+                <div className="card-kicker">ANALYSIS</div>
+                <h2>比賽分析</h2>
+                <div className="paragraph-list">
+                  {gameAnalysis.map((line, idx) => (
+                    <div className="paragraph-item" key={`${line}-${idx}`}>
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="feature-card">
+                <div className="card-kicker">SWING MOMENT</div>
+                <h2>關鍵波動時段</h2>
+                {swingMoments.length ? (
+                  <div className="swing-list">
+                    {swingMoments.map((item, idx) => (
+                      <div className="swing-item" key={`${item.quarter}-${idx}`}>
+                        <div className="swing-head">
+                          第{item.quarter}節　事件 {item.startIndex} - {item.endIndex}
+                        </div>
+                        <div className="swing-score">
+                          我方 {item.ourPoints} ： 對手 {item.oppPoints}
+                        </div>
+                        <div className="swing-text">{item.summary}</div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
-            </section>
-
-            <section className="trend-grid">
-              <div className="trend-card">
-                <div className="trend-title">2分出手占比</div>
-                <div className="trend-value">{safeNumber(latestComputed?.shotMix2)}%</div>
-                <div className="trend-diff">
-                  {safeNumber(latestComputed?.fg2m)} / {safeNumber(latestComputed?.fg2a)}
-                </div>
-              </div>
-
-              <div className="trend-card">
-                <div className="trend-title">3分出手占比</div>
-                <div className="trend-value">{safeNumber(latestComputed?.shotMix3)}%</div>
-                <div className="trend-diff">
-                  {safeNumber(latestComputed?.fg3m)} / {safeNumber(latestComputed?.fg3a)}
-                </div>
-              </div>
-
-              <div className="trend-card">
-                <div className="trend-title">罰球</div>
-                <div className="trend-value">{safeNumber(latestComputed?.ftm)} / {safeNumber(latestComputed?.fta)}</div>
-                <div className="trend-diff">命中 / 出手</div>
-              </div>
-
-              <div className="trend-card">
-                <div className="trend-title">每回合得分</div>
-                <div className="trend-value">{safeNumber(latestComputed?.ppp)}</div>
-                <div className="trend-diff">用 events 重算</div>
-              </div>
-            </section>
-
-            <section className="players-grid">
-              {latestPlayers.length > 0 ? (
-                latestPlayers.map((player) => (
-                  <div className="player-card" key={player.id}>
-                    <div className="player-name">
-                      #{player.number ?? "-"} {player.name}
-                    </div>
-                    <div className="player-plus">
-                      {player.plusMinus >= 0 ? "+" : ""}
-                      {player.plusMinus}
-                    </div>
-                    <div className="player-line">
-                      {player.pts}分 {player.reb}板 {player.ast}助
-                    </div>
-                    <div className="player-line">{player.minutes}分</div>
-                    <div className="player-line strong">
-                      {player.pts10} / {player.reb10} / {player.ast10}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="simple-card center">尚無球員資料</div>
-              )}
-            </section>
-
-            <section className="rotation-grid">
-              <div className="rotation-card">
-                <div className="rotation-title">先發</div>
-                <div className="rotation-value">
-                  {rotationSummary.starters >= 0 ? "+" : ""}
-                  {rotationSummary.starters}
-                </div>
-              </div>
-              <div className="rotation-card">
-                <div className="rotation-title">替補</div>
-                <div className="rotation-value">
-                  {rotationSummary.bench >= 0 ? "+" : ""}
-                  {rotationSummary.bench}
-                </div>
-              </div>
-              <div className="rotation-card">
-                <div className="rotation-title">{rotationSummary.topName}</div>
-                <div className="rotation-value">
-                  {rotationSummary.topValue >= 0 ? "+" : ""}
-                  {rotationSummary.topValue}
-                </div>
+                ) : (
+                  <div className="empty-text">尚無單場波動資料</div>
+                )}
               </div>
             </section>
 
@@ -1062,156 +1164,208 @@ function handleOpenLineups() {
         .big-stat-value {
           font-size: 42px;
           font-weight: 900;
-          line-height: 1;
+          line-height: 1.05;
         }
 
-        .triple-grid {
+        .big-stat-value.small {
+          font-size: 28px;
+        }
+
+        .main-grid {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 18px;
         }
 
-        .section-card {
+        .feature-card {
           background: rgba(255, 255, 255, 0.04);
           border: 1px solid rgba(255, 255, 255, 0.08);
           border-radius: 24px;
           padding: 24px;
           display: grid;
           gap: 18px;
+          min-height: 260px;
         }
 
-        .section-card h2 {
+        .feature-card h2 {
           margin: 0;
-          font-size: 28px;
+          font-size: 30px;
           font-weight: 900;
+          line-height: 1.1;
         }
 
-        .bullet-list {
+        .card-kicker {
+          font-size: 14px;
+          font-weight: 900;
+          letter-spacing: 0.18em;
+          color: rgba(255, 255, 255, 0.6);
+        }
+
+        .goal-list {
           display: grid;
           gap: 14px;
         }
 
-        .bullet-list div {
-          font-size: 24px;
-          font-weight: 800;
-          line-height: 1.3;
-        }
-
-        .trend-grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 18px;
-        }
-
-        .trend-card {
+        .goal-item {
+          border-radius: 18px;
           background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 24px;
-          padding: 24px;
-          display: grid;
-          gap: 12px;
-        }
-
-        .trend-title {
-          font-size: 22px;
-          font-weight: 800;
-        }
-
-        .trend-value {
-          font-size: 44px;
-          font-weight: 900;
-          line-height: 1;
-        }
-
-        .trend-diff {
-          font-size: 24px;
-          font-weight: 900;
-        }
-
-        .trend-diff.up {
-          color: #4ade80;
-        }
-
-        .trend-diff.down {
-          color: #f87171;
-        }
-
-        .players-grid {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 18px;
-        }
-
-        .player-card {
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 24px;
-          padding: 24px;
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          padding: 14px 16px;
           display: grid;
           gap: 10px;
         }
 
-        .player-name {
+        .goal-top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .goal-name {
+          font-size: 20px;
+          font-weight: 900;
+        }
+
+        .goal-badge {
+          font-size: 14px;
+          font-weight: 900;
+          color: #ffb74d;
+        }
+
+        .goal-values {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          font-size: 18px;
+          font-weight: 800;
+          opacity: 0.96;
+        }
+
+        .stack {
+          display: grid;
+          gap: 14px;
+        }
+
+        .lineup-names {
+          font-size: 24px;
+          font-weight: 900;
+          line-height: 1.35;
+        }
+
+        .lineup-main-row {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .metric-box,
+        .mini-card {
+          border-radius: 18px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          padding: 16px;
+          display: grid;
+          gap: 6px;
+        }
+
+        .metric-label,
+        .mini-label {
+          font-size: 16px;
+          font-weight: 800;
+          color: rgba(255, 255, 255, 0.72);
+        }
+
+        .metric-value {
+          font-size: 34px;
+          font-weight: 900;
+          line-height: 1;
+        }
+
+        .metric-value.plus {
+          color: #c084fc;
+        }
+
+        .mini-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .mini-value {
+          font-size: 24px;
+          font-weight: 900;
+          line-height: 1.1;
+        }
+
+        .card-note {
+          font-size: 20px;
+          font-weight: 800;
+          line-height: 1.5;
+          color: #ffb74d;
+        }
+
+        .paragraph-list {
+          display: grid;
+          gap: 14px;
+        }
+
+        .paragraph-item {
+          font-size: 22px;
+          font-weight: 800;
+          line-height: 1.5;
+        }
+
+        .swing-list {
+          display: grid;
+          gap: 14px;
+        }
+
+        .swing-item {
+          border-radius: 18px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          padding: 16px;
+          display: grid;
+          gap: 8px;
+        }
+
+        .swing-head {
+          font-size: 18px;
+          font-weight: 900;
+          color: rgba(255, 255, 255, 0.7);
+        }
+
+        .swing-score {
           font-size: 26px;
           font-weight: 900;
         }
 
-        .player-plus {
-          font-size: 54px;
-          font-weight: 900;
-          line-height: 1;
-          color: #c084fc;
+        .swing-text {
+          font-size: 20px;
+          font-weight: 800;
+          line-height: 1.45;
         }
 
-        .player-line {
+        .empty-text {
           font-size: 22px;
           font-weight: 800;
-        }
-
-        .player-line.strong {
-          color: #ffb74d;
-        }
-
-        .rotation-grid {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 18px;
-        }
-
-        .rotation-card {
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 24px;
-          padding: 24px;
-          display: grid;
-          gap: 10px;
-          text-align: center;
-        }
-
-        .rotation-title {
-          font-size: 24px;
-          font-weight: 800;
-        }
-
-        .rotation-value {
-          font-size: 52px;
-          font-weight: 900;
-          line-height: 1;
+          opacity: 0.75;
         }
 
         .menu-grid {
           display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(5, minmax(0, 1fr));
           gap: 18px;
         }
 
         .menu-btn {
-          min-height: 110px;
+          min-height: 100px;
           border: 1px solid rgba(255, 255, 255, 0.1);
           background: rgba(255, 255, 255, 0.05);
           color: #fff;
           border-radius: 24px;
-          font-size: 26px;
+          font-size: 24px;
           font-weight: 900;
           cursor: pointer;
           transition: 0.18s ease;
@@ -1237,11 +1391,11 @@ function handleOpenLineups() {
 
         @media (max-width: 1100px) {
           .hero,
-          .triple-grid,
-          .trend-grid,
-          .players-grid,
-          .rotation-grid,
-          .menu-grid {
+          .main-grid,
+          .menu-grid,
+          .hero-stats,
+          .lineup-main-row,
+          .mini-grid {
             grid-template-columns: 1fr;
           }
 
@@ -1251,6 +1405,10 @@ function handleOpenLineups() {
 
           .hero-match {
             font-size: 28px;
+          }
+
+          .paragraph-item {
+            font-size: 20px;
           }
         }
       `}</style>
