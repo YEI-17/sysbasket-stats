@@ -151,8 +151,8 @@ export default function LineupsSelectPage() {
 
               return (
                 <Link
-                  
-                  href={`/games/lineups`}
+                  key={game.id}
+                  href={`/games/${game.id}/lineups`}
                   className="group rounded-3xl border border-white/10 bg-white/[0.04] p-5 transition hover:border-orange-300/30 hover:bg-white/[0.06]"
                 >
                   <div className="mb-3 flex items-center justify-between gap-3">

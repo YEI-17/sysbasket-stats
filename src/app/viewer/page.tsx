@@ -754,8 +754,7 @@ export default function ViewerGamesPage() {
   }
 
 function handleOpenLineups() {
-  if (!latestGame?.id) return;
-  router.push(`/games/${latestGame.id}/lineups`);
+  router.push("/games/lineups");
 }
 
   return (
