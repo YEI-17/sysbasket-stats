@@ -682,477 +682,254 @@ export default function NewGamePage() {
 }) {
   const { gameId, rosterIds, starterIds } = params;
 
+  const [s1, s2, s3, s4, s5] = starterIds;
   const benchIds = rosterIds.filter((id) => !starterIds.includes(id));
-  const bench1 = benchIds[0] || null;
-  const bench2 = benchIds[1] || null;
+  const bench1 = benchIds[0] ?? null;
+  const bench2 = benchIds[1] ?? null;
 
-  const s1 = starterIds[0] ?? null;
-  const s2 = starterIds[1] ?? null;
-  const s3 = starterIds[2] ?? null;
-  const s4 = starterIds[3] ?? null;
-  const s5 = starterIds[4] ?? null;
+  // 每節完整 5 人
+  const q1Lineup = [s1, s2, s3, s4, s5].filter(Boolean) as string[];
+  const q2Lineup = [s1, s2, s3, s4, bench1 ?? s5].filter(Boolean) as string[];
+  const q3Lineup = [s1, s2, s3, bench2 ?? s4, bench1 ?? s5].filter(Boolean) as string[];
+  const q4Lineup = [s1, s2, s3, s4, s5].filter(Boolean) as string[];
 
-  const testEvents = [
+  const ensureFive = (ids: string[], label: string) => {
+    const unique = Array.from(new Set(ids));
+    if (unique.length !== 5) {
+      throw new Error(`${label} 無法組出完整 5 人，請確認 rosterIds / starterIds`);
+    }
+    return unique;
+  };
+
+  const lineups = [
+    { quarter: 1, secondsLeft: 600, lineup: ensureFive(q1Lineup, "Q1") },
+    { quarter: 2, secondsLeft: 600, lineup: ensureFive(q2Lineup, "Q2") },
+    { quarter: 3, secondsLeft: 600, lineup: ensureFive(q3Lineup, "Q3") },
+    { quarter: 4, secondsLeft: 600, lineup: ensureFive(q4Lineup, "Q4") },
+  ];
+
+  // 先清掉這場可能已存在的測試資料，避免重跑時疊加
+  const { error: deleteEventsError } = await supabase
+    .from("events")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteEventsError) {
+    throw new Error("清除舊測試事件失敗：" + deleteEventsError.message);
+  }
+
+  const { error: deleteShiftsError } = await supabase
+    .from("player_shifts")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteShiftsError) {
+    throw new Error("清除舊測試上場時間失敗：" + deleteShiftsError.message);
+  }
+
+  const { error: deleteClockError } = await supabase
+    .from("game_clock")
+    .delete()
+    .eq("game_id", gameId);
+
+  if (deleteClockError) {
+    throw new Error("清除舊測試時鐘失敗：" + deleteClockError.message);
+  }
+
+  // 重建四節 clock
+  const clockRows = [
+    { game_id: gameId, quarter: 1, seconds_left: 120, is_running: false },
+    { game_id: gameId, quarter: 2, seconds_left: 180, is_running: false },
+    { game_id: gameId, quarter: 3, seconds_left: 240, is_running: false },
+    { game_id: gameId, quarter: 4, seconds_left: 90, is_running: false },
+  ];
+
+  const { error: clockInsertError } = await supabase
+    .from("game_clock")
+    .insert(clockRows);
+
+  if (clockInsertError) {
+    throw new Error("建立測試時鐘失敗：" + clockInsertError.message);
+  }
+
+  // 每節完整 5 人 shifts
+  const shiftRows = lineups.flatMap(({ quarter, lineup }) =>
+    lineup.map((playerId) => ({
+      game_id: gameId,
+      player_id: playerId,
+      team_side: "teamA",
+      quarter,
+      in_seconds_left: 600,
+      out_seconds_left: 0,
+    }))
+  );
+
+  const { error: shiftInsertError } = await supabase
+    .from("player_shifts")
+    .insert(shiftRows);
+
+  if (shiftInsertError) {
+    throw new Error("建立完整測試上場時間失敗：" + shiftInsertError.message);
+  }
+
+  // 每節開頭補 sub_in 事件，讓其他邏輯也知道這節的 5 人是誰
+  const starterLikeEvents = lineups.flatMap(({ quarter, secondsLeft, lineup }) =>
+    lineup.map((playerId) => ({
+      game_id: gameId,
+      player_id: playerId,
+      quarter,
+      event_type: "sub_in",
+      team_side: "teamA",
+      clock_seconds_left: secondsLeft,
+      points_delta: 0,
+      note: quarter === 1 ? "starter" : `q${quarter}_lineup_seed`,
+      is_undone: false,
+    }))
+  );
+
+  // 正式測試事件
+  const eventRows = [
     // Q1
     {
       game_id: gameId,
       player_id: s1,
       quarter: 1,
-      event_type: "fg2_made",
+      event_type: "fg2_make",
       team_side: "teamA",
-      clock_seconds_left: 570,
+      clock_seconds_left: 540,
       points_delta: 2,
-      note: "test-q1",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s2,
-      quarter: 1,
-      event_type: "ast",
-      team_side: "teamA",
-      clock_seconds_left: 570,
-      points_delta: 0,
-      note: "test-q1",
       is_undone: false,
     },
     {
       game_id: gameId,
       player_id: null,
       quarter: 1,
-      event_type: "fg2_made",
+      event_type: "fg2_make",
       team_side: "teamB",
-      clock_seconds_left: 540,
+      clock_seconds_left: 500,
       points_delta: 2,
-      note: "test-q1",
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: s2,
+      quarter: 1,
+      event_type: "fg3_make",
+      team_side: "teamA",
+      clock_seconds_left: 430,
+      points_delta: 3,
       is_undone: false,
     },
     {
       game_id: gameId,
       player_id: s3,
       quarter: 1,
+      event_type: "ast",
+      team_side: "teamA",
+      clock_seconds_left: 430,
+      points_delta: 0,
+      is_undone: false,
+    },
+
+    // Q2 崩盤段：08:15 ~ 06:45 被打 0:3
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 2,
+      event_type: "fg3_make",
+      team_side: "teamB",
+      clock_seconds_left: 470,
+      points_delta: 3,
+      is_undone: false,
+    },
+
+    // Q2 其他事件
+    {
+      game_id: gameId,
+      player_id: s1,
+      quarter: 2,
+      event_type: "fg2_make",
+      team_side: "teamA",
+      clock_seconds_left: 300,
+      points_delta: 2,
+      is_undone: false,
+    },
+
+    // Q3
+    {
+      game_id: gameId,
+      player_id: null,
+      quarter: 3,
+      event_type: "fg2_make",
+      team_side: "teamB",
+      clock_seconds_left: 520,
+      points_delta: 2,
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: bench1 ?? s5,
+      quarter: 3,
+      event_type: "fg2_make",
+      team_side: "teamA",
+      clock_seconds_left: 400,
+      points_delta: 2,
+      is_undone: false,
+    },
+    {
+      game_id: gameId,
+      player_id: bench2 ?? s4,
+      quarter: 3,
       event_type: "reb",
       team_side: "teamA",
-      clock_seconds_left: 520,
+      clock_seconds_left: 360,
       points_delta: 0,
-      note: "test-q1",
+      is_undone: false,
+    },
+
+    // Q4
+    {
+      game_id: gameId,
+      player_id: s4,
+      quarter: 4,
+      event_type: "ft_make",
+      team_side: "teamA",
+      clock_seconds_left: 560,
+      points_delta: 1,
       is_undone: false,
     },
     {
       game_id: gameId,
       player_id: s4,
-      quarter: 1,
-      event_type: "fg3_made",
+      quarter: 4,
+      event_type: "ft_make",
       team_side: "teamA",
-      clock_seconds_left: 470,
-      points_delta: 3,
-      note: "test-q1",
+      clock_seconds_left: 550,
+      points_delta: 1,
       is_undone: false,
     },
     {
       game_id: gameId,
-      player_id: s5,
-      quarter: 1,
-      event_type: "tov",
-      team_side: "teamA",
-      clock_seconds_left: 430,
-      points_delta: 0,
-      note: "test-q1",
-      is_undone: false,
-    },
-
-    // Q2
-    ...(bench1 && s5
-      ? [
-          {
-            game_id: gameId,
-            player_id: s5,
-            quarter: 2,
-            event_type: "sub_out",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q2",
-            is_undone: false,
-          },
-          {
-            game_id: gameId,
-            player_id: bench1,
-            quarter: 2,
-            event_type: "sub_in",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q2",
-            is_undone: false,
-          },
-        ]
-      : []),
-    {
-      game_id: gameId,
-      player_id: bench1 || s1,
-      quarter: 2,
-      event_type: "fg2_made",
-      team_side: "teamA",
+      player_id: null,
+      quarter: 4,
+      event_type: "fg2_make",
+      team_side: "teamB",
       clock_seconds_left: 500,
       points_delta: 2,
-      note: "test-q2",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: null,
-      quarter: 2,
-      event_type: "fg3_made",
-      team_side: "teamB",
-      clock_seconds_left: 470,
-      points_delta: 3,
-      note: "test-q2",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s2,
-      quarter: 2,
-      event_type: "ft_made",
-      team_side: "teamA",
-      clock_seconds_left: 390,
-      points_delta: 1,
-      note: "test-q2",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s3,
-      quarter: 2,
-      event_type: "pf",
-      team_side: "teamA",
-      clock_seconds_left: 330,
-      points_delta: 0,
-      note: "test-q2",
-      is_undone: false,
-    },
-
-    // Q3
-    ...(bench2 && s4
-      ? [
-          {
-            game_id: gameId,
-            player_id: s4,
-            quarter: 3,
-            event_type: "sub_out",
-            team_side: "teamA",
-            clock_seconds_left: 560,
-            points_delta: 0,
-            note: "test-q3",
-            is_undone: false,
-          },
-          {
-            game_id: gameId,
-            player_id: bench2,
-            quarter: 3,
-            event_type: "sub_in",
-            team_side: "teamA",
-            clock_seconds_left: 560,
-            points_delta: 0,
-            note: "test-q3",
-            is_undone: false,
-          },
-        ]
-      : []),
-    {
-      game_id: gameId,
-      player_id: s1,
-      quarter: 3,
-      event_type: "fg2_made",
-      team_side: "teamA",
-      clock_seconds_left: 520,
-      points_delta: 2,
-      note: "test-q3",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s2,
-      quarter: 3,
-      event_type: "ast",
-      team_side: "teamA",
-      clock_seconds_left: 520,
-      points_delta: 0,
-      note: "test-q3",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: null,
-      quarter: 3,
-      event_type: "fg2_made",
-      team_side: "teamB",
-      clock_seconds_left: 480,
-      points_delta: 2,
-      note: "test-q3",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: bench2 || s4,
-      quarter: 3,
-      event_type: "reb",
-      team_side: "teamA",
-      clock_seconds_left: 430,
-      points_delta: 0,
-      note: "test-q3",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s3,
-      quarter: 3,
-      event_type: "stl",
-      team_side: "teamA",
-      clock_seconds_left: 350,
-      points_delta: 0,
-      note: "test-q3",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s3,
-      quarter: 3,
-      event_type: "fg2_made",
-      team_side: "teamA",
-      clock_seconds_left: 340,
-      points_delta: 2,
-      note: "test-q3",
-      is_undone: false,
-    },
-
-    // Q4
-    ...(bench1 && s5
-      ? [
-          {
-            game_id: gameId,
-            player_id: bench1,
-            quarter: 4,
-            event_type: "sub_out",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q4",
-            is_undone: false,
-          },
-          {
-            game_id: gameId,
-            player_id: s5,
-            quarter: 4,
-            event_type: "sub_in",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q4",
-            is_undone: false,
-          },
-        ]
-      : []),
-    ...(bench2 && s4
-      ? [
-          {
-            game_id: gameId,
-            player_id: bench2,
-            quarter: 4,
-            event_type: "sub_out",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q4",
-            is_undone: false,
-          },
-          {
-            game_id: gameId,
-            player_id: s4,
-            quarter: 4,
-            event_type: "sub_in",
-            team_side: "teamA",
-            clock_seconds_left: 540,
-            points_delta: 0,
-            note: "test-q4",
-            is_undone: false,
-          },
-        ]
-      : []),
-    {
-      game_id: gameId,
-      player_id: s2,
-      quarter: 4,
-      event_type: "fg3_made",
-      team_side: "teamA",
-      clock_seconds_left: 400,
-      points_delta: 3,
-      note: "test-q4",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: null,
-      quarter: 4,
-      event_type: "fg2_made",
-      team_side: "teamB",
-      clock_seconds_left: 360,
-      points_delta: 2,
-      note: "test-q4",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s1,
-      quarter: 4,
-      event_type: "ft_made",
-      team_side: "teamA",
-      clock_seconds_left: 220,
-      points_delta: 1,
-      note: "test-q4",
-      is_undone: false,
-    },
-    {
-      game_id: gameId,
-      player_id: s5,
-      quarter: 4,
-      event_type: "reb",
-      team_side: "teamA",
-      clock_seconds_left: 150,
-      points_delta: 0,
-      note: "test-q4",
       is_undone: false,
     },
   ];
 
   const { error: eventInsertError } = await supabase
     .from("events")
-    .insert(testEvents);
+    .insert([...starterLikeEvents, ...eventRows]);
 
   if (eventInsertError) {
     throw new Error("建立測試事件失敗：" + eventInsertError.message);
   }
 
-  // player_shifts 同步更新
-  if (bench1 && s5) {
-    const { error: closeQ2ShiftError } = await supabase
-      .from("player_shifts")
-      .update({ out_seconds_left: 540 })
-      .eq("game_id", gameId)
-      .eq("player_id", s5)
-      .eq("quarter", 1)
-      .is("out_seconds_left", null);
-
-    if (closeQ2ShiftError) {
-      throw new Error("Q2 換人下場時間更新失敗：" + closeQ2ShiftError.message);
-    }
-
-    const { error: insertBench1ShiftError } = await supabase
-      .from("player_shifts")
-      .insert({
-        game_id: gameId,
-        player_id: bench1,
-        team_side: "teamA",
-        quarter: 2,
-        in_seconds_left: 540,
-        out_seconds_left: null,
-      });
-
-    if (insertBench1ShiftError) {
-      throw new Error("Q2 替補上場時間建立失敗：" + insertBench1ShiftError.message);
-    }
-  }
-
-  if (bench2 && s4) {
-    const { error: closeQ3ShiftError } = await supabase
-      .from("player_shifts")
-      .update({ out_seconds_left: 560 })
-      .eq("game_id", gameId)
-      .eq("player_id", s4)
-      .eq("quarter", 1)
-      .is("out_seconds_left", null);
-
-    if (closeQ3ShiftError) {
-      throw new Error("Q3 換人下場時間更新失敗：" + closeQ3ShiftError.message);
-    }
-
-    const { error: insertBench2ShiftError } = await supabase
-      .from("player_shifts")
-      .insert({
-        game_id: gameId,
-        player_id: bench2,
-        team_side: "teamA",
-        quarter: 3,
-        in_seconds_left: 560,
-        out_seconds_left: null,
-      });
-
-    if (insertBench2ShiftError) {
-      throw new Error("Q3 替補上場時間建立失敗：" + insertBench2ShiftError.message);
-    }
-  }
-
-  if (bench1 && s5) {
-    const { error: closeBench1ShiftError } = await supabase
-      .from("player_shifts")
-      .update({ out_seconds_left: 540 })
-      .eq("game_id", gameId)
-      .eq("player_id", bench1)
-      .eq("quarter", 2)
-      .is("out_seconds_left", null);
-
-    if (closeBench1ShiftError) {
-      throw new Error("Q4 bench1 下場時間更新失敗：" + closeBench1ShiftError.message);
-    }
-
-    const { error: reopenS5ShiftError } = await supabase
-      .from("player_shifts")
-      .insert({
-        game_id: gameId,
-        player_id: s5,
-        team_side: "teamA",
-        quarter: 4,
-        in_seconds_left: 540,
-        out_seconds_left: null,
-      });
-
-    if (reopenS5ShiftError) {
-      throw new Error("Q4 s5 回到場上失敗：" + reopenS5ShiftError.message);
-    }
-  }
-
-  if (bench2 && s4) {
-    const { error: closeBench2ShiftError } = await supabase
-      .from("player_shifts")
-      .update({ out_seconds_left: 540 })
-      .eq("game_id", gameId)
-      .eq("player_id", bench2)
-      .eq("quarter", 3)
-      .is("out_seconds_left", null);
-
-    if (closeBench2ShiftError) {
-      throw new Error("Q4 bench2 下場時間更新失敗：" + closeBench2ShiftError.message);
-    }
-
-    const { error: reopenS4ShiftError } = await supabase
-      .from("player_shifts")
-      .insert({
-        game_id: gameId,
-        player_id: s4,
-        team_side: "teamA",
-        quarter: 4,
-        in_seconds_left: 540,
-        out_seconds_left: null,
-      });
-
-    if (reopenS4ShiftError) {
-      throw new Error("Q4 s4 回到場上失敗：" + reopenS4ShiftError.message);
-    }
-  }
-
   const homeScore = 16;
-  const awayScore = 11;
+  const awayScore = 9;
 
   const { error: scoreUpdateError } = await supabase
     .from("games")
@@ -1165,22 +942,6 @@ export default function NewGamePage() {
 
   if (scoreUpdateError) {
     throw new Error("更新測試比分失敗：" + scoreUpdateError.message);
-  }
-
-  // 幫四節都建立 game_clock
-  const clockRows = [
-    { game_id: gameId, quarter: 1, seconds_left: 120, is_running: false },
-    { game_id: gameId, quarter: 2, seconds_left: 180, is_running: false },
-    { game_id: gameId, quarter: 3, seconds_left: 240, is_running: false },
-    { game_id: gameId, quarter: 4, seconds_left: 90, is_running: false },
-  ];
-
-  const { error: clockUpsertError } = await supabase
-    .from("game_clock")
-    .upsert(clockRows, { onConflict: "game_id,quarter" });
-
-  if (clockUpsertError) {
-    throw new Error("更新四節時鐘失敗：" + clockUpsertError.message);
   }
 }
 
