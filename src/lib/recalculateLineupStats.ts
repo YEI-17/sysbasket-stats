@@ -501,9 +501,14 @@ export async function recalculateLineupStats(gameId: string) {
       finalizePossessions(row);
       const plusMinus = row.points_for - row.points_against;
       const offRating =
-        row.est_possessions > 0
-          ? Number(((row.points_for / row.est_possessions) * 100).toFixed(2))
-          : 0;
+  row.seconds_played > 0
+    ? Number(((row.points_for / row.seconds_played) * 600).toFixed(2))
+    : 0;
+
+    const pointsPerMinute =
+  row.seconds_played > 0
+    ? Number((row.points_for / (row.seconds_played / 60)).toFixed(2))
+    : 0;
 
       return {
         game_id: gameId,
@@ -574,9 +579,14 @@ export async function recalculateLineupStats(gameId: string) {
     .map((row) => {
       const plusMinus = row.points_for - row.points_against;
       const offRating =
-        row.est_possessions > 0
-          ? Number(((row.points_for / row.est_possessions) * 100).toFixed(2))
-          : 0;
+  row.seconds_played > 0
+    ? Number(((row.points_for / row.seconds_played) * 600).toFixed(2))
+    : 0;
+
+    const pointsPerMinute =
+  row.seconds_played > 0
+    ? Number((row.points_for / (row.seconds_played / 60)).toFixed(2))
+    : 0;
 
       return {
         game_id: gameId,
