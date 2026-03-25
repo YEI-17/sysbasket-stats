@@ -52,9 +52,9 @@ function joinNames(names?: string[]) {
   return (names ?? []).join(" / ");
 }
 
-function sortByPerformance<T extends { plus_minus: number; off_rating: number; seconds_played: number }>(
-  rows: T[]
-) {
+function sortByPerformance<
+  T extends { plus_minus: number; off_rating: number; seconds_played: number }
+>(rows: T[]) {
   return [...rows].sort((a, b) => {
     if (b.plus_minus !== a.plus_minus) return b.plus_minus - a.plus_minus;
     if (b.off_rating !== a.off_rating) return b.off_rating - a.off_rating;
@@ -84,12 +84,15 @@ export default function GameLineupsPage() {
         setLoading(true);
         setError("");
 
-        const [{ data: gameData, error: gameError }, { data: lineupData, error: lineupError }, { data: comboData, error: comboError }] =
-          await Promise.all([
-            supabase.from("games").select("id,teamA,teamB").eq("id", gameId).single(),
-            supabase.from("lineup_stats").select("*").eq("game_id", gameId),
-            supabase.from("lineup_combo_stats").select("*").eq("game_id", gameId),
-          ]);
+        const [
+          { data: gameData, error: gameError },
+          { data: lineupData, error: lineupError },
+          { data: comboData, error: comboError },
+        ] = await Promise.all([
+          supabase.from("games").select("id,teamA,teamB").eq("id", gameId).single(),
+          supabase.from("lineup_stats").select("*").eq("game_id", gameId),
+          supabase.from("lineup_combo_stats").select("*").eq("game_id", gameId),
+        ]);
 
         if (gameError) throw gameError;
         if (lineupError) throw lineupError;
@@ -110,8 +113,7 @@ export default function GameLineupsPage() {
   }, [gameId]);
 
   const bestLineup = useMemo(
-    () =>
-      sortByPerformance(lineups.filter((r) => r.seconds_played >= 60))[0] ?? null,
+    () => sortByPerformance(lineups.filter((r) => r.seconds_played >= 60))[0] ?? null,
     [lineups]
   );
 
@@ -214,6 +216,12 @@ export default function GameLineupsPage() {
             </div>
 
             <div className="flex flex-wrap gap-3">
+              <Link
+                href="/games/lineups"
+                className="rounded-full border border-orange-300/20 bg-orange-300/10 px-5 py-3 text-sm transition hover:bg-orange-300/15"
+              >
+                選擇其他比賽
+              </Link>
               <Link
                 href={`/games/${gameId}/live`}
                 className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:bg-white/10"
