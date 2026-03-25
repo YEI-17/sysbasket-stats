@@ -437,7 +437,7 @@ function getLineupNamesForWindow(
 
   const relevant = playerShifts.filter((s) => {
     if (s.game_id !== gameId) return false;
-    if (s.team_side !== "teamA") return false;
+    if (!isOurTeamSide(s.team_side)) return false;
     if (s.quarter !== quarter) return false;
 
     const shiftStart = s.in_seconds_left;
