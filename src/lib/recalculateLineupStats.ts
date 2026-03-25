@@ -69,8 +69,8 @@ function normalizeTeamSide(v?: string | null): "teamA" | "teamB" | null {
   const s = (v ?? "").trim().toLowerCase();
   if (!s) return null;
 
-  if (["a", "teama", "team_a", "home", "ours", "our"].includes(s)) return "teamA";
-  if (["b", "teamb", "team_b", "away", "opp", "opponent"].includes(s)) return "teamB";
+  if (["a", "teama", "team_a", "home", "ours", "our", "teama"].includes(s)) return "teamA";
+  if (["b", "teamb", "team_b", "away", "opp", "opponent", "teamb"].includes(s)) return "teamB";
 
   return null;
 }
@@ -148,7 +148,6 @@ function nCrCombinations<T>(arr: T[], choose: number): T[][] {
       result.push([...path]);
       return;
     }
-
     for (let i = start; i < n; i++) {
       path.push(arr[i]);
       dfs(i + 1, path);
@@ -190,16 +189,6 @@ function ensureLineupStat(
 function finalizePossessions(row: RawLineupStat) {
   const est = row.fga - row.oreb + row.tov + 0.44 * row.fta;
   row.est_possessions = Number(Math.max(est, 0).toFixed(2));
-}
-
-type BoundaryPoint = {
-  quarter: number;
-  seconds_left: number;
-};
-
-function pointToElapsed(point: BoundaryPoint) {
-  const qLen = quarterLength(point.quarter);
-  return qLen - point.seconds_left;
 }
 
 function clampClock(quarter: number, secondsLeft: number | null | undefined) {
@@ -291,6 +280,89 @@ function buildQuarterLineupSegments(params: {
   return segments;
 }
 
+function getActiveLineupAtClock(params: {
+  quarter: number;
+  eventClock: number;
+  teamAPlayerIds: string[];
+  shifts: PlayerShiftRow[];
+}) {
+  const { quarter, eventClock, teamAPlayerIds, shifts } = params;
+
+  const relevant = shifts.filter(
+    (s) => normalizeTeamSide(s.team_side) === "teamA" && s.quarter === quarter
+  );
+
+  const activeIds = teamAPlayerIds.filter((playerId) => {
+    const playerQuarterShifts = relevant.filter((s) => s.player_id === playerId);
+    if (!playerQuarterShifts.length) return false;
+
+    return playerQuarterShifts.some((s) => {
+      const inSec = clampClock(quarter, s.in_seconds_left);
+      const outSec = clampClock(quarter, getShiftEndSeconds(s));
+      return eventClock <= inSec && eventClock >= outSec;
+    });
+  });
+
+  return uniqSorted(activeIds);
+}
+
+function inferEventSide(
+  event: EventRow,
+  teamAPlayerIdSet: Set<string>
+): "teamA" | "teamB" | null {
+  const normalized = normalizeTeamSide(event.team_side);
+  if (normalized) return normalized;
+
+  if (event.player_id && teamAPlayerIdSet.has(event.player_id)) {
+    return "teamA";
+  }
+
+  const t = normalizeEventType(event.event_type);
+  const scoreDelta = calcScoreDelta(event);
+
+  if (scoreDelta > 0 && !event.player_id) {
+    return "teamB";
+  }
+
+  if (
+    [
+      "reb",
+      "oreb",
+      "off_reb",
+      "offensive_rebound",
+      "ast",
+      "stl",
+      "blk",
+      "tov",
+      "turnover",
+      "pf",
+      "fg2_make",
+      "fg2_made",
+      "2pt_make",
+      "2pt_made",
+      "fg2_miss",
+      "2pt_miss",
+      "fg3_make",
+      "fg3_made",
+      "3pt_make",
+      "3pt_made",
+      "fg3_miss",
+      "3pt_miss",
+      "ft_make",
+      "ft_made",
+      "ft_miss",
+      "sub_in",
+      "sub_out",
+    ].includes(t) &&
+    event.player_id &&
+    teamAPlayerIdSet.has(event.player_id)
+  ) {
+    return "teamA";
+  }
+
+  return null;
+}
+
 export async function recalculateLineupStats(gameId: string) {
   const [
     { data: game, error: gameError },
@@ -350,6 +422,8 @@ export async function recalculateLineupStats(gameId: string) {
       .map((gp) => gp.player_id)
   );
 
+  const teamAPlayerIdSet = new Set(teamAPlayerIds);
+
   const safeEvents = (events ?? []).filter((e) => e.quarter >= 1);
   const maxEventQuarter =
     safeEvents.reduce((m, e) => Math.max(m, e.quarter || 1), 1) || 1;
@@ -386,20 +460,30 @@ export async function recalculateLineupStats(gameId: string) {
   for (const event of safeEvents) {
     const eventQuarter = event.quarter;
     const eventClock = clampClock(eventQuarter, event.clock_seconds_left);
-    const side = normalizeTeamSide(event.team_side);
+    const side = inferEventSide(event, teamAPlayerIdSet);
     const type = normalizeEventType(event.event_type);
     const scoreDelta = calcScoreDelta(event);
 
-    const matchingSegment = allSegments.find(
-      (seg) =>
-        seg.quarter === eventQuarter &&
-        eventClock <= seg.start_seconds_left &&
-        eventClock >= seg.end_seconds_left
-    );
+    let lineupIds = getActiveLineupAtClock({
+      quarter: eventQuarter,
+      eventClock,
+      teamAPlayerIds,
+      shifts: (shifts ?? []) as PlayerShiftRow[],
+    });
 
-    if (!matchingSegment || matchingSegment.lineup_ids.length === 0) continue;
+    if (lineupIds.length === 0) {
+      const fallbackSegment = allSegments.find(
+        (seg) =>
+          seg.quarter === eventQuarter &&
+          eventClock <= seg.start_seconds_left &&
+          eventClock >= seg.end_seconds_left
+      );
+      lineupIds = fallbackSegment?.lineup_ids ?? [];
+    }
 
-    const row = ensureLineupStat(lineupMap, matchingSegment.lineup_ids, playerMap);
+    if (lineupIds.length === 0) continue;
+
+    const row = ensureLineupStat(lineupMap, lineupIds, playerMap);
 
     if (side === "teamA") {
       if (scoreDelta > 0) row.points_for += scoreDelta;
