@@ -30,6 +30,16 @@ type EventRow = {
   is_undone?: boolean | null;
 };
 
+type PlayerShiftRow = {
+  id: string;
+  game_id: string;
+  player_id: string;
+  quarter: number;
+  team_side: string | null;
+  in_seconds_left: number;
+  out_seconds_left: number | null;
+};
+
 type RawLineupStat = {
   lineup_key: string;
   player_ids: string[];
@@ -74,7 +84,9 @@ function quarterLength(q: number) {
 }
 
 function calcScoreDelta(event: EventRow): number {
-  if (typeof event.points_delta === "number") return event.points_delta;
+  if (typeof event.points_delta === "number" && !Number.isNaN(event.points_delta)) {
+    return event.points_delta;
+  }
 
   const t = normalizeEventType(event.event_type);
 
@@ -99,12 +111,7 @@ function isMadeShot(eventType: string) {
 }
 
 function isMissShot(eventType: string) {
-  return [
-    "fg2_miss",
-    "2pt_miss",
-    "fg3_miss",
-    "3pt_miss",
-  ].includes(eventType);
+  return ["fg2_miss", "2pt_miss", "fg3_miss", "3pt_miss"].includes(eventType);
 }
 
 function isFreeThrow(eventType: string) {
@@ -117,14 +124,6 @@ function isOffensiveRebound(eventType: string) {
 
 function isTurnover(eventType: string) {
   return ["tov", "turnover"].includes(eventType);
-}
-
-function isSubIn(eventType: string) {
-  return ["sub_in", "subin"].includes(eventType);
-}
-
-function isSubOut(eventType: string) {
-  return ["sub_out", "subout"].includes(eventType);
 }
 
 function uniqSorted(ids: string[]) {
@@ -188,176 +187,228 @@ function ensureLineupStat(
   return map.get(key)!;
 }
 
-function addSegmentTime(
-  map: Map<string, RawLineupStat>,
-  lineupIds: string[],
-  seconds: number,
-  playerMap: Map<string, string>
-) {
-  if (seconds <= 0) return;
-  if (lineupIds.length === 0) return;
-
-  const row = ensureLineupStat(map, lineupIds, playerMap);
-  row.seconds_played += seconds;
-}
-
-function addForTeamEvent(
-  map: Map<string, RawLineupStat>,
-  lineupIds: string[],
-  event: EventRow,
-  playerMap: Map<string, string>
-) {
-  if (lineupIds.length === 0) return;
-
-  const row = ensureLineupStat(map, lineupIds, playerMap);
-  const t = normalizeEventType(event.event_type);
-  const scoreDelta = calcScoreDelta(event);
-
-  if (scoreDelta > 0) row.points_for += scoreDelta;
-
-  if (isMadeShot(t) || isMissShot(t)) row.fga += 1;
-  if (isFreeThrow(t)) row.fta += 1;
-  if (isOffensiveRebound(t)) row.oreb += 1;
-  if (isTurnover(t)) row.tov += 1;
-}
-
-function addAgainstTeamEvent(
-  map: Map<string, RawLineupStat>,
-  lineupIds: string[],
-  event: EventRow,
-  playerMap: Map<string, string>
-) {
-  if (lineupIds.length === 0) return;
-
-  const row = ensureLineupStat(map, lineupIds, playerMap);
-  const scoreDelta = calcScoreDelta(event);
-
-  if (scoreDelta > 0) row.points_against += scoreDelta;
-}
-
 function finalizePossessions(row: RawLineupStat) {
   const est = row.fga - row.oreb + row.tov + 0.44 * row.fta;
   row.est_possessions = Number(Math.max(est, 0).toFixed(2));
 }
 
-export async function recalculateLineupStats(gameId: string) {
-  const { data: game, error: gameError } = await supabase
-    .from("games")
-    .select("id,is_official,quarters")
-    .eq("id", gameId)
-    .single<GameRow>();
+type BoundaryPoint = {
+  quarter: number;
+  seconds_left: number;
+};
 
-  if (gameError || !game) {
-    throw new Error(gameError?.message || "找不到比賽資料");
+function pointToElapsed(point: BoundaryPoint) {
+  const qLen = quarterLength(point.quarter);
+  return qLen - point.seconds_left;
+}
+
+function clampClock(quarter: number, secondsLeft: number | null | undefined) {
+  const qLen = quarterLength(quarter);
+  const v = typeof secondsLeft === "number" ? secondsLeft : 0;
+  return Math.max(0, Math.min(qLen, v));
+}
+
+function getShiftEndSeconds(shift: PlayerShiftRow) {
+  return shift.out_seconds_left == null ? 0 : shift.out_seconds_left;
+}
+
+function sameLineup(a: string[], b: string[]) {
+  if (a.length !== b.length) return false;
+  const aa = uniqSorted(a);
+  const bb = uniqSorted(b);
+  return aa.every((v, i) => v === bb[i]);
+}
+
+function buildQuarterLineupSegments(params: {
+  quarter: number;
+  teamAPlayerIds: string[];
+  shifts: PlayerShiftRow[];
+}) {
+  const { quarter, teamAPlayerIds, shifts } = params;
+  const qLen = quarterLength(quarter);
+
+  const relevant = shifts.filter(
+    (s) => normalizeTeamSide(s.team_side) === "teamA" && s.quarter === quarter
+  );
+
+  const boundaries = new Set<number>([qLen, 0]);
+
+  for (const s of relevant) {
+    boundaries.add(clampClock(quarter, s.in_seconds_left));
+    boundaries.add(clampClock(quarter, getShiftEndSeconds(s)));
   }
+
+  const sortedBounds = [...boundaries].sort((a, b) => b - a);
+
+  const segments: Array<{
+    quarter: number;
+    start_seconds_left: number;
+    end_seconds_left: number;
+    seconds_played: number;
+    lineup_ids: string[];
+  }> = [];
+
+  for (let i = 0; i < sortedBounds.length - 1; i++) {
+    const start = sortedBounds[i];
+    const end = sortedBounds[i + 1];
+    const duration = start - end;
+
+    if (duration <= 0) continue;
+
+    const lineupIds = teamAPlayerIds.filter((playerId) => {
+      const playerQuarterShifts = relevant.filter((s) => s.player_id === playerId);
+      if (!playerQuarterShifts.length) return false;
+
+      return playerQuarterShifts.some((s) => {
+        const inSec = clampClock(quarter, s.in_seconds_left);
+        const outSec = clampClock(quarter, getShiftEndSeconds(s));
+        return start <= inSec && end >= outSec;
+      });
+    });
+
+    if (lineupIds.length === 0) continue;
+
+    const last = segments[segments.length - 1];
+    if (
+      last &&
+      last.quarter === quarter &&
+      last.end_seconds_left === start &&
+      sameLineup(last.lineup_ids, lineupIds)
+    ) {
+      last.end_seconds_left = end;
+      last.seconds_played += duration;
+    } else {
+      segments.push({
+        quarter,
+        start_seconds_left: start,
+        end_seconds_left: end,
+        seconds_played: duration,
+        lineup_ids: uniqSorted(lineupIds),
+      });
+    }
+  }
+
+  return segments;
+}
+
+export async function recalculateLineupStats(gameId: string) {
+  const [
+    { data: game, error: gameError },
+    { data: players, error: playersError },
+    { data: gamePlayers, error: gpError },
+    { data: events, error: eventsError },
+    { data: shifts, error: shiftsError },
+  ] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id,is_official,quarters")
+      .eq("id", gameId)
+      .single<GameRow>(),
+
+    supabase.from("players").select("id,name").returns<PlayerRow[]>(),
+
+    supabase
+      .from("game_players")
+      .select("player_id,team_side,is_starter")
+      .eq("game_id", gameId)
+      .returns<GamePlayerRow[]>(),
+
+    supabase
+      .from("events")
+      .select(
+        "id,game_id,player_id,quarter,event_type,created_at,team_side,clock_seconds_left,points_delta,is_undone"
+      )
+      .eq("game_id", gameId)
+      .or("is_undone.is.null,is_undone.eq.false")
+      .order("quarter", { ascending: true })
+      .order("clock_seconds_left", { ascending: false })
+      .order("created_at", { ascending: true })
+      .returns<EventRow[]>(),
+
+    supabase
+      .from("player_shifts")
+      .select(
+        "id,game_id,player_id,quarter,team_side,in_seconds_left,out_seconds_left"
+      )
+      .eq("game_id", gameId)
+      .returns<PlayerShiftRow[]>(),
+  ]);
+
+  if (gameError || !game) throw new Error(gameError?.message || "找不到比賽資料");
+  if (playersError) throw new Error(playersError.message);
+  if (gpError) throw new Error(gpError.message);
+  if (eventsError) throw new Error(eventsError.message);
+  if (shiftsError) throw new Error(shiftsError.message);
 
   const isOfficial = Boolean(game.is_official ?? true);
 
-  const { data: players, error: playersError } = await supabase
-    .from("players")
-    .select("id,name")
-    .returns<PlayerRow[]>();
+  const playerMap = new Map<string, string>((players ?? []).map((p) => [p.id, p.name]));
 
-  if (playersError) {
-    throw new Error(playersError.message);
-  }
-
-  const playerMap = new Map<string, string>(
-    (players ?? []).map((p) => [p.id, p.name])
-  );
-
-  const { data: gamePlayers, error: gpError } = await supabase
-    .from("game_players")
-    .select("player_id,team_side,is_starter")
-    .eq("game_id", gameId)
-    .returns<GamePlayerRow[]>();
-
-  if (gpError) {
-    throw new Error(gpError.message);
-  }
-
-  const { data: events, error: eventsError } = await supabase
-    .from("events")
-    .select(
-      "id,game_id,player_id,quarter,event_type,created_at,team_side,clock_seconds_left,points_delta,is_undone"
-    )
-    .eq("game_id", gameId)
-    .or("is_undone.is.null,is_undone.eq.false")
-    .order("quarter", { ascending: true })
-    .order("clock_seconds_left", { ascending: false })
-    .order("created_at", { ascending: true })
-    .returns<EventRow[]>();
-
-  if (eventsError) {
-    throw new Error(eventsError.message);
-  }
-
-  const maxEventQuarter =
-    (events ?? []).reduce((m, e) => Math.max(m, e.quarter || 1), 1) || 1;
-
-  const totalQuarters = Math.max(game.quarters ?? 4, maxEventQuarter, 4);
-
-  let currentLineup = uniqSorted(
+  const teamAPlayerIds = uniqSorted(
     (gamePlayers ?? [])
-      .filter(
-        (gp) =>
-          normalizeTeamSide(gp.team_side) === "teamA" &&
-          Boolean(gp.is_starter) &&
-          gp.player_id
-      )
+      .filter((gp) => normalizeTeamSide(gp.team_side) === "teamA")
       .map((gp) => gp.player_id)
   );
 
+  const safeEvents = (events ?? []).filter((e) => e.quarter >= 1);
+  const maxEventQuarter =
+    safeEvents.reduce((m, e) => Math.max(m, e.quarter || 1), 1) || 1;
+
+  const maxShiftQuarter =
+    (shifts ?? []).reduce((m, s) => Math.max(m, s.quarter || 1), 1) || 1;
+
+  const totalQuarters = Math.max(game.quarters ?? 4, maxEventQuarter, maxShiftQuarter, 4);
+
   const lineupMap = new Map<string, RawLineupStat>();
 
-  let currentQuarter = 1;
-  let prevClock = quarterLength(currentQuarter);
+  const allSegments: Array<{
+    quarter: number;
+    start_seconds_left: number;
+    end_seconds_left: number;
+    seconds_played: number;
+    lineup_ids: string[];
+  }> = [];
 
-  const safeEvents = (events ?? []).filter((e) => e.quarter >= 1);
+  for (let q = 1; q <= totalQuarters; q++) {
+    const segments = buildQuarterLineupSegments({
+      quarter: q,
+      teamAPlayerIds,
+      shifts: (shifts ?? []) as PlayerShiftRow[],
+    });
 
-  for (const event of safeEvents) {
-    while (currentQuarter < event.quarter) {
-      addSegmentTime(lineupMap, currentLineup, prevClock, playerMap);
-      currentQuarter += 1;
-      prevClock = quarterLength(currentQuarter);
+    for (const seg of segments) {
+      const row = ensureLineupStat(lineupMap, seg.lineup_ids, playerMap);
+      row.seconds_played += seg.seconds_played;
+      allSegments.push(seg);
     }
-
-    const qLen = quarterLength(currentQuarter);
-    const eventClockRaw =
-      typeof event.clock_seconds_left === "number"
-        ? event.clock_seconds_left
-        : prevClock;
-
-    const eventClock = Math.max(0, Math.min(qLen, eventClockRaw));
-    const segmentSeconds = prevClock - eventClock;
-
-    addSegmentTime(lineupMap, currentLineup, segmentSeconds, playerMap);
-
-    const side = normalizeTeamSide(event.team_side);
-    const type = normalizeEventType(event.event_type);
-
-    if (side === "teamA") {
-      addForTeamEvent(lineupMap, currentLineup, event, playerMap);
-
-      if (event.player_id) {
-        if (isSubOut(type)) {
-          currentLineup = currentLineup.filter((id) => id !== event.player_id);
-        } else if (isSubIn(type)) {
-          currentLineup = uniqSorted([...currentLineup, event.player_id]);
-        }
-      }
-    } else if (side === "teamB") {
-      addAgainstTeamEvent(lineupMap, currentLineup, event, playerMap);
-    }
-
-    prevClock = eventClock;
   }
 
-  while (currentQuarter <= totalQuarters) {
-    addSegmentTime(lineupMap, currentLineup, prevClock, playerMap);
-    currentQuarter += 1;
-    if (currentQuarter <= totalQuarters) {
-      prevClock = quarterLength(currentQuarter);
+  for (const event of safeEvents) {
+    const eventQuarter = event.quarter;
+    const eventClock = clampClock(eventQuarter, event.clock_seconds_left);
+    const side = normalizeTeamSide(event.team_side);
+    const type = normalizeEventType(event.event_type);
+    const scoreDelta = calcScoreDelta(event);
+
+    const matchingSegment = allSegments.find(
+      (seg) =>
+        seg.quarter === eventQuarter &&
+        eventClock <= seg.start_seconds_left &&
+        eventClock >= seg.end_seconds_left
+    );
+
+    if (!matchingSegment || matchingSegment.lineup_ids.length === 0) continue;
+
+    const row = ensureLineupStat(lineupMap, matchingSegment.lineup_ids, playerMap);
+
+    if (side === "teamA") {
+      if (scoreDelta > 0) row.points_for += scoreDelta;
+      if (isMadeShot(type) || isMissShot(type)) row.fga += 1;
+      if (isFreeThrow(type)) row.fta += 1;
+      if (isOffensiveRebound(type)) row.oreb += 1;
+      if (isTurnover(type)) row.tov += 1;
+    } else if (side === "teamB") {
+      if (scoreDelta > 0) row.points_against += scoreDelta;
     }
   }
 
@@ -460,37 +511,26 @@ export async function recalculateLineupStats(gameId: string) {
     })
     .filter((row) => row.seconds_played > 0 && row.player_ids.length > 0);
 
-  
-
-  
-
   const { error: deleteLineupError } = await supabase
     .from("lineup_stats")
     .delete()
     .eq("game_id", gameId);
 
-  if (deleteLineupError) {
-    throw new Error(deleteLineupError.message);
-  }
+  if (deleteLineupError) throw new Error(deleteLineupError.message);
 
   const { error: deleteComboError } = await supabase
     .from("lineup_combo_stats")
     .delete()
     .eq("game_id", gameId);
 
-  if (deleteComboError) {
-    throw new Error(deleteComboError.message);
-  }
-
+  if (deleteComboError) throw new Error(deleteComboError.message);
 
   if (lineupRows.length > 0) {
     const { error: insertLineupError } = await supabase
       .from("lineup_stats")
       .insert(lineupRows);
 
-    if (insertLineupError) {
-      throw new Error(insertLineupError.message);
-    }
+    if (insertLineupError) throw new Error(insertLineupError.message);
   }
 
   if (comboRows.length > 0) {
@@ -498,14 +538,8 @@ export async function recalculateLineupStats(gameId: string) {
       .from("lineup_combo_stats")
       .insert(comboRows);
 
-    if (insertComboError) {
-      throw new Error(insertComboError.message);
-    }
+    if (insertComboError) throw new Error(insertComboError.message);
   }
-
-  
-
-  
 
   return {
     lineupCount: lineupRows.length,

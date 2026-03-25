@@ -33,6 +33,8 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
+  clock_seconds_left?: number | null;
+  points_delta?: number | null;
   team_side?: TeamSideValue;
   is_undone?: boolean;
   undone_at?: string | null;
@@ -622,8 +624,8 @@ async function handleRebuildThisGame() {
     const { data, error } = await supabase
       .from("events")
       .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-      )
+  "id, game_id, player_id, quarter, event_type, created_at, team_side, clock_seconds_left, points_delta, is_undone, undone_at"
+)
       .eq("game_id", targetGameId)
       .order("created_at", { ascending: true });
 
@@ -1649,101 +1651,147 @@ async function syncDerivedStatsSilently(currentGameId: string) {
   }
 
   async function addEvent(eventType: string, teamSide: "teamA" | "teamB" = "teamA") {
-    if (!game || !clock) return;
-    if (inCooldown(`event:${eventType}:${teamSide}`, 120)) return;
+  if (!game || !clock) return;
+  if (inCooldown(`event:${eventType}:${teamSide}`, 120)) return;
 
-    if (game.status === "finished") {
-      setError("比賽已結束，不能再新增紀錄");
-      return;
-    }
-
-    const payload: {
-      game_id: string;
-      player_id?: string | null;
-      quarter: number;
-      event_type: string;
-      team_side: "teamA" | "teamB";
-    } = {
-      game_id: game.id,
-      quarter: clock.quarter,
-      event_type: eventType,
-      team_side: teamSide,
-    };
-
-    if (teamSide === "teamA") {
-      if (!selectedPlayerId) {
-        setError("請先點選場上球員");
-        return;
-      }
-      payload.player_id = selectedPlayerId;
-    } else {
-      payload.player_id = null;
-    }
-
-    setError("");
-
-    const { data, error } = await supabase
-      .from("events")
-      .insert(payload)
-      .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-      )
-      .single();
-
-    if (error) {
-      setError(`新增事件失敗：${error.message}`);
-      return;
-    }
-
-    if (data) {
-      const nextEvents = sortEventsStable([
-        ...events.filter((e) => e.id !== data.id),
-        data,
-      ]);
-      setEvents(nextEvents);
-    }
-    await syncDerivedStatsSilently(game.id);
+  if (game.status === "finished") {
+    setError("比賽已結束，不能再新增紀錄");
+    return;
   }
+
+  const payload: {
+    game_id: string;
+    player_id?: string | null;
+    quarter: number;
+    event_type: string;
+    team_side: "teamA" | "teamB";
+    clock_seconds_left: number;
+    points_delta: number;
+  } = {
+    game_id: game.id,
+    quarter: clock.quarter,
+    event_type: eventType,
+    team_side: teamSide,
+    clock_seconds_left: clock.seconds_left,
+    points_delta: getPoints(eventType),
+  };
+
+  if (teamSide === "teamA") {
+    if (!selectedPlayerId) {
+      setError("請先點選場上球員");
+      return;
+    }
+    payload.player_id = selectedPlayerId;
+  } else {
+    payload.player_id = null;
+  }
+
+  setError("");
+
+  const { data, error } = await supabase
+    .from("events")
+    .insert(payload)
+    .select(
+      "id, game_id, player_id, quarter, event_type, created_at, team_side, clock_seconds_left, points_delta, is_undone, undone_at"
+    )
+    .single();
+
+  if (error) {
+    setError(`新增事件失敗：${error.message}`);
+    return;
+  }
+
+  if (data) {
+    const nextEvents = sortEventsStable([
+      ...events.filter((e) => e.id !== data.id),
+      data as EventRow,
+    ]);
+    setEvents(nextEvents);
+  }
+
+  await syncDerivedStatsSilently(game.id);
+}
 
   async function undoLastEvent() {
-    if (!game) return;
-    if (inCooldown("undo", 180)) return;
+  if (!game || !clock) return;
+  if (inCooldown("undo", 180)) return;
 
-    const validEventsDesc = [...events]
-      .filter((e) => !e.is_undone)
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+  const validEventsDesc = [...events]
+    .filter((e) => !e.is_undone)
+    .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
 
-    const last = validEventsDesc[0];
-    if (!last) return;
+  const last = validEventsDesc[0];
+  if (!last) return;
 
-    const undoneAt = new Date().toISOString();
+  const undoneAt = new Date().toISOString();
 
-    const { error } = await supabase
-      .from("events")
-      .update({
-        is_undone: true,
-        undone_at: undoneAt,
-      })
-      .eq("id", last.id);
+  // 先回滾 player_shifts（如果最後一筆是換人）
+  if (
+    normalizeTeamSide(last.team_side) === "teamA" &&
+    last.player_id &&
+    (last.event_type === "sub_out" || last.event_type === "sub_in")
+  ) {
+    if (last.event_type === "sub_out") {
+      const { error: reopenShiftError } = await supabase
+        .from("player_shifts")
+        .update({ out_seconds_left: null })
+        .eq("game_id", game.id)
+        .eq("player_id", last.player_id)
+        .eq("quarter", last.quarter)
+        .eq("team_side", "teamA")
+        .eq("out_seconds_left", last.clock_seconds_left ?? clock.seconds_left);
 
-    if (error) {
-      setError(`復原失敗：${error.message}`);
-      return;
+      if (reopenShiftError) {
+        setError(`復原下場事件失敗：${reopenShiftError.message}`);
+        return;
+      }
     }
 
-    const nextEvents = events.map((e) =>
-      e.id === last.id
-        ? {
-            ...e,
-            is_undone: true,
-            undone_at: undoneAt,
-          }
-        : e
-    );
+    if (last.event_type === "sub_in") {
+      const { error: deleteShiftError } = await supabase
+        .from("player_shifts")
+        .delete()
+        .eq("game_id", game.id)
+        .eq("player_id", last.player_id)
+        .eq("quarter", last.quarter)
+        .eq("team_side", "teamA")
+        .eq("in_seconds_left", last.clock_seconds_left ?? clock.seconds_left)
+        .is("out_seconds_left", null);
 
-    setEvents(nextEvents);
-    await syncDerivedStatsSilently(game.id);
+      if (deleteShiftError) {
+        setError(`復原上場事件失敗：${deleteShiftError.message}`);
+        return;
+      }
+    }
   }
+
+  const { error } = await supabase
+    .from("events")
+    .update({
+      is_undone: true,
+      undone_at: undoneAt,
+    })
+    .eq("id", last.id);
+
+  if (error) {
+    setError(`復原失敗：${error.message}`);
+    return;
+  }
+
+  const nextEvents = events.map((e) =>
+    e.id === last.id
+      ? {
+          ...e,
+          is_undone: true,
+          undone_at: undoneAt,
+        }
+      : e
+  );
+
+  setEvents(nextEvents);
+  await loadPlayerShifts(game.id);
+  await syncDerivedStatsSilently(game.id);
+}
 
   useEffect(() => {
     async function handleQuarterEndAuto() {
@@ -1825,12 +1873,12 @@ async function syncDerivedStatsSilently(currentGameId: string) {
   }, [benchPlayers, subOutPlayerIds.length]);
 
   useEffect(() => {
-    if (!gameId || !gamePlayers.length || !starterIds.length) return;
-    if (!clock) return;
+  if (!gameId || !gamePlayers.length || !starterIds.length) return;
+  if (!clock) return;
 
-    void ensureStarterShiftsForCurrentQuarter(gameId, 1, starterIds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameId, starterIds.join(","), clock?.quarter]);
+  void ensureStarterShiftsForCurrentQuarter(gameId, clock.quarter, starterIds);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [gameId, starterIds.join(","), clock?.quarter]);
 
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId) ?? null,
@@ -1872,140 +1920,145 @@ async function syncDerivedStatsSilently(currentGameId: string) {
   }
 
   async function makeSubstitution() {
-    if (!game || !clock) return;
-    if (inCooldown("substitution", 180)) return;
+  if (!game || !clock) return;
+  if (inCooldown("substitution", 180)) return;
 
-    if (game.status === "finished") {
-      setError("比賽已結束，不能換人");
+  if (game.status === "finished") {
+    setError("比賽已結束，不能換人");
+    return;
+  }
+
+  if (subOutPlayerIds.length === 0) {
+    setError("請先選擇下場球員");
+    return;
+  }
+
+  if (subOutPlayerIds.length !== subInPlayerIds.length) {
+    setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
+    return;
+  }
+
+  const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
+  if (duplicated) {
+    setError("上場與下場名單不可重複");
+    return;
+  }
+
+  setSubmittingSub(true);
+  setError("");
+
+  try {
+    const payload = [
+      ...subOutPlayerIds.map((playerId) => ({
+        game_id: game.id,
+        player_id: playerId,
+        quarter: clock.quarter,
+        event_type: "sub_out",
+        team_side: "teamA" as const,
+        clock_seconds_left: clock.seconds_left,
+        points_delta: 0,
+      })),
+      ...subInPlayerIds.map((playerId) => ({
+        game_id: game.id,
+        player_id: playerId,
+        quarter: clock.quarter,
+        event_type: "sub_in",
+        team_side: "teamA" as const,
+        clock_seconds_left: clock.seconds_left,
+        points_delta: 0,
+      })),
+    ];
+
+    const { data, error } = await supabase
+      .from("events")
+      .insert(payload)
+      .select(
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, clock_seconds_left, points_delta, is_undone, undone_at"
+      );
+
+    if (error) {
+      setError(`換人失敗：${error.message}`);
       return;
     }
 
-    if (subOutPlayerIds.length === 0) {
-      setError("請先選擇下場球員");
-      return;
+    for (const playerId of subOutPlayerIds) {
+      const { error: shiftOutError } = await supabase
+        .from("player_shifts")
+        .update({
+          out_seconds_left: clock.seconds_left,
+        })
+        .eq("game_id", game.id)
+        .eq("player_id", playerId)
+        .eq("quarter", clock.quarter)
+        .eq("team_side", "teamA")
+        .is("out_seconds_left", null);
+
+      if (shiftOutError) {
+        setError(`更新下場時間失敗：${shiftOutError.message}`);
+        return;
+      }
     }
 
-    if (subOutPlayerIds.length !== subInPlayerIds.length) {
-      setError(`已選 ${subOutPlayerIds.length} 名下場，需選 ${subOutPlayerIds.length} 名上場`);
-      return;
-    }
+    if (subInPlayerIds.length > 0) {
+      const { data: existingOpen, error: existingOpenError } = await supabase
+        .from("player_shifts")
+        .select("player_id")
+        .eq("game_id", game.id)
+        .eq("quarter", clock.quarter)
+        .eq("team_side", "teamA")
+        .is("out_seconds_left", null)
+        .in("player_id", subInPlayerIds);
 
-    const duplicated = subInPlayerIds.some((id) => subOutPlayerIds.includes(id));
-    if (duplicated) {
-      setError("上場與下場名單不可重複");
-      return;
-    }
-
-    setSubmittingSub(true);
-    setError("");
-
-    try {
-      const payload = [
-        ...subOutPlayerIds.map((playerId) => ({
-          game_id: game.id,
-          player_id: playerId,
-          quarter: clock.quarter,
-          event_type: "sub_out",
-          team_side: "teamA" as const,
-        })),
-        ...subInPlayerIds.map((playerId) => ({
-          game_id: game.id,
-          player_id: playerId,
-          quarter: clock.quarter,
-          event_type: "sub_in",
-          team_side: "teamA" as const,
-        })),
-      ];
-
-      const { data, error } = await supabase
-        .from("events")
-        .insert(payload)
-        .select(
-          "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
-        );
-
-      if (error) {
-        setError(`換人失敗：${error.message}`);
+      if (existingOpenError) {
+        setError(`檢查上場時間失敗：${existingOpenError.message}`);
         return;
       }
 
-      for (const playerId of subOutPlayerIds) {
-        const { error: shiftOutError } = await supabase
-          .from("player_shifts")
-          .update({
-            out_seconds_left: clock.seconds_left,
-          })
-          .eq("game_id", game.id)
-          .eq("player_id", playerId)
-          .eq("quarter", clock.quarter)
-          .eq("team_side", "teamA")
-          .is("out_seconds_left", null);
+      const existingIds = new Set(
+        (existingOpen ?? []).map((row: { player_id: string }) => row.player_id)
+      );
 
-        if (shiftOutError) {
-          setError(`更新下場時間失敗：${shiftOutError.message}`);
+      const shiftInRows = subInPlayerIds
+        .filter((playerId) => !existingIds.has(playerId))
+        .map((playerId) => ({
+          game_id: game.id,
+          player_id: playerId,
+          team_side: "teamA",
+          quarter: clock.quarter,
+          in_seconds_left: clock.seconds_left,
+          out_seconds_left: null,
+        }));
+
+      if (shiftInRows.length > 0) {
+        const { error: shiftInError } = await supabase
+          .from("player_shifts")
+          .insert(shiftInRows);
+
+        if (shiftInError) {
+          setError(`新增上場時間失敗：${shiftInError.message}`);
           return;
         }
       }
-
-      if (subInPlayerIds.length > 0) {
-        const { data: existingOpen, error: existingOpenError } = await supabase
-          .from("player_shifts")
-          .select("player_id")
-          .eq("game_id", game.id)
-          .eq("quarter", clock.quarter)
-          .eq("team_side", "teamA")
-          .is("out_seconds_left", null)
-          .in("player_id", subInPlayerIds);
-
-        if (existingOpenError) {
-          setError(`檢查上場時間失敗：${existingOpenError.message}`);
-          return;
-        }
-
-        const existingIds = new Set(
-          (existingOpen ?? []).map((row: { player_id: string }) => row.player_id)
-        );
-
-        const shiftInRows = subInPlayerIds
-          .filter((playerId) => !existingIds.has(playerId))
-          .map((playerId) => ({
-            game_id: game.id,
-            player_id: playerId,
-            team_side: "teamA",
-            quarter: clock.quarter,
-            in_seconds_left: clock.seconds_left,
-            out_seconds_left: null,
-          }));
-
-        if (shiftInRows.length > 0) {
-          const { error: shiftInError } = await supabase
-            .from("player_shifts")
-            .insert(shiftInRows);
-
-          if (shiftInError) {
-            setError(`新增上場時間失敗：${shiftInError.message}`);
-            return;
-          }
-        }
-      }
-
-      if (subOutPlayerIds.includes(selectedPlayerId)) {
-        setSelectedPlayerId(subInPlayerIds[0] || "");
-      }
-
-      clearSubSelection();
-
-      if (data?.length) {
-        const existingIds = new Set(events.map((e) => e.id));
-        const nextItems = data.filter((e) => !existingIds.has(e.id));
-        const nextEvents = sortEventsStable([...events, ...nextItems]);
-        setEvents(nextEvents);
-      }
-      await syncDerivedStatsSilently(game.id);
-    } finally {
-      setSubmittingSub(false);
     }
+
+    if (subOutPlayerIds.includes(selectedPlayerId)) {
+      setSelectedPlayerId(subInPlayerIds[0] || "");
+    }
+
+    clearSubSelection();
+
+    if (data?.length) {
+      const existingIds = new Set(events.map((e) => e.id));
+      const nextItems = (data as EventRow[]).filter((e) => !existingIds.has(e.id));
+      const nextEvents = sortEventsStable([...events, ...nextItems]);
+      setEvents(nextEvents);
+    }
+
+    await syncDerivedStatsSilently(game.id);
+  } finally {
+    setSubmittingSub(false);
   }
+}
 
   const quarterScores = useMemo(() => {
     const maxQuarter = Math.max(clock?.quarter ?? 1, ...validEvents.map((e) => e.quarter), 1);
