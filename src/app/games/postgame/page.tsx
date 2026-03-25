@@ -103,6 +103,8 @@ type CollapseWindow = {
   quarter: number;
   startSec: number;
   endSec: number;
+  startTime: string | null;
+  endTime: string | null;
   ourPoints: number;
   oppPoints: number;
   diff: number;
@@ -341,6 +343,11 @@ function sortEventsForGameFlow(events: EventRow[]) {
     const qb = typeof b.quarter === "number" ? b.quarter : 1;
     if (qa !== qb) return qa - qb;
 
+    const ta = new Date(a.created_at || 0).getTime();
+    const tb = new Date(b.created_at || 0).getTime();
+
+    if (ta !== tb) return ta - tb;
+
     const sa =
       typeof a.clock_seconds_left === "number"
         ? a.clock_seconds_left
@@ -350,11 +357,7 @@ function sortEventsForGameFlow(events: EventRow[]) {
         ? b.clock_seconds_left
         : quarterDuration(qb);
 
-    if (sa !== sb) return sb - sa;
-
-    const ta = new Date(a.created_at || 0).getTime();
-    const tb = new Date(b.created_at || 0).getTime();
-    return ta - tb;
+    return sb - sa;
   });
 }
 
@@ -405,28 +408,196 @@ function getLineupNamesFromShiftsForWindow(
     .map(([playerId]) => playerLabel(playerMap.get(playerId)));
 }
 
+function toMs(value?: string | null) {
+  if (!value) return null;
+  const t = new Date(value).getTime();
+  return Number.isFinite(t) ? t : null;
+}
 
-function eventsInWindow(
+function getQuarterStintWindows(
+  gameId: string,
+  quarter: number,
+  playerShifts: PlayerShiftRow[],
+  players: PlayerRow[]
+) {
+  const playerMap = getPlayerMap(players);
+
+  const shifts = playerShifts
+    .filter(
+      (shift) =>
+        shift.game_id === gameId &&
+        shift.quarter === quarter &&
+        isOurTeamSide(shift.team_side)
+    )
+    .filter((shift) => toMs(shift.created_at) != null)
+    .sort((a, b) => {
+      const aTime = toMs(a.created_at) ?? 0;
+      const bTime = toMs(b.created_at) ?? 0;
+      return aTime - bTime;
+    });
+
+  if (!shifts.length) return [];
+
+  const points = new Set<number>();
+
+  for (const shift of shifts) {
+    const inMs = toMs(shift.created_at);
+    const outMs =
+      toMs(shift.updated_at) ??
+      toMs(shift.created_at);
+
+    if (inMs != null) points.add(inMs);
+    if (outMs != null && outMs >= inMs!) points.add(outMs);
+  }
+
+  const timeline = Array.from(points).sort((a, b) => a - b);
+  if (timeline.length < 2) return [];
+
+  const windows: Array<{
+    quarter: number;
+    startMs: number;
+    endMs: number;
+    startSec: number;
+    endSec: number;
+    lineupNames: string[];
+  }> = [];
+
+  for (let i = 0; i < timeline.length - 1; i += 1) {
+    const startMs = timeline[i];
+    const endMs = timeline[i + 1];
+    if (endMs <= startMs) continue;
+
+    const activeShifts = shifts.filter((shift) => {
+      const inMs = toMs(shift.created_at);
+      const outMs =
+        toMs(shift.updated_at) ??
+        toMs(shift.created_at);
+
+      if (inMs == null || outMs == null) return false;
+      return inMs < endMs && outMs > startMs;
+    });
+
+    const overlapMap = new Map<string, number>();
+
+    for (const shift of activeShifts) {
+      const inMs = toMs(shift.created_at)!;
+      const outMs =
+        toMs(shift.updated_at) ??
+        inMs;
+
+      const overlap = Math.max(0, Math.min(outMs, endMs) - Math.max(inMs, startMs));
+      if (overlap <= 0) continue;
+
+      overlapMap.set(
+        shift.player_id,
+        (overlapMap.get(shift.player_id) ?? 0) + overlap
+      );
+    }
+
+    const lineupNames = Array.from(overlapMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([playerId]) => playerLabel(playerMap.get(playerId)));
+
+    if (!lineupNames.length) continue;
+
+    const refShift = activeShifts[0];
+    const startSec =
+      typeof refShift?.in_seconds_left === "number"
+        ? refShift.in_seconds_left
+        : quarterDuration(quarter);
+
+    const endSec =
+      typeof refShift?.out_seconds_left === "number"
+        ? refShift.out_seconds_left
+        : 0;
+
+    windows.push({
+      quarter,
+      startMs,
+      endMs,
+      startSec,
+      endSec,
+      lineupNames,
+    });
+  }
+
+  return windows;
+}
+
+function getEventsInTimeRange(
   events: EventRow[],
   quarter: number,
-  startSec: number,
-  endSec: number
+  startMs: number,
+  endMs: number
 ) {
   return events.filter((e) => {
     if (e.is_undone) return false;
     const q = typeof e.quarter === "number" ? e.quarter : 1;
     if (q !== quarter) return false;
 
-    const sec =
-      typeof e.clock_seconds_left === "number"
-        ? e.clock_seconds_left
-        : null;
+    const eventMs = toMs(e.created_at);
+    if (eventMs == null) return false;
 
-    if (sec == null) return false;
-
-    return sec <= startSec && sec > endSec;
+    return eventMs >= startMs && eventMs < endMs;
   });
 }
+
+function mergeCollapseWindows(windows: CollapseWindow[]) {
+  if (!windows.length) return [];
+
+  const sorted = [...windows].sort((a, b) => {
+    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
+    const aStart = toMs(a.startTime) ?? 0;
+    const bStart = toMs(b.startTime) ?? 0;
+    return aStart - bStart;
+  });
+
+  const merged: CollapseWindow[] = [];
+
+  for (const current of sorted) {
+    const last = merged[merged.length - 1];
+    if (!last) {
+      merged.push(current);
+      continue;
+    }
+
+    const sameQuarter = last.quarter === current.quarter;
+    const sameLineup =
+      last.lineupNames.join("|") === current.lineupNames.join("|");
+    const touch =
+      (toMs(last.endTime) ?? 0) === (toMs(current.startTime) ?? -1);
+
+    if (sameQuarter && sameLineup && touch) {
+      last.endTime = current.endTime;
+      last.endSec = Math.min(last.endSec, current.endSec);
+      last.ourPoints += current.ourPoints;
+      last.oppPoints += current.oppPoints;
+      last.diff += current.diff;
+      last.ourTurnovers += current.ourTurnovers;
+      last.ourMisses += current.ourMisses;
+      last.eventCount += current.eventCount;
+
+      const reasonBits: string[] = [];
+      if (last.ourTurnovers > 0) reasonBits.push(`失誤 ${last.ourTurnovers} 次`);
+      if (last.ourMisses > 0) reasonBits.push(`打鐵 ${last.ourMisses} 次`);
+
+      last.summary =
+        reasonBits.length > 0
+          ? `${formatClock(last.startSec)} - ${formatClock(last.endSec)} 被打出 ${last.oppPoints} 比 ${last.ourPoints}，主因包含 ${reasonBits.join("、")}`
+          : `${formatClock(last.startSec)} - ${formatClock(last.endSec)} 被打出 ${last.oppPoints} 比 ${last.ourPoints}`;
+
+      if (last.diff <= -8) last.severity = "high";
+      else if (last.diff <= -4) last.severity = "medium";
+      else last.severity = "low";
+    } else {
+      merged.push(current);
+    }
+  }
+
+  return merged;
+}
+
 
 function buildCollapseWindows(
   events: EventRow[],
@@ -434,25 +605,29 @@ function buildCollapseWindows(
   playerShifts: PlayerShiftRow[],
   players: PlayerRow[]
 ): CollapseWindow[] {
-  const cleanEvents = events.filter((e) => !e.is_undone);
-  const playerMap = getPlayerMap(players);
+  const cleanEvents = sortEventsForGameFlow(events.filter((e) => !e.is_undone));
 
   const maxQuarter =
     Math.max(
       1,
-      ...cleanEvents.map((e) => (typeof e.quarter === "number" ? e.quarter : 1))
+      ...cleanEvents.map((e) => (typeof e.quarter === "number" ? e.quarter : 1)),
+      ...playerShifts
+        .filter((s) => s.game_id === gameId)
+        .map((s) => (typeof s.quarter === "number" ? s.quarter : 1))
     ) || 4;
 
-  const windows: CollapseWindow[] = [];
-  const windowSize = 90;
-  const step = 30;
+  const rawWindows: CollapseWindow[] = [];
 
   for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
-    const qLen = quarterDuration(quarter);
+    const stintWindows = getQuarterStintWindows(gameId, quarter, playerShifts, players);
 
-    for (let startSec = qLen; startSec - windowSize >= 0; startSec -= step) {
-      const endSec = startSec - windowSize;
-      const winEvents = eventsInWindow(cleanEvents, quarter, startSec, endSec);
+    for (const stint of stintWindows) {
+      const winEvents = getEventsInTimeRange(
+        cleanEvents,
+        quarter,
+        stint.startMs,
+        stint.endMs
+      );
 
       if (!winEvents.length) continue;
 
@@ -477,15 +652,6 @@ function buildCollapseWindows(
       const diff = ourPoints - oppPoints;
       if (diff >= 0) continue;
 
-      const lineupNames = getLineupNamesFromShiftsForWindow(
-        gameId,
-        quarter,
-        startSec,
-        endSec,
-        playerShifts,
-        playerMap
-      );
-
       let severity: "high" | "medium" | "low" = "low";
       if (diff <= -8) severity = "high";
       else if (diff <= -4) severity = "medium";
@@ -496,30 +662,33 @@ function buildCollapseWindows(
 
       const summary =
         reasonBits.length > 0
-          ? `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}，主因包含 ${reasonBits.join("、")}`
-          : `${formatClock(startSec)} - ${formatClock(endSec)} 被打出 ${oppPoints} 比 ${ourPoints}`;
+          ? `${formatClock(stint.startSec)} - ${formatClock(stint.endSec)} 被打出 ${oppPoints} 比 ${ourPoints}，主因包含 ${reasonBits.join("、")}`
+          : `${formatClock(stint.startSec)} - ${formatClock(stint.endSec)} 被打出 ${oppPoints} 比 ${ourPoints}`;
 
-      windows.push({
+      rawWindows.push({
         quarter,
-        startSec,
-        endSec,
+        startSec: stint.startSec,
+        endSec: stint.endSec,
+        startTime: new Date(stint.startMs).toISOString(),
+        endTime: new Date(stint.endMs).toISOString(),
         ourPoints,
         oppPoints,
         diff,
         ourTurnovers,
         ourMisses,
         eventCount: winEvents.length,
-        lineupNames,
+        lineupNames: stint.lineupNames,
         summary,
         severity,
       });
     }
   }
 
-  return windows
+  return mergeCollapseWindows(rawWindows)
     .sort((a, b) => {
       if (a.diff !== b.diff) return a.diff - b.diff;
-      return b.eventCount - a.eventCount;
+      if (a.eventCount !== b.eventCount) return b.eventCount - a.eventCount;
+      return (toMs(a.startTime) ?? 0) - (toMs(b.startTime) ?? 0);
     })
     .slice(0, 3);
 }
