@@ -678,7 +678,9 @@ async function handleRebuildThisGame() {
   async function backfillGamePlayersFromEvents(currentGameId: string) {
   const { data: latestEvents, error: eventsError } = await supabase
     .from("events")
-    .select("id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at")
+    .select(
+      "id, game_id, player_id, quarter, event_type, created_at, team_side, clock_seconds_left, points_delta, is_undone, undone_at"
+    )
     .eq("game_id", currentGameId)
     .order("created_at", { ascending: true });
 
@@ -1041,7 +1043,7 @@ async function handleRebuildThisGame() {
     supabase
       .from("events")
       .select(
-        "id, game_id, player_id, quarter, event_type, created_at, team_side, is_undone, undone_at"
+        "id, game_id, player_id, quarter, event_type, created_at, team_side, clock_seconds_left, points_delta, is_undone, undone_at"
       )
       .eq("game_id", currentGameId)
       .order("created_at", { ascending: true }),
