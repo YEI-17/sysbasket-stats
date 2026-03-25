@@ -414,137 +414,112 @@ function toMs(value?: string | null) {
   const t = new Date(value).getTime();
   return Number.isFinite(t) ? t : null;
 }
+function getEventsInSecondRange(
+  events: EventRow[],
+  quarter: number,
+  startSec: number,
+  endSec: number
+) {
+  return events.filter((e) => {
+    if (e.is_undone) return false;
 
-function getQuarterStintWindows(
+    const q = typeof e.quarter === "number" ? e.quarter : 1;
+    if (q !== quarter) return false;
+
+    const sec =
+      typeof e.clock_seconds_left === "number" ? e.clock_seconds_left : null;
+
+    if (sec == null) return false;
+
+    return sec <= startSec && sec > endSec;
+  });
+}
+
+function getLineupNamesForWindow(
   gameId: string,
   quarter: number,
+  startSec: number,
+  endSec: number,
   playerShifts: PlayerShiftRow[],
   players: PlayerRow[]
 ) {
   const playerMap = getPlayerMap(players);
 
-  const shifts = playerShifts
-    .filter(
-      (shift) =>
-        shift.game_id === gameId &&
-        shift.quarter === quarter &&
-        isOurTeamSide(shift.team_side)
-    )
-    .filter((shift) => toMs(shift.created_at) != null)
-    .sort((a, b) => {
-      const aTime = toMs(a.created_at) ?? 0;
-      const bTime = toMs(b.created_at) ?? 0;
-      return aTime - bTime;
-    });
+  const relevant = playerShifts.filter((shift) => {
+    if (shift.game_id !== gameId) return false;
+    if (!isOurTeamSide(shift.team_side)) return false;
+    if (shift.quarter !== quarter) return false;
 
-  if (!shifts.length) return [];
+    const shiftStart = shift.in_seconds_left;
+    const shiftEnd =
+      typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
 
-  const points = new Set<number>();
+    const overlap =
+      Math.max(0, Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec));
 
-  for (const shift of shifts) {
-    const inMs = toMs(shift.created_at);
-    const outMs =
-      toMs(shift.updated_at) ??
-      toMs(shift.created_at);
-
-    if (inMs != null) points.add(inMs);
-    if (outMs != null && outMs >= inMs!) points.add(outMs);
-  }
-
-  const timeline = Array.from(points).sort((a, b) => a - b);
-  if (timeline.length < 2) return [];
-
-  const windows: Array<{
-    quarter: number;
-    startMs: number;
-    endMs: number;
-    startSec: number;
-    endSec: number;
-    lineupNames: string[];
-  }> = [];
-
-  for (let i = 0; i < timeline.length - 1; i += 1) {
-    const startMs = timeline[i];
-    const endMs = timeline[i + 1];
-    if (endMs <= startMs) continue;
-
-    const activeShifts = shifts.filter((shift) => {
-      const inMs = toMs(shift.created_at);
-      const outMs =
-        toMs(shift.updated_at) ??
-        toMs(shift.created_at);
-
-      if (inMs == null || outMs == null) return false;
-      return inMs < endMs && outMs > startMs;
-    });
-
-    const overlapMap = new Map<string, number>();
-
-    for (const shift of activeShifts) {
-      const inMs = toMs(shift.created_at)!;
-      const outMs =
-        toMs(shift.updated_at) ??
-        inMs;
-
-      const overlap = Math.max(0, Math.min(outMs, endMs) - Math.max(inMs, startMs));
-      if (overlap <= 0) continue;
-
-      overlapMap.set(
-        shift.player_id,
-        (overlapMap.get(shift.player_id) ?? 0) + overlap
-      );
-    }
-
-    const lineupNames = Array.from(overlapMap.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([playerId]) => playerLabel(playerMap.get(playerId)));
-
-    if (!lineupNames.length) continue;
-
-    const refShift = activeShifts[0];
-    const startSec =
-      typeof refShift?.in_seconds_left === "number"
-        ? refShift.in_seconds_left
-        : quarterDuration(quarter);
-
-    const endSec =
-      typeof refShift?.out_seconds_left === "number"
-        ? refShift.out_seconds_left
-        : 0;
-
-    windows.push({
-      quarter,
-      startMs,
-      endMs,
-      startSec,
-      endSec,
-      lineupNames,
-    });
-  }
-
-  return windows;
-}
-
-function getEventsInTimeRange(
-  events: EventRow[],
-  quarter: number,
-  startMs: number,
-  endMs: number
-) {
-  return events.filter((e) => {
-    if (e.is_undone) return false;
-    const q = typeof e.quarter === "number" ? e.quarter : 1;
-    if (q !== quarter) return false;
-
-    const eventMs = toMs(e.created_at);
-    if (eventMs == null) return false;
-
-    return eventMs >= startMs && eventMs < endMs;
+    return overlap > 0;
   });
+
+  const overlapMap = new Map<string, number>();
+
+  for (const shift of relevant) {
+    const shiftStart = shift.in_seconds_left;
+    const shiftEnd =
+      typeof shift.out_seconds_left === "number" ? shift.out_seconds_left : 0;
+
+    const overlap =
+      Math.max(0, Math.min(shiftStart, startSec) - Math.max(shiftEnd, endSec));
+
+    if (overlap <= 0) continue;
+
+    overlapMap.set(
+      shift.player_id,
+      (overlapMap.get(shift.player_id) ?? 0) + overlap
+    );
+  }
+
+  return Array.from(overlapMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([playerId]) => playerLabel(playerMap.get(playerId)));
 }
 
+function dedupeCollapseWindows(windows: CollapseWindow[]) {
+  if (!windows.length) return [];
 
+  const sorted = [...windows].sort((a, b) => {
+    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
+    if (a.diff !== b.diff) return a.diff - b.diff;
+    if (a.oppPoints !== b.oppPoints) return b.oppPoints - a.oppPoints;
+    return b.startSec - a.startSec;
+  });
+
+  const result: CollapseWindow[] = [];
+
+  for (const curr of sorted) {
+    const overlapped = result.some((prev) => {
+      if (prev.quarter !== curr.quarter) return false;
+
+      const overlap =
+        Math.max(
+          0,
+          Math.min(prev.startSec, curr.startSec) -
+            Math.max(prev.endSec, curr.endSec)
+        );
+
+      const smaller = Math.min(prev.durationSec, curr.durationSec);
+      if (smaller <= 0) return false;
+
+      return overlap / smaller >= 0.7;
+    });
+
+    if (!overlapped) {
+      result.push(curr);
+    }
+  }
+
+  return result;
+}
 
 function buildCollapseWindows(
   events: EventRow[],
@@ -554,23 +529,29 @@ function buildCollapseWindows(
 ): CollapseWindow[] {
   const cleanEvents = sortEventsForGameFlow(events.filter((e) => !e.is_undone));
 
+  const gameShifts = playerShifts.filter((s) => s.game_id === gameId);
+
   const maxQuarter =
     Math.max(
       1,
       ...cleanEvents.map((e) => (typeof e.quarter === "number" ? e.quarter : 1)),
-      ...playerShifts
-        .filter((s) => s.game_id === gameId)
-        .map((s) => (typeof s.quarter === "number" ? s.quarter : 1))
+      ...gameShifts.map((s) => (typeof s.quarter === "number" ? s.quarter : 1))
     ) || 4;
 
   const rawWindows: CollapseWindow[] = [];
-
-  // 可自行調整：想切更細可加 45、30
   const windowSizes = [120, 90, 75, 60];
   const stepSec = 15;
 
   for (let quarter = 1; quarter <= maxQuarter; quarter += 1) {
     const qDuration = quarterDuration(quarter);
+
+    const quarterEvents = cleanEvents.filter((e) => {
+      const q = typeof e.quarter === "number" ? e.quarter : 1;
+      return q === quarter && typeof e.clock_seconds_left === "number";
+    });
+
+    // 這一節完全沒有秒數資料，就直接跳過
+    if (!quarterEvents.length) continue;
 
     for (const windowSize of windowSizes) {
       for (
@@ -580,21 +561,12 @@ function buildCollapseWindows(
       ) {
         const endSec = startSec - windowSize;
 
-        const winEvents = cleanEvents.filter((e) => {
-          if (e.is_undone) return false;
-          const q = typeof e.quarter === "number" ? e.quarter : 1;
-          if (q !== quarter) return false;
-
-          const sec =
-            typeof e.clock_seconds_left === "number"
-              ? e.clock_seconds_left
-              : null;
-
-          if (sec == null) return false;
-
-          // 例如 08:45 → 07:15，會抓 startSec >= sec > endSec
-          return sec <= startSec && sec > endSec;
-        });
+        const winEvents = getEventsInSecondRange(
+          quarterEvents,
+          quarter,
+          startSec,
+          endSec
+        );
 
         if (!winEvents.length) continue;
 
@@ -618,35 +590,35 @@ function buildCollapseWindows(
 
         const diff = ourPoints - oppPoints;
 
-        // 崩盤條件：你可以再調
+        // 門檻放寬，避免整頁空掉
         const isCollapse =
-          diff <= -4 &&
+          diff <= -3 &&
           (
-            oppPoints >= 6 ||
+            oppPoints >= 4 ||
             ourTurnovers >= 1 ||
-            (ourPoints === 0 && oppPoints >= 4)
+            (ourPoints === 0 && oppPoints >= 3)
           );
 
         if (!isCollapse) continue;
 
         let severity: "high" | "medium" | "low" = "low";
         if (diff <= -8) severity = "high";
-        else if (diff <= -6) severity = "medium";
+        else if (diff <= -5) severity = "medium";
         else severity = "low";
 
-        const lineupNames = getLineupNamesFromShiftsForWindow(
+        const lineupNames = getLineupNamesForWindow(
           gameId,
           quarter,
           startSec,
           endSec,
           playerShifts,
-          getPlayerMap(players)
+          players
         );
 
         const reasonBits: string[] = [];
         if (ourTurnovers > 0) reasonBits.push(`失誤 ${ourTurnovers} 次`);
         if (ourMisses > 0) reasonBits.push(`打鐵 ${ourMisses} 次`);
-        if (ourPoints === 0 && oppPoints >= 4) reasonBits.push("這段沒有得分");
+        if (ourPoints === 0 && oppPoints >= 3) reasonBits.push("這段沒有得分");
 
         const summary =
           reasonBits.length > 0
@@ -674,44 +646,14 @@ function buildCollapseWindows(
     }
   }
 
-  // 去重：避免很多高度重疊視窗都被留下
-  const deduped: CollapseWindow[] = [];
-
-  const sorted = rawWindows.sort((a, b) => {
-    if (a.quarter !== b.quarter) return a.quarter - b.quarter;
-    if (a.diff !== b.diff) return a.diff - b.diff; // 更負的優先
-    if (a.oppPoints !== b.oppPoints) return b.oppPoints - a.oppPoints;
-    return a.startSec - b.startSec;
-  });
-
-  for (const curr of sorted) {
-    const hasHeavyOverlap = deduped.some((prev) => {
-      if (prev.quarter !== curr.quarter) return false;
-
-      const overlap =
-        Math.max(0, Math.min(prev.startSec, curr.startSec) - Math.max(prev.endSec, curr.endSec));
-
-      const smaller = Math.min(
-        prev.startSec - prev.endSec,
-        curr.startSec - curr.endSec
-      );
-
-      return smaller > 0 && overlap / smaller >= 0.7;
-    });
-
-    if (!hasHeavyOverlap) {
-      deduped.push(curr);
-    }
-  }
-
-  return deduped
+  return dedupeCollapseWindows(rawWindows)
     .sort((a, b) => {
       if (a.diff !== b.diff) return a.diff - b.diff;
       if (a.oppPoints !== b.oppPoints) return b.oppPoints - a.oppPoints;
       if (a.quarter !== b.quarter) return a.quarter - b.quarter;
       return b.startSec - a.startSec;
     })
-    .slice(0, 10); // 這裡改成你想顯示的數量，例如 6 / 8 / 10
+    .slice(0, 8);
 }
 
 function starterNamesForGame(
@@ -1251,11 +1193,14 @@ export default function PostgameOverviewPage() {
                                 </div>
 
                                 <div className="collapse-meta-grid">
-                                  <div className="meta-pill">失誤 {item.ourTurnovers}</div>
-                                  <div className="meta-pill">打鐵 {item.ourMisses}</div>
-                                  <div className="meta-pill">事件 {item.eventCount}</div>
-                                </div>
-                                    <div className="meta-pill">區間 {Math.floor(item.durationSec / 60)}分{String(item.durationSec % 60).padStart(2, "0")}秒</div>
+  <div className="meta-pill">失誤 {item.ourTurnovers}</div>
+  <div className="meta-pill">打鐵 {item.ourMisses}</div>
+  <div className="meta-pill">事件 {item.eventCount}</div>
+  <div className="meta-pill">
+    區間 {Math.floor(item.durationSec / 60)}分
+    {String(item.durationSec % 60).padStart(2, "0")}秒
+  </div>
+</div>
                                 <div className="collapse-summary">{item.summary}</div>
 
                                 <div className="lineup-block">
