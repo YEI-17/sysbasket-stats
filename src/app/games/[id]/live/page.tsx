@@ -33,9 +33,9 @@ type EventRow = {
   quarter: number;
   event_type: string;
   created_at: string;
+  team_side?: TeamSideValue;
   clock_seconds_left?: number | null;
   points_delta?: number | null;
-  team_side?: TeamSideValue;
   is_undone?: boolean;
   undone_at?: string | null;
 };
@@ -1659,6 +1659,17 @@ async function syncDerivedStatsSilently(currentGameId: string) {
     return;
   }
 
+  const quarter = clock.quarter;
+  const secondsLeft = clock.seconds_left;
+
+  const calcPointsDelta = (type: string) => {
+    const t = type.toLowerCase();
+    if (["fg2_make", "fg2_made", "2pt_make", "2pt_made"].includes(t)) return 2;
+    if (["fg3_make", "fg3_made", "3pt_make", "3pt_made"].includes(t)) return 3;
+    if (["ft_make", "ft_made"].includes(t)) return 1;
+    return 0;
+  };
+
   const payload: {
     game_id: string;
     player_id?: string | null;
@@ -1669,16 +1680,16 @@ async function syncDerivedStatsSilently(currentGameId: string) {
     points_delta: number;
   } = {
     game_id: game.id,
-    quarter: clock.quarter,
-    event_type: eventType,
+    quarter,
+    event_type:eventType,
     team_side: teamSide,
-    clock_seconds_left: clock.seconds_left,
-    points_delta: getPoints(eventType),
+    clock_seconds_left: secondsLeft,
+    points_delta: calcPointsDelta(eventType),
   };
 
   if (teamSide === "teamA") {
     if (!selectedPlayerId) {
-      setError("請先點選場上球員");
+      setError("請先選擇場上球員");
       return;
     }
     payload.player_id = selectedPlayerId;
