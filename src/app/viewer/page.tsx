@@ -128,16 +128,6 @@ type ComputedTeamMetrics = {
   shotMix3: number;
 };
 
-type SwingWindow = {
-  quarter: number;
-  startIndex: number;
-  endIndex: number;
-  ourPoints: number;
-  oppPoints: number;
-  diff: number;
-  summary: string;
-};
-
 function normalizeStatus(status?: string | null) {
   const s = (status ?? "").trim().toLowerCase();
 
@@ -338,16 +328,11 @@ export default function ViewerGamesPage() {
 
   const [games, setGames] = useState<GameRow[]>([]);
   const [players, setPlayers] = useState<PlayerRow[]>([]);
-  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatsRow[]>(
-    []
-  );
+  const [playerGameStats, setPlayerGameStats] = useState<PlayerGameStatsRow[]>([]);
   const [teamGameStats, setTeamGameStats] = useState<TeamGameStatsRow[]>([]);
   const [insights, setInsights] = useState<InsightRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [lineupStats, setLineupStats] = useState<LineupStatsRow[]>([]);
-  const [gamePlayers, setGamePlayers] = useState<
-    { game_id: string; player_id: string; is_starter?: boolean | null }[]
-  >([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
@@ -362,7 +347,6 @@ export default function ViewerGamesPage() {
       tgsRes,
       insightsRes,
       eventsRes,
-      gamePlayersRes,
       lineupStatsRes,
     ] = await Promise.all([
       supabase
@@ -401,8 +385,6 @@ export default function ViewerGamesPage() {
         .from("events")
         .select("id, game_id, player_id, event_type, team_side, is_undone, created_at"),
 
-      supabase.from("game_players").select("game_id, player_id, is_starter"),
-
       supabase
         .from("lineup_stats")
         .select(
@@ -422,7 +404,6 @@ export default function ViewerGamesPage() {
     if (tgsRes.error) console.error(tgsRes.error);
     if (insightsRes.error) console.error(insightsRes.error);
     if (eventsRes.error) console.error(eventsRes.error);
-    if (gamePlayersRes.error) console.error(gamePlayersRes.error);
     if (lineupStatsRes.error) console.error(lineupStatsRes.error);
 
     setGames((gamesRes.data as GameRow[]) || []);
@@ -431,13 +412,6 @@ export default function ViewerGamesPage() {
     setTeamGameStats((tgsRes.data as TeamGameStatsRow[]) || []);
     setInsights((insightsRes.data as InsightRow[]) || []);
     setEvents((eventsRes.data as EventRow[]) || []);
-    setGamePlayers(
-      (gamePlayersRes.data as {
-        game_id: string;
-        player_id: string;
-        is_starter?: boolean | null;
-      }[]) || []
-    );
     setLineupStats((lineupStatsRes.data as LineupStatsRow[]) || []);
     setLoading(false);
   }, []);
@@ -715,150 +689,94 @@ export default function ViewerGamesPage() {
     ];
   }, [latestComputed]);
 
-  const postgameReport = useMemo(() => {
+  const postgameAnalysis = useMemo(() => {
     if (!latestGame || !latestComputed) {
       return [
-        "目前尚無可生成的賽後報告。",
-        "完成一場正式比賽後，系統會自動整理重點。",
-        "首頁會優先顯示對下一場有幫助的資訊。",
+        "目前尚無可生成的賽後分析。",
+        "完成一場正式比賽後，首頁會自動整理重點。",
+        "這裡會優先顯示對下一場調整最有幫助的內容。",
       ];
     }
 
     const ourPts = safeNumber(latestTeamStats?.pts ?? latestComputed.points);
     const oppPts = safeNumber(latestTeamStats?.opp_pts);
-    const result =
-      ourPts > oppPts ? "拿下勝利" : ourPts < oppPts ? "以些微差距落敗" : "與對手戰平";
+    const resultText =
+      ourPts > oppPts
+        ? "拿下勝利"
+        : ourPts < oppPts
+        ? "以些微差距落敗"
+        : "與對手戰平";
 
-    const line1 = `${getMatchName(latestGame)} 本場 ${ourPts} 比 ${oppPts}，${result}。`;
-
-    let line2 = "整體表現平衡。";
-    if (latestComputed.turnoverRate >= 18) {
-      line2 = `失誤率 ${latestComputed.turnoverRate}% 偏高，影響進攻穩定度。`;
-    } else if (latestComputed.offRating >= 100) {
-      line2 = `進攻效率 ${latestComputed.offRating} 表現不錯，整體進攻品質穩定。`;
-    } else if (latestComputed.shotMix2 >= 60) {
-      line2 = `二分出手占比 ${latestComputed.shotMix2}% ，進攻重心有往籃下集中。`;
-    } else {
-      line2 = `本場進攻效率 ${latestComputed.offRating}，還有提升空間。`;
-    }
-
-    let line3 = "下一場建議延續穩定回合，持續提升終結品質。";
-    if (bestLineup) {
-      line3 = `最佳陣容為 ${shortNames(bestLineup.names)}，可作為下一場優先延續的主軸。`;
-    } else if (latestComputed.fg3a > 0) {
-      line3 = "下一場可聚焦外線選擇與失誤控制，提升整體節奏。";
-    }
+    const lines: string[] = [];
+    lines.push(`${getMatchName(latestGame)} 最終 ${ourPts}：${oppPts}，本場 ${resultText}。`);
 
     if (latestInsight?.summary?.trim()) {
-      return [latestInsight.summary.trim(), line2, line3];
-    }
-
-    return [line1, line2, line3];
-  }, [latestGame, latestTeamStats, latestComputed, bestLineup, latestInsight]);
-
-  const gameAnalysis = useMemo(() => {
-    if (!latestGame || !latestComputed) {
-      return [
-        "尚無單場分析資料。",
-        "完成比賽後會顯示本場的節奏與表現重點。",
-        "這裡會優先放與下一場調整有關的資訊。",
-      ];
-    }
-
-    const items: string[] = [];
-
-    if (bestLineup) {
-      items.push(
-        `最佳陣容 ${shortNames(bestLineup.names)}，正負值 ${
-          bestLineup.plusMinus >= 0 ? "+" : ""
-        }${bestLineup.plusMinus}。`
-      );
+      lines.push(latestInsight.summary.trim());
+    } else if (latestComputed.offRating >= 100) {
+      lines.push(`進攻效率 ${latestComputed.offRating}，代表本場進攻回合品質不差。`);
+    } else {
+      lines.push(`進攻效率 ${latestComputed.offRating}，進攻端還有明顯提升空間。`);
     }
 
     if (latestComputed.turnoverRate >= 18) {
-      items.push(`本場失誤率 ${latestComputed.turnoverRate}% ，需優先壓低。`);
-    } else {
-      items.push(`本場失誤率 ${latestComputed.turnoverRate}% ，控球穩定度尚可。`);
-    }
-
-    if (latestComputed.shotMix2 >= 60) {
-      items.push(`二分出手占比 ${latestComputed.shotMix2}% ，進攻有往高命中區域集中。`);
+      lines.push(`失誤率 ${latestComputed.turnoverRate}% 偏高，下一場應優先處理控球與決策。`);
+    } else if (latestComputed.shotMix2 >= 60) {
+      lines.push(`二分出手占比 ${latestComputed.shotMix2}% ，進攻重心有成功往籃下集中。`);
     } else if (latestComputed.shotMix3 >= 38) {
-      items.push(`三分出手占比 ${latestComputed.shotMix3}% ，需留意外線選擇品質。`);
+      lines.push(`三分出手占比 ${latestComputed.shotMix3}% ，外線選擇需要再過濾。`);
     } else {
-      items.push(`外線出手比例適中，整體結構相對平均。`);
+      lines.push("整體出手結構中性，下一場可再提升高價值出手比例。");
     }
 
-    return items.slice(0, 3);
-  }, [latestGame, latestComputed, bestLineup]);
-
-  const swingMoments = useMemo(() => {
-    if (!latestGame) return [];
-
-    const gameEvents = events
-      .filter((e) => e.game_id === latestGame.id && !e.is_undone)
-      .sort((a, b) => {
-        const ta = new Date(a.created_at || 0).getTime();
-        const tb = new Date(b.created_at || 0).getTime();
-        return ta - tb;
-      });
-
-    const byQuarter = new Map<number, EventRow[]>();
-    for (const e of gameEvents) {
-      const quarter = (() => {
-        const raw = (e as EventRow & { quarter?: number }).quarter;
-        return typeof raw === "number" ? raw : 1;
-      })();
-      if (!byQuarter.has(quarter)) byQuarter.set(quarter, []);
-      byQuarter.get(quarter)!.push(e);
+    if (bestLineup) {
+      lines.push(`最佳陣容為 ${shortNames(bestLineup.names)}，可作為下一場優先延續的主軸。`);
+    } else {
+      lines.push("目前尚未抓到穩定優勢陣容，建議持續累積正式賽樣本。");
     }
 
-    const windows: SwingWindow[] = [];
+    return lines.slice(0, 4);
+  }, [latestGame, latestComputed, latestTeamStats, latestInsight, bestLineup]);
 
-    function pointsFromType(eventType: string) {
-      const t = normalizeEventType(eventType);
-      if (t === "fg2_make") return 2;
-      if (t === "fg3_make") return 3;
-      if (t === "ft_make") return 1;
-      return 0;
-    }
+  const overviewCards = useMemo(() => {
+    const latestPoints = safeNumber(latestTeamStats?.pts ?? latestComputed?.points);
+    const latestOppPoints = safeNumber(latestTeamStats?.opp_pts);
+    const result =
+      latestPoints > latestOppPoints ? "勝" : latestPoints < latestOppPoints ? "敗" : "平";
 
-    byQuarter.forEach((quarterEvents, quarter) => {
-      if (!quarterEvents.length) return;
-
-      const size = Math.min(8, quarterEvents.length);
-
-      for (let i = 0; i <= quarterEvents.length - size; i += 1) {
-        let our = 0;
-        let opp = 0;
-
-        for (let j = i; j < i + size; j += 1) {
-          const p = pointsFromType(quarterEvents[j].event_type);
-          if (!p) continue;
-          if (isOurTeamEvent(quarterEvents[j].team_side)) our += p;
-          else opp += p;
-        }
-
-        const diff = our - opp;
-        windows.push({
-          quarter,
-          startIndex: i + 1,
-          endIndex: i + size,
-          ourPoints: our,
-          oppPoints: opp,
-          diff,
-          summary:
-            diff >= 0
-              ? `第${quarter}節這段時間我方打出 ${our} 比 ${opp}`
-              : `第${quarter}節這段時間對手打出 ${opp} 比 ${our}`,
-        });
-      }
-    });
-
-    return windows
-      .sort((a, b) => a.diff - b.diff)
-      .slice(0, 2);
-  }, [latestGame, events]);
+    return [
+      {
+        label: "最近3場",
+        value: recentRecord,
+        sub:
+          recentThreeStats.length > 0
+            ? `近3場正式賽整體走勢`
+            : "尚無近3場資料",
+      },
+      {
+        label: "最新賽果",
+        value: latestGame ? `${latestPoints} - ${latestOppPoints}` : "—",
+        sub: latestGame
+          ? `${getMatchName(latestGame)}｜${result}｜${getShortDate(
+              latestGame.game_date || latestGame.created_at
+            )}`
+          : "尚無比賽",
+      },
+      {
+        label: "進攻效率",
+        value: latestComputed ? `${round1(latestComputed.offRating)}` : "—",
+        sub: latestComputed
+          ? `失誤率 ${round1(latestComputed.turnoverRate)}%`
+          : "尚無進攻資料",
+      },
+      {
+        label: "主力陣容",
+        value: bestLineup ? `${bestLineup.plusMinus >= 0 ? "+" : ""}${bestLineup.plusMinus}` : "—",
+        sub: bestLineup
+          ? `${shortNames(bestLineup.names)}`
+          : "尚無陣容資料",
+      },
+    ];
+  }, [recentRecord, recentThreeStats, latestGame, latestTeamStats, latestComputed, bestLineup]);
 
   function handleOpenMatches() {
     router.push("/games/list");
@@ -880,63 +798,33 @@ export default function ViewerGamesPage() {
     router.push("/games/lineups");
   }
 
+  function handleOpenPostgameAnalysis() {
+    if (latestGame) {
+      router.push(`/games/${latestGame.id}/box`);
+      return;
+    }
+    router.push("/games/list");
+  }
+
   return (
     <main className="page">
       <div className="shell">
-        <section className="hero">
-          <div className="hero-main">
-            <div className="hero-name">{viewerName}</div>
-            <div className="hero-match">{getMatchName(latestGame)}</div>
-            <div className="hero-score">
-              {latestGame
-                ? `${safeNumber(latestTeamStats?.pts ?? latestComputed?.points)} - ${safeNumber(
-                    latestTeamStats?.opp_pts
-                  )}`
-                : "—"}
-            </div>
-            <div className="hero-result">
-              {latestGame
-                ? safeNumber(latestTeamStats?.pts ?? latestComputed?.points) >
-                  safeNumber(latestTeamStats?.opp_pts)
-                  ? "勝"
-                  : safeNumber(latestTeamStats?.pts ?? latestComputed?.points) <
-                    safeNumber(latestTeamStats?.opp_pts)
-                  ? "敗"
-                  : "平"
-                : "—"}
-            </div>
-            <div className="hero-date-row">
-              <span>
-                {getShortDate(latestGame?.game_date || latestGame?.created_at)}
-              </span>
-              <span>{getGameTypeLabel(latestGame)}</span>
-            </div>
+        <section className="top-header">
+          <div className="title-wrap">
+            <div className="eyebrow">TEAM DASHBOARD</div>
+            <h1>{viewerName}</h1>
+            <p>首頁只保留對下一場與賽後判斷有價值的資訊</p>
           </div>
+        </section>
 
-          <div className="hero-stats">
-            <div className="big-stat">
-              <div className="big-stat-title">最近3場</div>
-              <div className="big-stat-value">{recentRecord}</div>
+        <section className="overview-grid">
+          {overviewCards.map((card) => (
+            <div className="overview-card" key={card.label}>
+              <div className="overview-label">{card.label}</div>
+              <div className="overview-value">{card.value}</div>
+              <div className="overview-sub">{card.sub}</div>
             </div>
-            <div className="big-stat">
-              <div className="big-stat-title">進攻效率</div>
-              <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.offRating))))}
-              </div>
-            </div>
-            <div className="big-stat">
-              <div className="big-stat-title">失誤率</div>
-              <div className="big-stat-value">
-                {round1(avg(recentThreeStats.map((x) => safeNumber(x.computed?.turnoverRate))))}%
-              </div>
-            </div>
-            <div className="big-stat">
-              <div className="big-stat-title">最佳球員</div>
-              <div className="big-stat-value small">
-                {bestPlayer ? `#${bestPlayer.number ?? "-"} ${bestPlayer.name}` : "—"}
-              </div>
-            </div>
-          </div>
+          ))}
         </section>
 
         {loading && <div className="simple-card center">讀取中</div>}
@@ -944,7 +832,7 @@ export default function ViewerGamesPage() {
 
         {!loading && !msg && (
           <>
-            <section className="main-grid">
+            <section className="feature-grid">
               <div className="feature-card">
                 <div className="card-kicker">NEXT GAME</div>
                 <h2>下一場目標</h2>
@@ -1007,48 +895,14 @@ export default function ViewerGamesPage() {
 
               <div className="feature-card">
                 <div className="card-kicker">POSTGAME</div>
-                <h2>賽後報告</h2>
+                <h2>賽後分析</h2>
                 <div className="paragraph-list">
-                  {postgameReport.map((line, idx) => (
+                  {postgameAnalysis.map((line, idx) => (
                     <div className="paragraph-item" key={`${line}-${idx}`}>
                       {line}
                     </div>
                   ))}
                 </div>
-              </div>
-
-              <div className="feature-card">
-                <div className="card-kicker">ANALYSIS</div>
-                <h2>比賽分析</h2>
-                <div className="paragraph-list">
-                  {gameAnalysis.map((line, idx) => (
-                    <div className="paragraph-item" key={`${line}-${idx}`}>
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="feature-card">
-                <div className="card-kicker">SWING MOMENT</div>
-                <h2>關鍵波動時段</h2>
-                {swingMoments.length ? (
-                  <div className="swing-list">
-                    {swingMoments.map((item, idx) => (
-                      <div className="swing-item" key={`${item.quarter}-${idx}`}>
-                        <div className="swing-head">
-                          第{item.quarter}節　事件 {item.startIndex} - {item.endIndex}
-                        </div>
-                        <div className="swing-score">
-                          我方 {item.ourPoints} ： 對手 {item.oppPoints}
-                        </div>
-                        <div className="swing-text">{item.summary}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-text">尚無單場波動資料</div>
-                )}
               </div>
             </section>
 
@@ -1068,6 +922,9 @@ export default function ViewerGamesPage() {
               <button className="menu-btn" onClick={handleOpenLineups}>
                 陣容分析
               </button>
+              <button className="menu-btn" onClick={handleOpenPostgameAnalysis}>
+                賽後分析
+              </button>
             </section>
           </>
         )}
@@ -1084,96 +941,89 @@ export default function ViewerGamesPage() {
         }
 
         .shell {
-          max-width: 1280px;
+          max-width: 1400px;
           margin: 0 auto;
           display: grid;
           gap: 22px;
         }
 
-        .hero {
-          display: grid;
-          grid-template-columns: 1.2fr 1fr;
-          gap: 18px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 28px;
-          padding: 28px;
-          backdrop-filter: blur(10px);
-        }
-
-        .hero-main {
-          display: grid;
-          gap: 10px;
-          align-content: center;
-        }
-
-        .hero-name {
-          font-size: 30px;
-          font-weight: 900;
-          letter-spacing: 0.02em;
-        }
-
-        .hero-match {
-          font-size: 34px;
-          font-weight: 900;
-          line-height: 1.15;
-        }
-
-        .hero-score {
-          font-size: 64px;
-          font-weight: 900;
-          line-height: 1;
-          color: #ff9d2f;
-        }
-
-        .hero-result {
-          font-size: 28px;
-          font-weight: 800;
-        }
-
-        .hero-date-row {
+        .top-header {
           display: flex;
-          gap: 12px;
-          font-size: 18px;
-          font-weight: 700;
-          opacity: 0.9;
+          justify-content: space-between;
+          align-items: flex-end;
+          gap: 16px;
+          padding: 10px 4px 0;
         }
 
-        .hero-stats {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 14px;
-        }
-
-        .big-stat {
-          border-radius: 22px;
-          padding: 22px 18px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+        .title-wrap {
           display: grid;
           gap: 8px;
-          align-content: center;
-          min-height: 132px;
         }
 
-        .big-stat-title {
-          font-size: 20px;
-          font-weight: 800;
+        .eyebrow {
+          font-size: 14px;
+          font-weight: 900;
+          letter-spacing: 0.18em;
+          color: rgba(255, 255, 255, 0.56);
         }
 
-        .big-stat-value {
+        .title-wrap h1 {
+          margin: 0;
           font-size: 42px;
           font-weight: 900;
-          line-height: 1.05;
+          line-height: 1;
         }
 
-        .big-stat-value.small {
-          font-size: 28px;
+        .title-wrap p {
+          margin: 0;
+          font-size: 18px;
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.7);
         }
 
-        .main-grid {
+        .overview-grid {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 18px;
+        }
+
+        .overview-card {
+          min-height: 168px;
+          border-radius: 26px;
+          padding: 22px;
+          background: rgba(255, 255, 255, 0.045);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          backdrop-filter: blur(10px);
+          display: grid;
+          align-content: space-between;
+          gap: 12px;
+        }
+
+        .overview-label {
+          font-size: 16px;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          color: rgba(255, 255, 255, 0.62);
+        }
+
+        .overview-value {
+          font-size: 44px;
+          font-weight: 900;
+          line-height: 1.05;
+          color: #fff;
+        }
+
+        .overview-sub {
+          font-size: 17px;
+          line-height: 1.45;
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.78);
+          word-break: break-word;
+        }
+
+        .feature-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 18px;
         }
 
@@ -1184,7 +1034,7 @@ export default function ViewerGamesPage() {
           padding: 24px;
           display: grid;
           gap: 18px;
-          min-height: 260px;
+          min-height: 320px;
         }
 
         .feature-card h2 {
@@ -1313,38 +1163,7 @@ export default function ViewerGamesPage() {
         .paragraph-item {
           font-size: 22px;
           font-weight: 800;
-          line-height: 1.5;
-        }
-
-        .swing-list {
-          display: grid;
-          gap: 14px;
-        }
-
-        .swing-item {
-          border-radius: 18px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-          padding: 16px;
-          display: grid;
-          gap: 8px;
-        }
-
-        .swing-head {
-          font-size: 18px;
-          font-weight: 900;
-          color: rgba(255, 255, 255, 0.7);
-        }
-
-        .swing-score {
-          font-size: 26px;
-          font-weight: 900;
-        }
-
-        .swing-text {
-          font-size: 20px;
-          font-weight: 800;
-          line-height: 1.45;
+          line-height: 1.55;
         }
 
         .empty-text {
@@ -1355,17 +1174,17 @@ export default function ViewerGamesPage() {
 
         .menu-grid {
           display: grid;
-          grid-template-columns: repeat(5, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 18px;
         }
 
         .menu-btn {
-          min-height: 100px;
+          min-height: 110px;
           border: 1px solid rgba(255, 255, 255, 0.1);
           background: rgba(255, 255, 255, 0.05);
           color: #fff;
           border-radius: 24px;
-          font-size: 24px;
+          font-size: 26px;
           font-weight: 900;
           cursor: pointer;
           transition: 0.18s ease;
@@ -1389,22 +1208,28 @@ export default function ViewerGamesPage() {
           text-align: center;
         }
 
-        @media (max-width: 1100px) {
-          .hero,
-          .main-grid,
+        @media (max-width: 1200px) {
+          .overview-grid,
+          .feature-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+
+        @media (max-width: 900px) {
+          .overview-grid,
+          .feature-grid,
           .menu-grid,
-          .hero-stats,
           .lineup-main-row,
           .mini-grid {
             grid-template-columns: 1fr;
           }
 
-          .hero-score {
-            font-size: 52px;
+          .title-wrap h1 {
+            font-size: 34px;
           }
 
-          .hero-match {
-            font-size: 28px;
+          .overview-value {
+            font-size: 36px;
           }
 
           .paragraph-item {
