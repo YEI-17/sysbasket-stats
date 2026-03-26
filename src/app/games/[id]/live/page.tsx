@@ -2266,95 +2266,136 @@ async function syncDerivedStatsSilently(currentGameId: string) {
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                <div className="mb-3 text-sm font-black text-white/80">我方紀錄</div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button onClick={() => addEvent("fg2_made")} className={actionBtnClass("score")}>
-                    2 分進
-                  </button>
-                  <button onClick={() => addEvent("fg2_miss")} className={actionBtnClass("miss")}>
-                    2 分失
-                  </button>
-                  <button onClick={() => addEvent("fg3_made")} className={actionBtnClass("score")}>
-                    3 分進
-                  </button>
-                  <button onClick={() => addEvent("fg3_miss")} className={actionBtnClass("miss")}>
-                    3 分失
-                  </button>
-                  <button onClick={() => addEvent("ft_made")} className={actionBtnClass("score")}>
-                    罰球進
-                  </button>
-                  <button onClick={() => addEvent("ft_miss")} className={actionBtnClass("miss")}>
-                    罰球失
-                  </button>
-                  <button onClick={() => addEvent("reb")} className={actionBtnClass("def")}>
-                    籃板
-                  </button>
-                  <button onClick={() => addEvent("ast")} className={actionBtnClass("def")}>
-                    助攻
-                  </button>
-                  <button onClick={() => addEvent("stl")} className={actionBtnClass("def")}>
-                    抄截
-                  </button>
-                  <button onClick={() => addEvent("blk")} className={actionBtnClass("def")}>
-                    阻攻
-                  </button>
-                  <button onClick={() => addEvent("tov")} className={actionBtnClass("warn")}>
-                    失誤
-                  </button>
-                  <button onClick={() => addEvent("pf")} className={actionBtnClass("warn")}>
-                    犯規
-                  </button>
-                </div>
-              </div>
+              <div className="mb-3 text-sm font-black text-white/80">我方紀錄</div>
+
+<div className="grid grid-cols-3 gap-2">
+  <button
+    onClick={() => addEvent("fg2_made")}
+    className={actionBtnClass("score")}
+  >
+    2 分進
+  </button>
+
+  <button
+    onClick={() => addEvent("stl")}
+    className={actionBtnClass("def")}
+  >
+    抄截
+  </button>
+
+  <button
+    onClick={() => addEvent("ft_made")}
+    className={actionBtnClass("score")}
+  >
+    罰球進
+  </button>
+
+  <button
+    onClick={() => addEvent("fg2_miss")}
+    className={actionBtnClass("miss")}
+  >
+    2 分不進
+  </button>
+
+  <button
+    onClick={() => addEvent("fg3_miss")}
+    className={actionBtnClass("miss")}
+  >
+    3 分不進
+  </button>
+
+  <button
+    onClick={() => addEvent("ft_miss")}
+    className={actionBtnClass("miss")}
+  >
+    罰球不進
+  </button>
+</div>
+
+<div className="mt-3 grid grid-cols-3 gap-2">
+  <button onClick={() => addEvent("reb")} className={actionBtnClass("def")}>
+    籃板
+  </button>
+  <button onClick={() => addEvent("ast")} className={actionBtnClass("def")}>
+    助攻
+  </button>
+  <button onClick={() => addEvent("blk")} className={actionBtnClass("def")}>
+    阻攻
+  </button>
+  <button onClick={() => addEvent("tov")} className={actionBtnClass("warn")}>
+    失誤
+  </button>
+  <button onClick={() => addEvent("pf")} className={actionBtnClass("warn")}>
+    犯規
+  </button>
+  <button
+    onClick={() => addEvent("fg3_made")}
+    className={actionBtnClass("score")}
+  >
+    3 分進
+  </button>
+</div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
                 <div className="mb-3 text-sm font-black text-white/80">對手紀錄</div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => addEvent("fg2_made", "teamB")}
-                    className={actionBtnClass("score")}
-                  >
-                    2 分進
-                  </button>
-                  <button
-                    onClick={() => addEvent("fg2_miss", "teamB")}
-                    className={actionBtnClass("miss")}
-                  >
-                    2 分失
-                  </button>
-                  <button
-                    onClick={() => addEvent("fg3_made", "teamB")}
-                    className={actionBtnClass("score")}
-                  >
-                    3 分進
-                  </button>
-                  <button
-                    onClick={() => addEvent("fg3_miss", "teamB")}
-                    className={actionBtnClass("miss")}
-                  >
-                    3 分失
-                  </button>
-                  <button
-                    onClick={() => addEvent("ft_made", "teamB")}
-                    className={actionBtnClass("score")}
-                  >
-                    罰球進
-                  </button>
-                  <button
-                    onClick={() => addEvent("ft_miss", "teamB")}
-                    className={actionBtnClass("miss")}
-                  >
-                    罰球失
-                  </button>
-                </div>
 
-                <button
-                  onClick={undoLastEvent}
-                  className="mt-3 w-full rounded-2xl border border-white/10 bg-white/10 px-3 py-3 text-sm font-black hover:bg-white/15"
-                >
-                  復原上一筆
-                </button>
+<div className="grid grid-cols-3 gap-2">
+  <button
+    onClick={() => addEvent("fg2_made", "teamB")}
+    className={actionBtnClass("score")}
+  >
+    2 分進
+  </button>
+
+  <button
+    onClick={() => addEvent("fg2_miss", "teamB")}
+    className={actionBtnClass("miss")}
+  >
+    2 分不進
+  </button>
+
+  <button
+    onClick={() => addEvent("fg3_made", "teamB")}
+    className={actionBtnClass("score")}
+  >
+    3 分進
+  </button>
+
+  <button
+    onClick={() => addEvent("stl", "teamB")}
+    className={actionBtnClass("def")}
+  >
+    抄截
+  </button>
+
+  <button
+    onClick={() => addEvent("fg3_miss", "teamB")}
+    className={actionBtnClass("miss")}
+  >
+    3 分不進
+  </button>
+
+  <button
+    onClick={() => addEvent("ft_made", "teamB")}
+    className={actionBtnClass("score")}
+  >
+    罰球進
+  </button>
+
+  <button
+    onClick={() => addEvent("ft_miss", "teamB")}
+    className={actionBtnClass("miss")}
+  >
+    罰球不進
+  </button>
+</div>
+
+<button
+  onClick={undoLastEvent}
+  className="mt-3 w-full rounded-2xl border border-white/10 bg-white/10 px-3 py-3 text-sm font-black hover:bg-white/15"
+>
+  復原上一筆
+</button>
               </div>
             </div>
           </section>
