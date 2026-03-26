@@ -2279,13 +2279,13 @@ async function syncDerivedStatsSilently(currentGameId: string) {
                     罰球進
                   </button>
                   <button onClick={() => addEvent("fg2_miss")} className={actionBtnClass("miss")}>
-                    2 分失
+                    2 分不進
                   </button>                  
                   <button onClick={() => addEvent("fg3_miss")} className={actionBtnClass("miss")}>
-                    3 分失
+                    3 分不進
                   </button>                  
                   <button onClick={() => addEvent("ft_miss")} className={actionBtnClass("miss")}>
-                    罰球失
+                    罰球不進
                   </button>
                   <button onClick={() => addEvent("reb")} className={actionBtnClass("def")}>
                     籃板
@@ -2336,21 +2336,21 @@ async function syncDerivedStatsSilently(currentGameId: string) {
                     onClick={() => addEvent("fg2_miss", "teamB")}
                     className={actionBtnClass("miss")}
                   >
-                    2 分失
+                    2 分不進
                   </button>
 
                   <button
                     onClick={() => addEvent("fg3_miss", "teamB")}
                     className={actionBtnClass("miss")}
                   >
-                    3 分失
+                    3 分不進
                   </button>
 
                   <button
                     onClick={() => addEvent("ft_miss", "teamB")}
                     className={actionBtnClass("miss")}
                   >
-                    罰球失
+                    罰球不進
                   </button>
                 </div>
 
