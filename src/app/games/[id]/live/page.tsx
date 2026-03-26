@@ -505,6 +505,7 @@ export default function LiveGamePage() {
   const [submittingSub, setSubmittingSub] = useState(false);
 
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const presenceKeyRef = useRef(`viewer-${Math.random().toString(36).slice(2)}`);
   const autoQuarterAdvanceLockRef = useRef(false);
 
@@ -822,6 +823,20 @@ async function handleRebuildThisGame() {
   }, [gameId]);
 
   useEffect(() => {
+    return () => {
+      if (tickerRef.current) {
+        clearInterval(tickerRef.current);
+        tickerRef.current = null;
+      }
+
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+        persistTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!gameId) return;
 
     const channel = supabase.channel(`live-room-${gameId}`, {
@@ -933,21 +948,20 @@ async function handleRebuildThisGame() {
       return;
     }
 
-    if (tickerRef.current) clearInterval(tickerRef.current);
+    if (tickerRef.current) {
+      clearInterval(tickerRef.current);
+    }
 
     tickerRef.current = setInterval(() => {
       setClock((prev) => {
-        if (!prev) return prev;
+        if (!prev || !prev.is_running) return prev;
 
         const nextSeconds = Math.max(0, prev.seconds_left - 1);
-        const nextClock: ClockRow = {
+        return {
           ...prev,
           seconds_left: nextSeconds,
           is_running: nextSeconds > 0,
         };
-
-        void persistClock(nextClock);
-        return nextClock;
       });
     }, 1000);
 
@@ -957,9 +971,9 @@ async function handleRebuildThisGame() {
         tickerRef.current = null;
       }
     };
-  }, [clock?.is_running, game]);
+  }, [clock?.is_running, game?.id]);
 
-  async function persistClock(next: ClockRow) {
+  async function persistClockNow(next: ClockRow) {
     const { error } = await supabase.from("game_clock").upsert(
       {
         game_id: next.game_id,
@@ -972,7 +986,20 @@ async function handleRebuildThisGame() {
 
     if (error) {
       setError(`更新比賽時間失敗：${error.message}`);
+      return false;
     }
+
+    return true;
+  }
+
+  function schedulePersistClock(next: ClockRow, delay = 250) {
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+    }
+
+    persistTimeoutRef.current = setTimeout(() => {
+      void persistClockNow(next);
+    }, delay);
   }
 
   const validEvents = useMemo(() => {
@@ -1431,7 +1458,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
 
     const next = { ...clock, is_running: true };
     setClock(next);
-    await persistClock(next);
+    await persistClockNow(next);
   }
 
   async function pauseClock() {
@@ -1440,7 +1467,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
 
     const next = { ...clock, is_running: false };
     setClock(next);
-    await persistClock(next);
+    await persistClockNow(next);
   }
 
   async function resetClock() {
@@ -1450,7 +1477,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
     const nextSeconds = getQuarterSeconds(clock.quarter);
     const next = { ...clock, seconds_left: nextSeconds, is_running: false };
     setClock(next);
-    await persistClock(next);
+    await persistClockNow(next);
   }
 
   async function adjustClock(delta: number) {
@@ -1461,9 +1488,10 @@ async function syncDerivedStatsSilently(currentGameId: string) {
     const next = {
       ...clock,
       seconds_left: Math.max(0, Math.min(maxSeconds, clock.seconds_left + delta)),
+      is_running: false,
     };
     setClock(next);
-    await persistClock(next);
+    schedulePersistClock(next, 150);
   }
 
   async function advanceQuarter(fromClock: ClockRow, onCourtIds: string[]) {
@@ -1538,7 +1566,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
     };
 
     setClock(next);
-    await persistClock(next);
+    await persistClockNow(next);
     return true;
   }
 
@@ -1563,7 +1591,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
       if (clock) {
         pausedClock = { ...clock, is_running: false };
         setClock(pausedClock);
-        await persistClock(pausedClock);
+        await persistClockNow(pausedClock);
 
         if (currentOnCourtIds.length > 0) {
           const { error: closeShiftError } = await supabase
@@ -1821,7 +1849,7 @@ async function syncDerivedStatsSilently(currentGameId: string) {
           is_running: false,
         };
         setClock(pausedClock);
-        await persistClock(pausedClock);
+        await persistClockNow(pausedClock);
         return;
       }
 
