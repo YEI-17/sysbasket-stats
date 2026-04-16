@@ -106,18 +106,6 @@ function formatDateTime(dateStr?: string | null, timeStr?: string | null) {
   return `${dateText} ${timeText}`;
 }
 
-function formatCreatedAt(dateStr?: string | null) {
-  if (!dateStr) return "未知";
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return dateStr;
-
-  return d.toLocaleDateString("zh-TW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-}
-
 function isToday(dateStr?: string | null) {
   if (!dateStr) return false;
   const d = new Date(dateStr);
@@ -141,32 +129,13 @@ function getMatchLabel(game: GameRow) {
   return `${game.teamA || "我們"} vs ${game.teamB || "對手"}`;
 }
 
-function EmptyState({
-  title,
-  actionHref,
-  actionLabel,
-}: {
-  title: string;
-  actionHref?: string;
-  actionLabel?: string;
-}) {
+function EmptyState({ title }: { title: string }) {
   return (
     <div className="rounded-3xl border border-dashed border-zinc-700 bg-zinc-950/70 px-6 py-12 text-center">
       <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900 text-3xl">
         🏀
       </div>
       <div className="mt-4 text-xl font-bold text-white">{title}</div>
-
-      {actionHref && actionLabel ? (
-        <div className="mt-6">
-          <Link
-            href={actionHref}
-            className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-orange-400 to-amber-300 px-5 py-3 text-sm font-bold text-black transition hover:scale-[1.02]"
-          >
-            {actionLabel}
-          </Link>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -292,21 +261,6 @@ export default function GamesPage() {
     return filteredGames.filter((g) => isLiveGame(g));
   }, [filteredGames]);
 
-  const todayGames = useMemo(() => {
-    return filteredGames.filter((g) => isToday(g.game_date) && !isLiveGame(g));
-  }, [filteredGames]);
-
-  const recentFinished = useMemo(() => {
-    return [...games]
-      .filter((g) => normalizeStatus(g.status) === "finished")
-      .sort((a, b) => {
-        const bTime = getTimestamp(b.start_time) || getTimestamp(b.game_date);
-        const aTime = getTimestamp(a.start_time) || getTimestamp(a.game_date);
-        return bTime - aTime;
-      })
-      .slice(0, 6);
-  }, [games]);
-
   const filterTabs: { key: FilterType; label: string }[] = [
     { key: "all", label: "全部" },
     { key: "today", label: "今天" },
@@ -329,18 +283,9 @@ export default function GamesPage() {
                 <h1 className="text-3xl font-black tracking-tight text-white md:text-5xl">
                   賽事中心
                 </h1>
-                <div className="mt-3 text-base text-zinc-300">
-                  快速查看今天比賽、直播狀態、完整賽程與近期完賽
-                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <Link
-                  href="/games/new"
-                  className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-orange-400 to-amber-300 px-5 py-3 text-sm font-bold text-black shadow-lg shadow-orange-500/20 transition hover:scale-[1.02] hover:from-orange-300 hover:to-amber-200"
-                >
-                  ＋ 建立新比賽
-                </Link>
                 <LogoutButton />
               </div>
             </div>
@@ -421,11 +366,7 @@ export default function GamesPage() {
             {loading ? (
               <LoadingBlock />
             ) : liveGames.length === 0 ? (
-              <EmptyState
-                title="目前沒有直播中的比賽"
-                actionHref="/games/new"
-                actionLabel="建立新比賽"
-              />
+              <EmptyState title="目前沒有直播中的比賽" />
             ) : (
               <div className="grid gap-4 xl:grid-cols-2">
                 {liveGames.map((game) => (
@@ -435,27 +376,7 @@ export default function GamesPage() {
             )}
           </section>
 
-          <section className="mb-8">
-            <div className="mb-4 flex items-center justify-between gap-4">
-              <h2 className="text-2xl font-black tracking-tight text-white md:text-3xl">
-                今天比賽
-              </h2>
-            </div>
-
-            {loading ? (
-              <LoadingBlock />
-            ) : todayGames.length === 0 ? (
-              <EmptyState title="今天沒有其他比賽" />
-            ) : (
-              <div className="grid gap-3">
-                {todayGames.map((game) => (
-                  <ScheduleRow key={game.id} game={game} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="mb-8">
+          <section className="pb-4">
             <div className="mb-4 flex items-center justify-between gap-4">
               <h2 className="text-2xl font-black tracking-tight text-white md:text-3xl">
                 全部賽程
@@ -469,35 +390,11 @@ export default function GamesPage() {
             {loading ? (
               <LoadingBlock />
             ) : filteredGames.length === 0 ? (
-              <EmptyState
-                title="找不到符合條件的賽程"
-                actionHref="/games/new"
-                actionLabel="建立新比賽"
-              />
+              <EmptyState title="找不到符合條件的賽程" />
             ) : (
               <div className="grid gap-3">
                 {filteredGames.map((game) => (
                   <ScheduleRow key={game.id} game={game} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="pb-4">
-            <div className="mb-4 flex items-center justify-between gap-4">
-              <h2 className="text-2xl font-black tracking-tight text-white md:text-3xl">
-                近期完賽
-              </h2>
-            </div>
-
-            {loading ? (
-              <LoadingBlock />
-            ) : recentFinished.length === 0 ? (
-              <EmptyState title="目前沒有完賽資料" />
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-                {recentFinished.map((game) => (
-                  <ResultMiniCard key={game.id} game={game} />
                 ))}
               </div>
             )}
@@ -595,14 +492,7 @@ function LiveGameCard({ game }: { game: GameRow }) {
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Link
-            href={`/games/${game.id}/live`}
-            className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-orange-400 to-amber-300 px-4 py-3 text-sm font-bold text-black transition hover:scale-[1.01]"
-          >
-            進入紀錄
-          </Link>
-
+        <div className="grid gap-3 sm:grid-cols-1">
           <Link
             href={`/games/${game.id}/board`}
             className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white transition hover:bg-white/10"
@@ -662,10 +552,6 @@ function ScheduleRow({ game }: { game: GameRow }) {
             <div className="mt-2 text-sm text-zinc-300">
               {formatDateTime(game.game_date, game.start_time)}
             </div>
-
-            <div className="mt-1 text-sm text-zinc-500">
-              建立日期：{formatCreatedAt(game.created_at)}
-            </div>
           </div>
         </div>
 
@@ -678,13 +564,7 @@ function ScheduleRow({ game }: { game: GameRow }) {
             {getStatusText(game)}
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 xl:flex">
-            <Link
-              href={`/games/${game.id}/live`}
-              className="inline-flex items-center justify-center rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-zinc-700"
-            >
-              進入紀錄
-            </Link>
+          <div className="grid gap-2 sm:grid-cols-1 xl:flex">
             <Link
               href={`/games/${game.id}/board`}
               className="inline-flex items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-orange-400/30 hover:text-white"
@@ -693,44 +573,6 @@ function ScheduleRow({ game }: { game: GameRow }) {
             </Link>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ResultMiniCard({ game }: { game: GameRow }) {
-  return (
-    <div className="rounded-[26px] border border-zinc-800 bg-zinc-950/90 p-5 transition hover:border-zinc-700">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm font-bold text-zinc-200">
-          已結束
-        </div>
-        <div className="text-sm text-zinc-400">{formatShortDate(game.game_date)}</div>
-      </div>
-
-      <div className="text-lg font-black tracking-tight text-white">
-        {game.teamA || "我們"}
-        <span className="mx-2 text-orange-300">vs</span>
-        {game.teamB || "對手"}
-      </div>
-
-      <div className="mt-3 text-sm text-zinc-300">
-        {formatDateTime(game.game_date, game.start_time)}
-      </div>
-
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        <Link
-          href={`/games/${game.id}/live`}
-          className="inline-flex items-center justify-center rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-zinc-700"
-        >
-          進入紀錄
-        </Link>
-        <Link
-          href={`/games/${game.id}/board`}
-          className="inline-flex items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-orange-400/30 hover:text-white"
-        >
-          查看完整數據
-        </Link>
       </div>
     </div>
   );
