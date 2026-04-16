@@ -57,9 +57,19 @@ function sortByPerformance<
 >(rows: T[]) {
   return [...rows].sort((a, b) => {
     if (b.plus_minus !== a.plus_minus) return b.plus_minus - a.plus_minus;
-    if (b.off_rating !== a.off_rating) return b.off_rating - a.off_rating;
-    return b.seconds_played - a.seconds_played;
+    if (b.seconds_played !== a.seconds_played) return b.seconds_played - a.seconds_played;
+    return b.off_rating - a.off_rating;
   });
+}
+
+function getSampleLabel(seconds: number) {
+  if (seconds >= 480) return "高樣本";
+  if (seconds >= 240) return "中樣本";
+  return "低樣本";
+}
+
+function getPlusMinusText(value: number) {
+  return `${value >= 0 ? "+" : ""}${value}`;
 }
 
 export default function GameLineupsPage() {
@@ -112,90 +122,72 @@ export default function GameLineupsPage() {
     load();
   }, [gameId]);
 
-  const bestLineup = useMemo(
-    () => sortByPerformance(lineups.filter((r) => r.seconds_played >= 60))[0] ?? null,
+  const lineupCandidates = useMemo(
+    () => sortByPerformance(lineups.filter((r) => r.seconds_played >= 60)),
     [lineups]
   );
 
-  const worstLineup = useMemo(
-    () =>
-      [...lineups]
-        .filter((r) => r.seconds_played >= 60)
-        .sort((a, b) => {
-          if (a.plus_minus !== b.plus_minus) return a.plus_minus - b.plus_minus;
-          if (a.off_rating !== b.off_rating) return a.off_rating - b.off_rating;
-          return b.seconds_played - a.seconds_played;
-        })[0] ?? null,
-    [lineups]
-  );
-
-  const bestPair = useMemo(
-    () =>
-      sortByPerformance(
-        combos.filter((r) => r.combo_size === 2 && r.seconds_played >= 60)
-      )[0] ?? null,
+  const pairCandidates = useMemo(
+    () => sortByPerformance(combos.filter((r) => r.combo_size === 2 && r.seconds_played >= 60)),
     [combos]
   );
 
-  const bestTrio = useMemo(
-    () =>
-      sortByPerformance(
-        combos.filter((r) => r.combo_size === 3 && r.seconds_played >= 60)
-      )[0] ?? null,
+  const trioCandidates = useMemo(
+    () => sortByPerformance(combos.filter((r) => r.combo_size === 3 && r.seconds_played >= 60)),
     [combos]
   );
+
+  const bestLineup = lineupCandidates[0] ?? null;
+  const bestPair = pairCandidates[0] ?? null;
+  const bestTrio = trioCandidates[0] ?? null;
+
+  const topLineups = useMemo(() => lineupCandidates.slice(0, 5), [lineupCandidates]);
+  const topPairs = useMemo(() => pairCandidates.slice(0, 5), [pairCandidates]);
+  const topTrios = useMemo(() => trioCandidates.slice(0, 5), [trioCandidates]);
+
+  const weakHighSampleLineup = useMemo(() => {
+    return [...lineups]
+      .filter((r) => r.seconds_played >= 240)
+      .sort((a, b) => {
+        if (a.plus_minus !== b.plus_minus) return a.plus_minus - b.plus_minus;
+        return b.seconds_played - a.seconds_played;
+      })[0] ?? null;
+  }, [lineups]);
 
   const suggestions = useMemo(() => {
     const list: string[] = [];
 
     if (bestLineup) {
       list.push(
-        `本場最穩定的五人組為 ${joinNames(bestLineup.player_names)}，上場 ${formatSeconds(
+        `優先延續 ${joinNames(bestLineup.player_names)} 這組五人，上場 ${formatSeconds(
           bestLineup.seconds_played
-        )}，正負值 ${bestLineup.plus_minus >= 0 ? "+" : ""}${bestLineup.plus_minus}，進攻效率 ${bestLineup.off_rating.toFixed(1)}。`
+        )}、正負值 ${getPlusMinusText(bestLineup.plus_minus)}。`
       );
     }
 
     if (bestPair) {
       list.push(
-        `最佳雙人核心為 ${joinNames(bestPair.player_names)}，共同上場 ${formatSeconds(
-          bestPair.seconds_played
-        )}，可優先保留此搭配。`
+        `${joinNames(bestPair.player_names)} 可作為優先保留的雙人搭配，正負值 ${getPlusMinusText(
+          bestPair.plus_minus
+        )}。`
       );
     }
 
-    if (bestTrio) {
+    if (weakHighSampleLineup && weakHighSampleLineup.plus_minus < 0) {
       list.push(
-        `最佳三人骨幹為 ${joinNames(bestTrio.player_names)}，建議優先作為主要輪替核心。`
-      );
-    }
-
-    if (worstLineup) {
-      list.push(
-        `效果較差的五人組為 ${joinNames(worstLineup.player_names)}，上場 ${formatSeconds(
-          worstLineup.seconds_played
-        )}，正負值 ${worstLineup.plus_minus >= 0 ? "+" : ""}${worstLineup.plus_minus}，建議降低長時間重疊。`
+        `${joinNames(
+          weakHighSampleLineup.player_names
+        )} 屬於高樣本但效果偏差的組合，輪替可優先考慮拆開或縮短重疊時間。`
       );
     }
 
     return list;
-  }, [bestLineup, bestPair, bestTrio, worstLineup]);
-
-  const pairs = useMemo(
-    () => sortByPerformance(combos.filter((r) => r.combo_size === 2)),
-    [combos]
-  );
-
-  const trios = useMemo(
-    () => sortByPerformance(combos.filter((r) => r.combo_size === 3)),
-    [combos]
-  );
+  }, [bestLineup, bestPair, weakHighSampleLineup]);
 
   const summaryCards = [
-    { title: "最強 LINEUP", item: bestLineup },
-    { title: "最爛 LINEUP", item: worstLineup },
-    { title: "黃金雙人", item: bestPair },
-    { title: "黃金三人", item: bestTrio },
+    { title: "最佳五人組", item: bestLineup },
+    { title: "最佳雙人組", item: bestPair },
+    { title: "最佳三人組", item: bestTrio },
   ];
 
   return (
@@ -240,7 +232,7 @@ export default function GameLineupsPage() {
           </div>
         ) : (
           <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {summaryCards.map(({ title, item }) => (
                 <div
                   key={title}
@@ -255,26 +247,18 @@ export default function GameLineupsPage() {
                   </div>
 
                   {item ? (
-                    <div className="mt-5 grid grid-cols-3 gap-3">
-                      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                    <div className="mt-5 grid grid-cols-2 gap-3">
+                      <div className="rounded-2xl border border-emerald-400/25 bg-emerald-400/10 p-4">
+                        <div className="text-xs text-white/45">正負值</div>
+                        <div className="mt-2 text-3xl font-bold">
+                          {getPlusMinusText(item.plus_minus)}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                         <div className="text-xs text-white/45">上場時間</div>
-                        <div className="mt-2 text-2xl font-bold">
+                        <div className="mt-2 text-3xl font-bold">
                           {formatSeconds(item.seconds_played)}
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-emerald-400/25 bg-emerald-400/10 p-3">
-                        <div className="text-xs text-white/45">+/-</div>
-                        <div className="mt-2 text-2xl font-bold">
-                          {item.plus_minus >= 0 ? "+" : ""}
-                          {item.plus_minus}
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-                        <div className="text-xs text-white/45">進攻效率</div>
-                        <div className="mt-2 text-2xl font-bold">
-                          {item.off_rating.toFixed(1)}
                         </div>
                       </div>
                     </div>
@@ -289,9 +273,9 @@ export default function GameLineupsPage() {
 
             <section className="mt-6 rounded-3xl border border-orange-400/25 bg-white/[0.03] p-5">
               <div className="mb-2 text-sm tracking-[0.25em] text-orange-300">
-                STRATEGY SUGGESTIONS
+                DECISION NOTES
               </div>
-              <h2 className="mb-4 text-3xl font-bold">自動建議 / 比賽策略</h2>
+              <h2 className="mb-4 text-3xl font-bold">輪替重點</h2>
 
               <div className="space-y-3">
                 {suggestions.length === 0 ? (
@@ -315,102 +299,75 @@ export default function GameLineupsPage() {
             </section>
 
             <section className="mt-6 grid gap-6 xl:grid-cols-3">
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 xl:col-span-1">
-                <h3 className="mb-4 text-2xl font-bold">五人組列表</h3>
-
-                <div className="space-y-3">
-                  {lineups.length === 0 ? (
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-white/60">
-                      這場目前沒有五人組資料
-                    </div>
-                  ) : (
-                    lineups.map((row) => (
-                      <div
-                        key={row.id}
-                        className="rounded-2xl border border-white/10 bg-white/[0.02] p-4"
-                      >
-                        <div className="text-lg font-semibold">
-                          {joinNames(row.player_names)}
-                        </div>
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-sm text-white/75">
-                          <div>時間：{formatSeconds(row.seconds_played)}</div>
-                          <div>
-                            +/-：{row.plus_minus >= 0 ? "+" : ""}
-                            {row.plus_minus}
-                          </div>
-                          <div>OffRtg：{row.off_rating.toFixed(1)}</div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                <h3 className="mb-4 text-2xl font-bold">雙人組</h3>
-
-                <div className="space-y-3">
-                  {pairs.length === 0 ? (
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-white/60">
-                      這場目前沒有雙人組資料
-                    </div>
-                  ) : (
-                    pairs.map((row) => (
-                      <div
-                        key={row.id}
-                        className="rounded-2xl border border-white/10 bg-white/[0.02] p-4"
-                      >
-                        <div className="text-lg font-semibold">
-                          {joinNames(row.player_names)}
-                        </div>
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-sm text-white/75">
-                          <div>時間：{formatSeconds(row.seconds_played)}</div>
-                          <div>
-                            +/-：{row.plus_minus >= 0 ? "+" : ""}
-                            {row.plus_minus}
-                          </div>
-                          <div>OffRtg：{row.off_rating.toFixed(1)}</div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                <h3 className="mb-4 text-2xl font-bold">三人組</h3>
-
-                <div className="space-y-3">
-                  {trios.length === 0 ? (
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-white/60">
-                      這場目前沒有三人組資料
-                    </div>
-                  ) : (
-                    trios.map((row) => (
-                      <div
-                        key={row.id}
-                        className="rounded-2xl border border-white/10 bg-white/[0.02] p-4"
-                      >
-                        <div className="text-lg font-semibold">
-                          {joinNames(row.player_names)}
-                        </div>
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-sm text-white/75">
-                          <div>時間：{formatSeconds(row.seconds_played)}</div>
-                          <div>
-                            +/-：{row.plus_minus >= 0 ? "+" : ""}
-                            {row.plus_minus}
-                          </div>
-                          <div>OffRtg：{row.off_rating.toFixed(1)}</div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+              <TopListCard title="五人組 Top 5" rows={topLineups} />
+              <TopListCard title="雙人組 Top 5" rows={topPairs} />
+              <TopListCard title="三人組 Top 5" rows={topTrios} />
             </section>
           </>
         )}
       </div>
     </main>
+  );
+}
+
+function TopListCard({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{
+    id: string;
+    player_names: string[];
+    seconds_played: number;
+    plus_minus: number;
+  }>;
+}) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+      <h3 className="mb-4 text-2xl font-bold">{title}</h3>
+
+      <div className="space-y-3">
+        {rows.length === 0 ? (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-white/60">
+            目前沒有資料
+          </div>
+        ) : (
+          rows.map((row, index) => (
+            <div
+              key={row.id}
+              className="rounded-2xl border border-white/10 bg-white/[0.02] p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-full bg-orange-400/15 px-2 text-sm font-bold text-orange-300">
+                      {index + 1}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-white/65">
+                      {getSampleLabel(row.seconds_played)}
+                    </span>
+                  </div>
+
+                  <div className="text-lg font-semibold leading-snug">
+                    {joinNames(row.player_names)}
+                  </div>
+                </div>
+
+                <div className="shrink-0 text-right">
+                  <div className="text-xs text-white/45">正負值</div>
+                  <div className="text-2xl font-bold text-emerald-300">
+                    {getPlusMinusText(row.plus_minus)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 text-sm text-white/70">
+                上場時間：{formatSeconds(row.seconds_played)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
