@@ -199,7 +199,7 @@ export default function GameLineupsPage() {
   ];
 
   return (
-    <main className="min-h-screen bg-[#050816] text-white">
+    <main className="min-h-screen bg-black text-white">
       <div className="mx-auto max-w-7xl px-6 py-8">
         <div className="mb-6 rounded-[28px] border border-white/10 bg-white/[0.03] p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -210,9 +210,6 @@ export default function GameLineupsPage() {
               <h1 className="text-4xl font-bold">
                 {game?.teamA ?? "Team A"} vs {game?.teamB ?? "Team B"}
               </h1>
-              <p className="mt-3 text-white/65">
-                單場陣容分析：找出本場最佳五人組、雙人組、三人組與輪替問題
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -221,18 +218,6 @@ export default function GameLineupsPage() {
                 className="rounded-full border border-orange-300/20 bg-orange-300/10 px-5 py-3 text-sm transition hover:bg-orange-300/15"
               >
                 選擇其他比賽
-              </Link>
-              <Link
-                href={`/games/${gameId}/live`}
-                className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:bg-white/10"
-              >
-                返回紀錄頁
-              </Link>
-              <Link
-                href={`/games/${gameId}/box`}
-                className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:bg-white/10"
-              >
-                Box 數據
               </Link>
               <Link
                 href="/lineups"
