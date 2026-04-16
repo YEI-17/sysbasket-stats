@@ -12,12 +12,15 @@ type GameRow = {
   game_date?: string | null;
   created_at?: string | null;
   status?: string | null;
+  is_official?: boolean | null;
 };
 
 type LineupStatRow = {
   game_id: string;
   seconds_played: number | null;
 };
+
+const MIN_TOTAL_SECONDS = 300;
 
 function formatGameDate(dateStr?: string | null) {
   if (!dateStr) return "未設定日期";
@@ -36,13 +39,19 @@ function normalizeStatus(status?: string | null) {
   if (["live", "playing", "in_progress", "ongoing", "running"].includes(s)) {
     return "直播中";
   }
-  if (["finished", "final", "ended", "done"].includes(s)) {
+  if (["finished", "final", "ended", "done", "completed", "complete"].includes(s)) {
     return "已結束";
   }
   if (["scheduled", "upcoming", "pending"].includes(s)) {
     return "未開始";
   }
   return status ?? "未設定";
+}
+
+function getSampleLabel(totalSeconds: number) {
+  if (totalSeconds >= 900) return "高樣本";
+  if (totalSeconds >= 480) return "中樣本";
+  return "低樣本";
 }
 
 export default function LineupsSelectPage() {
@@ -63,7 +72,8 @@ export default function LineupsSelectPage() {
         ] = await Promise.all([
           supabase
             .from("games")
-            .select("id, teamA, teamB, game_date, created_at, status")
+            .select("id, teamA, teamB, game_date, created_at, status, is_official")
+            .eq("is_official", true)
             .order("game_date", { ascending: false })
             .order("created_at", { ascending: false }),
           supabase.from("lineup_stats").select("game_id, seconds_played"),
@@ -98,8 +108,16 @@ export default function LineupsSelectPage() {
     return map;
   }, [lineupStats]);
 
+  const filteredGames = useMemo(() => {
+    return games.filter((game) => {
+      const stat = statsMap.get(game.id);
+      const totalSeconds = stat?.totalSeconds ?? 0;
+      return totalSeconds >= MIN_TOTAL_SECONDS;
+    });
+  }, [games, statsMap]);
+
   return (
-    <main className="min-h-screen bg-[#050816] text-white">
+    <main className="min-h-screen bg-black text-white">
       <div className="mx-auto max-w-7xl px-6 py-8">
         <div className="mb-6 rounded-[28px] border border-white/10 bg-white/[0.03] p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -108,9 +126,6 @@ export default function LineupsSelectPage() {
                 LINEUP ANALYSIS
               </div>
               <h1 className="text-4xl font-bold">選擇要分析的比賽</h1>
-              <p className="mt-3 text-white/65">
-                先選一場比賽，再進入單場陣容分析頁
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -139,15 +154,15 @@ export default function LineupsSelectPage() {
           <div className="rounded-3xl border border-red-400/30 bg-red-400/10 p-8 text-red-200">
             {error}
           </div>
-        ) : games.length === 0 ? (
+        ) : filteredGames.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-8 text-white/70">
-            目前沒有比賽資料
+            目前沒有符合條件的正式賽資料
           </div>
         ) : (
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {games.map((game) => {
+            {filteredGames.map((game) => {
               const stat = statsMap.get(game.id);
-              const hasLineup = !!stat?.hasLineup;
+              const totalSeconds = stat?.totalSeconds ?? 0;
 
               return (
                 <Link
@@ -174,16 +189,28 @@ export default function LineupsSelectPage() {
 
                   <div className="mt-5 grid grid-cols-2 gap-3">
                     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                      <div className="text-xs text-white/45">陣容資料</div>
+                      <div className="text-xs text-white/45">比賽類型</div>
+                      <div className="mt-2 text-xl font-bold">正式賽</div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <div className="text-xs text-white/45">樣本品質</div>
                       <div className="mt-2 text-xl font-bold">
-                        {hasLineup ? "可分析" : "尚未補算"}
+                        {getSampleLabel(totalSeconds)}
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <div className="text-xs text-white/45">陣容資料</div>
+                      <div className="mt-2 text-xl font-bold">可分析</div>
                     </div>
 
                     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                       <div className="text-xs text-white/45">總樣本秒數</div>
                       <div className="mt-2 text-xl font-bold">
-                        {Math.floor((stat?.totalSeconds ?? 0) / 60)} 分
+                        {Math.floor(totalSeconds / 60)} 分
                       </div>
                     </div>
                   </div>
